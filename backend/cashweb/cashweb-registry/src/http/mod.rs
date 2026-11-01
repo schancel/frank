@@ -10,7 +10,7 @@ pub mod evm_profile;
 pub mod evm_rpc;
 pub mod evm_topics;
 pub mod groups;
-pub(crate) mod hourly_quota;
+pub mod hourly_quota;
 pub(crate) mod json_rpc;
 pub mod oracle;
 pub mod pop_protection;

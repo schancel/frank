@@ -212,7 +212,7 @@ the owner ports, and the ports are written against the new formats.
   - Bot and mail-gateway disks are a separate decision, and their custody is never reset.
 - **D. RocksDB driver.** Recommendation: keep one behind the same contract for single-node, self-hosted relays and fast tests. Two real drivers, no in-memory fakes.
 - **E. Large values.** Recommendation: inline up to 64 KiB, S3 above that. S3 then becomes part of admission availability.
-- **F. Quotas.** Recommendation: cluster-wide for directory enrollment. Per replica (N × the limit) for RPC proxy quotas.
+- **F. Quotas.** Directory enrollment precharges and the existing RPC/WS/Electrum hourly allowances are cluster-wide with the FoundationDB driver. Limits, weights, source normalization and broadcast/authenticated-route exemptions retain their existing meanings; adding replicas does not multiply an allowance. Standalone relays retain process-local counters.
 - **G. Production FDB topology and operator.** Must be decided before any deploy; not covered by these PRs.
 
 ## Risks

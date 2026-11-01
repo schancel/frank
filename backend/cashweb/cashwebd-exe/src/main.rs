@@ -9,8 +9,8 @@ use cashweb_registry::{
     evm_mailbox::{EvmMailboxRuntime, MailboxConfig, SessionSecret},
     http::{
         bitcoin_proxy::BitcoinProxyRuntime, curated_defaults::build_curated_defaults,
-        evm_rpc::EvmRpcRuntime, evm_topics::ForumRuntime, pop_protection::PopGate,
-        server::RegistryServer, solana_proxy::SolanaProxyRuntime,
+        evm_rpc::EvmRpcRuntime, evm_topics::ForumRuntime, hourly_quota::QuotaBackend,
+        pop_protection::PopGate, server::RegistryServer, solana_proxy::SolanaProxyRuntime,
     },
     lotus_adapter::LotusAdapter,
     p2p::{
@@ -342,6 +342,46 @@ fn foundationdb_store(
     Ok(Arc::new(store))
 }
 
+/// The existing hourly quotas share one FDB namespace in cluster mode. Standalone keeps
+/// its current in-process owner; a failed shared store never selects the local owner.
+fn hourly_quota_backend(
+    driver: &RelayStorageDriver,
+    _chain_identifier: &str,
+    _registry: &cashweb_config::RegistryConf,
+) -> Result<QuotaBackend> {
+    match driver {
+        RelayStorageDriver::RocksDb => Ok(QuotaBackend::local()),
+        #[cfg(feature = "foundationdb")]
+        RelayStorageDriver::FoundationDb {
+            cluster_file,
+            subspace_prefix,
+        } => QuotaBackend::shared(
+            _chain_identifier,
+            foundationdb_store(cluster_file, subspace_prefix, "hourly-quotas-v1")?,
+            1 + if _registry.directory.is_some() {
+                cashweb_registry::directory_runtime::DirectoryRuntime::pending_capacity()
+            } else {
+                0
+            } + if _registry.evm_rpc.enabled {
+                2 * _registry.evm_rpc.max_concurrency
+            } else {
+                0
+            } + if _registry.bitcoin_proxy.enabled {
+                2 * _registry.bitcoin_proxy.max_concurrency
+            } else {
+                0
+            } + if _registry.solana_proxy.enabled {
+                _registry.solana_proxy.max_concurrency
+            } else {
+                0
+            },
+        )
+        .map_err(bitcoinsuite_error::Report::msg),
+        #[cfg(not(feature = "foundationdb"))]
+        RelayStorageDriver::FoundationDb { .. } => unreachable!("refused by boot_fdb_network"),
+    }
+}
+
 /// The group backend selected by `registry.cluster.driver`. FoundationDB keys live under
 /// `<fdb_subspace_prefix>groups-v1/`.
 fn group_backend(
@@ -671,6 +711,12 @@ async fn run(
     if conf.registry.forum.is_some() {
         probe_shared_forum(forum.as_ref()).await?;
     }
+    let quota_backend = hourly_quota_backend(&driver, &chains.network().id, &conf.registry)?;
+    let probe_quotas = quota_backend.clone();
+    tokio::task::spawn_blocking(move || probe_quotas.probe())
+        .await
+        .wrap_err("Hourly quota startup worker failed")?
+        .wrap_err("Shared hourly quotas are unavailable")?;
     if check_db {
         return Ok(());
     }
@@ -929,14 +975,27 @@ async fn run(
         build_curated_defaults(&conf.registry.curated_defaults)
             .wrap_err("Invalid registry.curated_defaults entry in configuration file")?,
     );
-    let evm_rpc = EvmRpcRuntime::new(&conf.registry.evm_rpc, Arc::clone(&chains), &session)
-        .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
-    let bitcoin_proxy =
-        BitcoinProxyRuntime::new(&conf.registry.bitcoin_proxy, Arc::clone(&chains), &session)
-            .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
-    let solana_proxy =
-        SolanaProxyRuntime::new(&conf.registry.solana_proxy, Arc::clone(&chains), &session)
-            .wrap_err("Starting Solana-family JSON-RPC proxy")?;
+    let evm_rpc = EvmRpcRuntime::new(
+        &conf.registry.evm_rpc,
+        Arc::clone(&chains),
+        &session,
+        quota_backend.clone(),
+    )
+    .wrap_err("Starting customer-authenticated EVM RPC proxy")?;
+    let bitcoin_proxy = BitcoinProxyRuntime::new(
+        &conf.registry.bitcoin_proxy,
+        Arc::clone(&chains),
+        &session,
+        quota_backend.clone(),
+    )
+    .wrap_err("Starting Bitcoin-family RPC/indexer proxy")?;
+    let solana_proxy = SolanaProxyRuntime::new(
+        &conf.registry.solana_proxy,
+        Arc::clone(&chains),
+        &session,
+        quota_backend.clone(),
+    )
+    .wrap_err("Starting Solana-family JSON-RPC proxy")?;
 
     let spa_dir = conf.registry.spa_dir.clone().or_else(|| {
         std::env::var("FRANK_RELAY_SPA_DIR")
@@ -949,6 +1008,7 @@ async fn run(
     }
 
     let server = RegistryServer {
+        quota_backend: quota_backend.clone(),
         registry: Arc::clone(&registry),
         peers: Arc::clone(&peers),
         pop_gate,
@@ -1048,11 +1108,54 @@ async fn run(
     let server = axum::Server::bind(&conf.host)
         .serve(router.into_make_service_with_connect_info::<std::net::SocketAddr>());
     tokio::pin!(server);
+    let (stop_quota_cleanup, mut quota_cleanup_stop) = tokio::sync::oneshot::channel();
+    let cleanup_backend = quota_backend.clone();
+    let quota_cleanup = tokio::spawn(async move {
+        let mut more_expired = false;
+        'cleanup: loop {
+            tokio::select! {
+                _ = &mut quota_cleanup_stop => break,
+                _ = tokio::time::sleep(if more_expired { Duration::from_millis(10) } else { Duration::from_secs(5) }) => {}
+            }
+            // Bounded pages, with no full-hour materialization and no Tokio worker blocking.
+            for _ in 0..8 {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|duration| duration.as_secs())
+                    .unwrap_or(0);
+                let swept = cleanup_backend.sweep_expired(now).await;
+                match quota_cleanup_stop.try_recv() {
+                    Ok(_) | Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                        break 'cleanup
+                    }
+                    Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                }
+                match swept {
+                    Ok(128) => more_expired = true,
+                    Ok(_) => {
+                        more_expired = false;
+                        break;
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            "Shared hourly quota cleanup failed; admission counters are not reset"
+                        );
+                        more_expired = false;
+                        break;
+                    }
+                }
+            }
+        }
+    });
     let server_result = tokio::select! {
         result = &mut server => Some((false, result)),
         result = &mut metrics_server => Some((true, result)),
         _ = shutdown_signal() => None,
     };
+    let _ = stop_quota_cleanup.send(());
+    let quota_cleanup_result = quota_cleanup.await;
+    quota_backend.close_and_drain().await;
+    quota_cleanup_result.wrap_err("Hourly quota cleanup worker failed")?;
     if let Some(runtime) = directory {
         runtime.begin_shutdown();
         // A drain observation timeout is not cancellation: retain the owner and keep waiting.
@@ -1290,7 +1393,7 @@ max_get_logs_range = 10\n\n\
                 .unwrap();
         assert!(conf.registry.directory.is_some());
         let owners = conf.registry.replica_local_owners();
-        assert!(owners.contains(&cashweb_config::ReplicaLocalOwner::DirectoryEnrollmentQuotas));
+        assert!(!owners.contains(&cashweb_config::ReplicaLocalOwner::HourlyQuotas));
         assert!(!owners.contains(&cashweb_config::ReplicaLocalOwner::Directory));
         assert!(matches!(
             conf.registry.large_values,
@@ -1312,8 +1415,6 @@ max_get_logs_range = 10\n\n\
             .unwrap_err();
         let text = format!("{error:#}");
         for owner in [
-            "directory",
-            "hourly RPC proxy quotas",
             // No [registry.large_values]: the local driver beside the database.
             "large values",
         ] {
@@ -1330,7 +1431,7 @@ max_get_logs_range = 10\n\n\
             read_and_validate_conf_with_env("-", &mut Cursor::new(previewed), env(FULL_ENV))
                 .unwrap();
         assert!(conf.registry.is_cluster_mode());
-        assert_eq!(conf.registry.replica_local_owners().len(), 3);
+        assert_eq!(conf.registry.replica_local_owners().len(), 1);
         // Without the provisioned files, cluster mode never falls back to generated ones.
         let unprovisioned =
             format!("{LOCAL}\n{cluster}preview_replica_local_owners = true\n{nats}");

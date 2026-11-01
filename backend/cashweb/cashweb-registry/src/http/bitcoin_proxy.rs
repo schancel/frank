@@ -31,7 +31,7 @@ use crate::{
             quota_error, rpc_error, BoundedRpcBody, RpcAuthState, RpcBinding, RpcCapabilityBody,
             RpcChallengeBody, RpcRejection, RpcResource, RPC_AUTH_DOMAIN, RPC_CUSTOMER_HEADER,
         },
-        hourly_quota::{normalize_quota_ip, FixedHourQuota},
+        hourly_quota::{normalize_quota_ip, FixedHourQuota, QuotaBackend, QuotaDomain},
         server::RegistryServer,
         upstream_cooldown::UpstreamCooldownTracker,
     },
@@ -135,6 +135,7 @@ impl BitcoinProxyRuntime {
         conf: &BitcoinProxyConf,
         chains: Arc<RelayChains>,
         session: &crate::evm_mailbox::SessionSecret,
+        quota_backend: QuotaBackend,
     ) -> Result<Option<Arc<Self>>, BitcoinProxyStartError> {
         conf.validate()
             .map_err(BitcoinProxyStartError::InvalidConfig)?;
@@ -155,11 +156,19 @@ impl BitcoinProxyRuntime {
             max_request_bytes: conf.max_request_bytes,
             max_response_bytes: conf.max_response_bytes,
             timeout: Duration::from_millis(conf.timeout_ms),
-            chronik_quota: FixedHourQuota::new(conf.anonymous_chronik_requests_per_hour),
+            chronik_quota: FixedHourQuota::with_backend(
+                conf.anonymous_chronik_requests_per_hour,
+                QuotaDomain::BitcoinAnonymous,
+                quota_backend.clone(),
+            ),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             cooldowns: UpstreamCooldownTracker::default(),
             // As the EVM proxy's default: bounds a runaway client, not a user.
-            customer_quota: Arc::new(FixedHourQuota::new(1_000_000)),
+            customer_quota: Arc::new(FixedHourQuota::with_backend(
+                1_000_000,
+                QuotaDomain::BitcoinCustomer,
+                quota_backend.clone(),
+            )),
         })))
     }
 
@@ -178,10 +187,13 @@ impl BitcoinProxyRuntime {
             env,
         )?);
         chains.start_verifying().await;
-        Ok(
-            Self::new(conf, chains, &crate::evm_mailbox::SessionSecret::random())
-                .expect("validated by RelayChains"),
+        Ok(Self::new(
+            conf,
+            chains,
+            &crate::evm_mailbox::SessionSecret::random(),
+            QuotaBackend::local(),
         )
+        .expect("validated by RelayChains"))
     }
 
     /// The Electrum upstreams of `id` and the block that identifies the chain, if configured.
@@ -222,7 +234,7 @@ impl BitcoinProxyRuntime {
 
     /// Charge one Electrum read to its payer: per source address when anonymous (the quota the
     /// public Chronik reads use), per customer with a capability. Broadcasts are not rationed.
-    pub(crate) fn charge_electrum(
+    pub(crate) async fn charge_electrum(
         &self,
         payer: ElectrumPayer,
         units: u32,
@@ -233,10 +245,12 @@ impl BitcoinProxyRuntime {
         }
         let now = unix_seconds();
         match payer {
-            ElectrumPayer::Anonymous(ip) => self.chronik_quota.charge(ip, units, now).is_ok(),
-            ElectrumPayer::Customer(customer) => {
-                self.customer_quota.charge(customer, units, now).is_ok()
-            }
+            ElectrumPayer::Anonymous(ip) => self.chronik_quota.charge(ip, units, now).await.is_ok(),
+            ElectrumPayer::Customer(customer) => self
+                .customer_quota
+                .charge(customer, units, now)
+                .await
+                .is_ok(),
         }
     }
 
@@ -1297,6 +1311,7 @@ async fn proxy_chronik_inner(
         runtime
             .chronik_quota
             .charge(ip, units, unix_seconds())
+            .await
             .map_err(|denial| quota_error("rpc_hourly_quota", false, denial))?;
     }
     let deadline = tokio::time::Instant::now() + runtime.timeout;
@@ -1893,6 +1908,7 @@ mod tests {
         let event_bus = registry.event_bus().clone();
         let auth = Arc::clone(&runtime);
         let router = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
@@ -2132,6 +2148,7 @@ mod tests {
         );
         let event_bus = registry.event_bus().clone();
         let server = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
@@ -2345,6 +2362,7 @@ mod tests {
             );
             let event_bus = registry.event_bus().clone();
             let server = RegistryServer {
+                quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
                 registry: Arc::new(registry),
                 peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
                 pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
@@ -2471,6 +2489,7 @@ mod tests {
         );
         let event_bus = registry.event_bus().clone();
         let server = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
@@ -2506,6 +2525,64 @@ mod tests {
         assert_eq!(
             json_resp["result"],
             "000000000019d6689c085ae165831e934ff763ae46a2a6c172b3f1b60a8ce26f"
+        );
+    }
+    #[tokio::test]
+    async fn shared_quota_constructor_preserves_chronik_electrum_sharing_and_broadcast_exemption() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::store::kv_store::RocksDbKvStore::open(directory.path().join("quotas")).unwrap(),
+        );
+        let backend = QuotaBackend::shared("monad-testnet", store, 64).unwrap();
+        backend.probe().unwrap();
+        let session = crate::evm_mailbox::SessionSecret::random();
+
+        let conf = BitcoinProxyConf {
+            enabled: true,
+            anonymous_chronik_requests_per_hour: 2,
+            chains: vec![cashweb_config::BitcoinProxyChainConf {
+                id: "xec-regtest".into(),
+                rpc_upstream_env: None,
+                rpc_upstream_envs: vec![],
+                chronik_upstream_env: Some("TEST_CHRONIK".into()),
+                chronik_upstream_envs: vec![],
+                electrum_upstream_env: None,
+                electrum_upstream_envs: vec![],
+                checkpoint_height: 42,
+                checkpoint_hash: "00".repeat(32),
+            }],
+            ..Default::default()
+        };
+        let chains = Arc::new(RelayChains::for_test("monad-testnet"));
+        let a = BitcoinProxyRuntime::new(&conf, chains.clone(), &session, backend.clone())
+            .unwrap()
+            .unwrap();
+        let b = BitcoinProxyRuntime::new(&conf, chains, &session, backend)
+            .unwrap()
+            .unwrap();
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        let now = unix_seconds();
+        a.chronik_quota.charge(ip, 2, now).await.unwrap();
+        assert!(
+            !b.charge_electrum(ElectrumPayer::Anonymous(ip), 1, false)
+                .await
+        );
+        assert!(
+            b.charge_electrum(ElectrumPayer::Anonymous(ip), 1, true)
+                .await
+        );
+        let customer = Address([5; 20]);
+        a.customer_quota
+            .charge(customer, 1_000_000, now)
+            .await
+            .unwrap();
+        assert!(
+            !b.charge_electrum(ElectrumPayer::Customer(customer), 1, false)
+                .await
+        );
+        assert!(
+            b.charge_electrum(ElectrumPayer::Customer(customer), 1, true)
+                .await
         );
     }
 }

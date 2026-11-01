@@ -593,7 +593,7 @@ async fn forward(
                     reply!(ws_error(id, -32005, "relay busy"));
                     continue;
                 };
-                if !runtime.charge_electrum(payer, cost, broadcast) {
+                if !runtime.charge_electrum(payer, cost, broadcast).await {
                     reply!(ws_error(id, -32005, "hourly quota exceeded"));
                     continue;
                 }

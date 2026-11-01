@@ -43,7 +43,9 @@ use crate::{
     evm_rpc::Address,
     http::{
         bitcoin_proxy::BitcoinProxyRuntime,
-        hourly_quota::{normalize_quota_ip, FixedHourQuota, QuotaDenial},
+        hourly_quota::{
+            normalize_quota_ip, FixedHourQuota, QuotaBackend, QuotaDenial, QuotaDomain,
+        },
         server::RegistryServer,
         upstream_cooldown::UpstreamCooldownTracker,
     },
@@ -476,6 +478,7 @@ impl EvmRpcRuntime {
         conf: &EvmRpcConf,
         chains: Arc<RelayChains>,
         session: &crate::evm_mailbox::SessionSecret,
+        quota_backend: QuotaBackend,
     ) -> Result<Option<Arc<Self>>, EvmRpcStartError> {
         conf.validate().map_err(EvmRpcStartError::InvalidConfig)?;
         if !conf.enabled {
@@ -496,8 +499,16 @@ impl EvmRpcRuntime {
             max_batch_len: conf.max_batch_len,
             max_response_bytes: conf.max_response_bytes,
             timeout: Duration::from_millis(conf.timeout_ms),
-            customer_quota: Arc::new(FixedHourQuota::new(conf.customer_units_per_hour)),
-            anonymous_quota: FixedHourQuota::new(conf.anonymous_units_per_hour),
+            customer_quota: Arc::new(FixedHourQuota::with_backend(
+                conf.customer_units_per_hour,
+                QuotaDomain::EvmCustomer,
+                quota_backend.clone(),
+            )),
+            anonymous_quota: FixedHourQuota::with_backend(
+                conf.anonymous_units_per_hour,
+                QuotaDomain::EvmAnonymous,
+                quota_backend.clone(),
+            ),
             capability_ttl: Duration::from_millis(conf.capability_ttl_ms),
             ws_permits: Arc::new(Semaphore::new(conf.max_concurrency)),
             ws_customers: Arc::new(Mutex::new(HashMap::new())),
@@ -521,10 +532,13 @@ impl EvmRpcRuntime {
             env,
         )?);
         chains.start_verifying().await;
-        Ok(
-            Self::new(conf, chains, &crate::evm_mailbox::SessionSecret::random())
-                .expect("validated by RelayChains"),
+        Ok(Self::new(
+            conf,
+            chains,
+            &crate::evm_mailbox::SessionSecret::random(),
+            QuotaBackend::local(),
         )
+        .expect("validated by RelayChains"))
     }
 }
 
@@ -1813,7 +1827,7 @@ async fn proxy_ws_connection<S>(
                                 continue;
                             }
                         };
-                        if quota.charge(customer, cost.units, now_seconds()).is_err() {
+                        if quota.charge(customer, cost.units, now_seconds()).await.is_err() {
                             if !bounded_ws_send(&mut client_write, ws_error(id, -32005, "hourly quota exceeded"), ws_write_deadline(&pending, request_timeout, expiry_deadline)).await { return; }
                             continue;
                         }
@@ -1897,7 +1911,7 @@ async fn proxy_ws_connection<S>(
                             if !active_subscriptions.contains(subscription) {
                                 break;
                             }
-                            if quota.charge(customer, 1, now_seconds()).is_err() {
+                            if quota.charge(customer, 1, now_seconds()).await.is_err() {
                                 let _ = bounded_ws_send(
                                     &mut client_write,
                                     ClientWsMessage::Close(None),
@@ -2052,6 +2066,7 @@ async fn proxy_rpc_inner(
         runtime
             .customer_quota
             .charge(customer, cost.units, now_seconds())
+            .await
             .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     } else {
         if !cost.anonymous {
@@ -2066,6 +2081,7 @@ async fn proxy_rpc_inner(
         runtime
             .anonymous_quota
             .charge(quota_ip(peer.0), cost.units, now_seconds())
+            .await
             .map_err(|denial| quota_error("rpc_hourly_quota", cost.broadcast, denial))?;
     }
     let deadline = tokio::time::Instant::now() + runtime.timeout;
@@ -2866,6 +2882,7 @@ mod tests {
         (
             tempdir,
             RegistryServer {
+                quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
                 registry: Arc::new(registry),
                 peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
                 pop_gate: Arc::new(pop_gate),
@@ -3834,6 +3851,7 @@ mod tests {
         let event_bus = registry.event_bus().clone();
         let auth = Arc::clone(&runtime);
         let router = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
@@ -4809,6 +4827,7 @@ mod tests {
 
         fn server(fixture: &NativeDirectoryFixture, runtime: EvmRpcRuntime) -> RegistryServer {
             RegistryServer {
+                quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
                 registry: fixture.registry.clone(),
                 peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
                 pop_gate: Arc::new(PopGate::from_conf_if_enabled(&placeholder_pop_conf())),
@@ -5242,5 +5261,61 @@ mod tests {
             drain(release, held).await;
             fixture.stop().await;
         }
+    }
+    #[tokio::test]
+    async fn shared_quota_constructor_preserves_http_ws_customer_and_anonymous_domains() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(
+            crate::store::kv_store::RocksDbKvStore::open(directory.path().join("quotas")).unwrap(),
+        );
+        let backend = QuotaBackend::shared("monad-testnet", store, 64).unwrap();
+        backend.probe().unwrap();
+        let session = crate::evm_mailbox::SessionSecret::random();
+
+        let conf = EvmRpcConf {
+            enabled: true,
+            customer_units_per_hour: 2,
+            anonymous_units_per_hour: 2,
+            chains: vec![cashweb_config::EvmRpcChainConf {
+                id: "monad-testnet".into(),
+                expected_chain_id: 10_143,
+                upstream_env: "TEST_UPSTREAM".into(),
+                upstream_envs: vec![],
+                upstream_ws_env: None,
+                checkpoint_block_number: Some(0),
+                checkpoint_block_hash: Some(TEST_CHECKPOINT_HASH.into()),
+                max_get_logs_range: 10,
+            }],
+            ..Default::default()
+        };
+        let chains = runtime().chains;
+        let a = EvmRpcRuntime::new(&conf, chains.clone(), &session, backend.clone())
+            .unwrap()
+            .unwrap();
+        let b = EvmRpcRuntime::new(&conf, chains, &session, backend)
+            .unwrap()
+            .unwrap();
+        let customer = customer_address();
+        a.customer_quota.charge(customer, 2, 3600).await.unwrap();
+        // This is the same handle passed to the WebSocket request/notification loop.
+        let ws_quota = b.customer_quota.clone();
+        assert!(matches!(
+            ws_quota.charge(customer, 1, 3600).await,
+            Err(QuotaDenial::Exhausted { .. })
+        ));
+        let ip: IpAddr = "192.0.2.1".parse().unwrap();
+        a.anonymous_quota.charge(ip, 1, 3600).await.unwrap();
+        assert_eq!(
+            b.anonymous_quota
+                .charge(ip, 1, 3600)
+                .await
+                .unwrap()
+                .remaining,
+            0
+        );
+        assert!(matches!(
+            a.anonymous_quota.charge(ip, 1, 3600).await,
+            Err(QuotaDenial::Exhausted { .. })
+        ));
     }
 }

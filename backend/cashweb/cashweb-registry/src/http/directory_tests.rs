@@ -215,7 +215,10 @@ async fn unseen_account_publishes_itself_and_is_found_by_key_and_by_address() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     // Nothing in the relay configuration names this account; it is simply unknown so far.
     let account = entry(42, |_| ());
     assert_eq!(
@@ -293,7 +296,10 @@ async fn new_accounts_are_listed_once_in_the_order_they_first_published() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry.clone(), config.clone(), &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let list = |query: String| {
         let routes = routes.clone();
         async move {
@@ -392,7 +398,10 @@ async fn new_accounts_are_listed_once_in_the_order_they_first_published() {
     runtime.wait_stopped().await;
     drop(routes);
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let (status, _, body) = get(
         &routes,
         &format!("/directory/v1/{NETWORK}/accounts?after={cursor}"),
@@ -433,7 +442,10 @@ async fn relay_info_is_the_single_configured_tuple() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let info = get(&routes, "/relay/v1/info").await;
     assert_eq!(info.0, StatusCode::OK);
     assert_eq!(
@@ -460,7 +472,10 @@ async fn relay_info_advertises_only_its_configured_gateway() {
         domain: "signet.mx".into(),
     });
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let (status, _, body) = get(&routes, "/relay/v1/info").await;
     assert_eq!(status, StatusCode::OK);
     let info: Value = serde_json::from_slice(&body).unwrap();
@@ -483,7 +498,10 @@ async fn unknown_subject_read_is_a_marked_not_found() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let account = entry(80, |_| ());
     let unknown_address = format!("0x{}", "11".repeat(20));
     for path in [
@@ -507,7 +525,10 @@ async fn expired_entry_read_is_a_marked_409_expired() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let account = entry(81, |_| ());
     assert_eq!(
         put(&routes, &account.subject, account.attestation.clone())
@@ -537,7 +558,10 @@ async fn other_409_answers_do_not_say_expired() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let later = entry(82, |fields| {
         for (key, value) in fields.iter_mut() {
             match *key {
@@ -563,7 +587,10 @@ async fn router_misses_carry_no_disposition_header() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let account = entry(83, |_| ());
     for path in [
         format!("/directory/v1/{NETWORK}/{}/head/extra", account.subject),
@@ -590,7 +617,10 @@ async fn relay_info_always_carries_an_explicit_boolean_forwarding() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let read = |body: Vec<u8>| serde_json::from_slice::<Value>(&body).unwrap();
     let (status, _, body) = get(&routes, "/relay/v1/info").await;
     assert_eq!(status, StatusCode::OK);
@@ -612,7 +642,10 @@ async fn exact_http_admission_duplicate_history_and_restart() {
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry.clone(), config.clone(), &clock).await;
     let path = head(SUBJECT);
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let original = vector("bootstrap");
     let result = put(&routes, SUBJECT, original.clone()).await;
     assert_eq!(result.0, StatusCode::OK);
@@ -660,7 +693,10 @@ async fn exact_http_admission_duplicate_history_and_restart() {
     .await
     .unwrap();
     let reopened = start(self::registry(root.path()), config, &clock).await;
-    let routes = router(Arc::new(reopened.clone()));
+    let routes = router(
+        Arc::new(reopened.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     assert_eq!(get(&routes, &path).await.2, renew);
     let found = get(&routes, &by_address(&address)).await;
     assert_eq!(found.2, renew);
@@ -681,7 +717,10 @@ async fn forged_entries_are_refused_and_publish_nothing() {
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let victim = entry(50, |_| ());
     let attacker = entry(51, |_| ());
     // The attacker's own valid entry, offered under the victim's key.
@@ -757,7 +796,10 @@ async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_r
     let root = tempfile::tempdir().unwrap();
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let original = vector("bootstrap");
     assert_eq!(
         put(&routes, SUBJECT, original.clone()).await.0,
@@ -787,6 +829,116 @@ async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_r
     runtime.wait_stopped().await;
 }
 
+fn shared_quota_backend(path: &std::path::Path) -> QuotaBackend {
+    let store = Arc::new(crate::store::kv_store::RocksDbKvStore::open(path).unwrap());
+    let backend = QuotaBackend::shared(NETWORK, store, 64).unwrap();
+    backend.probe().unwrap();
+    backend
+}
+
+#[tokio::test]
+async fn shared_quota_directory_routers_share_precharge_and_do_not_refill_on_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, mut config, clock) = setup(root.path());
+    config.enrollments_per_source_per_hour = 2;
+    let runtime = start(registry, config, &clock).await;
+    let backend = shared_quota_backend(&root.path().join("quotas"));
+    let replicas: Vec<_> = (0..3)
+        .map(|_| router(Arc::new(runtime.clone()), backend.clone()))
+        .collect();
+    let accounts: Vec<_> = (160..164).map(|secret| entry(secret, |_| ())).collect();
+    assert_eq!(
+        put(
+            &replicas[0],
+            &accounts[0].subject,
+            accounts[0].attestation.clone()
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert_eq!(
+        put(
+            &replicas[1],
+            &accounts[1].subject,
+            accounts[1].attestation.clone()
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    let denied = put(
+        &replicas[2],
+        &accounts[2].subject,
+        accounts[2].attestation.clone(),
+    )
+    .await;
+    assert_eq!(denied.0, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(denied.1[DISPOSITION], "rejected");
+    let reopened = router(Arc::new(runtime.clone()), backend);
+    assert_eq!(
+        put(
+            &reopened,
+            &accounts[2].subject,
+            accounts[2].attestation.clone()
+        )
+        .await
+        .0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    // Already-published duplicates still skip precharge, even with the bucket exhausted.
+    assert_eq!(
+        put(
+            &reopened,
+            &accounts[0].subject,
+            accounts[0].attestation.clone()
+        )
+        .await
+        .0,
+        StatusCode::OK
+    );
+    assert!(!runtime.is_published(NETWORK, &accounts[2].subject).await);
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
+#[tokio::test]
+async fn shared_quota_directory_preserves_forgery_and_failed_admission_charging() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, mut config, clock) = setup(root.path());
+    config.enrollments_per_source_per_hour = 1;
+    let runtime = start(registry, config, &clock).await;
+    let backend = shared_quota_backend(&root.path().join("quotas"));
+    let a = router(Arc::new(runtime.clone()), backend.clone());
+    let b = router(Arc::new(runtime.clone()), backend);
+    let forged = signed(180, 181, |_| ());
+    assert_eq!(
+        put(&a, &forged.subject, forged.attestation).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let later = entry(180, |fields| {
+        for (key, value) in fields.iter_mut() {
+            match *key {
+                2 => *value = CborValue::Int(1),
+                13 => *value = CborValue::Bytes(vec![7; 32]),
+                _ => (),
+            }
+        }
+    });
+    // A validly signed but unacceptable first revision is charged BEFORE admission, as before.
+    let refused = put(&a, &later.subject, later.attestation).await;
+    assert_eq!(refused.0, StatusCode::CONFLICT);
+    assert_eq!(refused.2, b"trust/continuity");
+    let bootstrap = entry(180, |_| ());
+    assert_eq!(
+        put(&b, &bootstrap.subject, bootstrap.attestation).await.0,
+        StatusCode::TOO_MANY_REQUESTS
+    );
+    assert!(!runtime.is_published(NETWORK, &bootstrap.subject).await);
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
+}
+
 #[tokio::test]
 async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
     let root = tempfile::tempdir().unwrap();
@@ -796,7 +948,10 @@ async fn publishing_is_limited_per_source_and_by_a_relay_wide_cap() {
     // The test client connects from loopback and stands in for a listed reverse proxy.
     config.trusted_proxies = vec!["127.0.0.1".parse().unwrap()];
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let accounts: Vec<Entry> = (60..66).map(|secret| entry(secret, |_| ())).collect();
     let publish = |index: usize, source: &'static str| {
         let (routes, account) = (routes.clone(), &accounts[index]);
@@ -858,7 +1013,10 @@ async fn slow_uploads_hold_no_queue_slot_and_bodies_are_bounded() {
     let (registry, config, clock) = setup(root.path());
     let runtime = start(registry, config, &clock).await;
     let path = head(SUBJECT);
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     assert_eq!(
         put(&routes, SUBJECT, vector("bootstrap")).await.0,
         StatusCode::OK
@@ -972,8 +1130,11 @@ async fn real_http_socket_exact_bytes_and_expired_current_never_promote_history(
     let server = axum::Server::from_tcp(listener)
         .unwrap()
         .serve(
-            router(Arc::new(runtime.clone()))
-                .into_make_service_with_connect_info::<std::net::SocketAddr>(),
+            router(
+                Arc::new(runtime.clone()),
+                crate::http::hourly_quota::QuotaBackend::local(),
+            )
+            .into_make_service_with_connect_info::<std::net::SocketAddr>(),
         )
         .with_graceful_shutdown(async {
             let _ = stopped.await;
@@ -1150,7 +1311,13 @@ async fn authenticated_https_rust_and_node_client_close_reopen_exact_bytes() {
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let server = axum::Server::from_tcp(listener)
             .unwrap()
-            .serve(router(Arc::new(runtime.clone())).into_make_service())
+            .serve(
+                router(
+                    Arc::new(runtime.clone()),
+                    crate::http::hourly_quota::QuotaBackend::local(),
+                )
+                .into_make_service(),
+            )
             .with_graceful_shutdown(async {
                 let _ = stopped.await;
             });
@@ -1183,7 +1350,10 @@ async fn forwarded_for_is_ignored_unless_the_connection_is_from_a_listed_proxy()
     let (registry, mut config, clock) = setup(root.path());
     config.enrollments_per_source_per_hour = 1;
     let runtime = start(registry, config, &clock).await;
-    let routes = router(Arc::new(runtime.clone()));
+    let routes = router(
+        Arc::new(runtime.clone()),
+        crate::http::hourly_quota::QuotaBackend::local(),
+    );
     let accounts: Vec<Entry> = (80..83).map(|secret| entry(secret, |_| ())).collect();
     // No proxy is listed, so a different claimed client address each time changes nothing:
     // all three come from the one connecting address.

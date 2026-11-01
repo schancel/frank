@@ -164,6 +164,8 @@ struct MessagesQuery {
 /// Provides endpoints to read and write from the Cashweb Registry.
 #[derive(Debug, Clone)]
 pub struct RegistryServer {
+    /// Hourly quota owner selected by host composition, also used by directory HTTP admission.
+    pub quota_backend: super::hourly_quota::QuotaBackend,
     /// [`Registry`] this server accesses.
     pub registry: Arc<Registry>,
     /// [`Peers`] connected to the server.
@@ -726,7 +728,10 @@ impl RegistryServer {
         if let Some(runtime) = directory {
             router = router
                 .merge(crate::http::usernames::router(Arc::clone(&runtime)))
-                .merge(crate::http::directory::router(runtime));
+                .merge(crate::http::directory::router(
+                    runtime,
+                    self.quota_backend.clone(),
+                ));
         }
         router = match oracle {
             Some(oracle) => router.merge(crate::http::oracle::router(oracle)),
@@ -1277,6 +1282,7 @@ mod spa_tests {
         let registry = Registry::new(db, Arc::new(DisabledChainAdapter), Net::Regtest);
         let event_bus = registry.event_bus().clone();
         let server = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry: Arc::new(registry),
             peers: Arc::new(Peers::new("http://127.0.0.1:1".to_string(), vec![])),
             pop_gate: Arc::new(None),
@@ -1606,6 +1612,7 @@ mod spa_tests {
 
         let event_bus = registry.event_bus().clone();
         let server_with_dir = RegistryServer {
+            quota_backend: crate::http::hourly_quota::QuotaBackend::local(),
             registry,
             peers: Arc::new(Peers::new("https://relay.signet.mx".to_string(), vec![])),
             pop_gate: Arc::new(None),

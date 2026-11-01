@@ -2383,7 +2383,9 @@ mod tests {
     async fn rpc_failure_diagnostics_distinguish_transport_boundaries_without_secrets() {
         use std::collections::BTreeMap;
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tracing::{field::Visit, span, Event, Metadata, Subscriber};
+        use tracing::{
+            field::Visit, instrument::WithSubscriber, span, Event, Metadata, Subscriber,
+        };
 
         #[derive(Clone, Default)]
         struct Capture(Arc<Mutex<Vec<BTreeMap<String, String>>>>);
@@ -2416,125 +2418,146 @@ mod tests {
         }
 
         let capture = Capture::default();
-        // This current-thread runtime keeps the thread-local subscriber over each await.
-        let _subscriber = tracing::subscriber::set_default(capture.clone());
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let address = listener.local_addr().unwrap();
-        let upstream = tokio::spawn(async move {
-            for response in [
-                None,
-                Some("HTTP/1.1 200 OK\r\nContent-Length: 256\r\nConnection: close\r\n\r\n{"),
-                Some("HTTP/1.1 503 Unavailable\r\nContent-Length: 20\r\nConnection: close\r\n\r\nprovider-body-secret"),
-                Some("HTTP/1.1 200 OK\r\nContent-Length: 55\r\nConnection: close\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":\"request-secret\",\"result\":\"0x2a\"}"),
-            ] {
-                let (mut socket, _) = listener.accept().await.unwrap();
-                let mut request = Vec::new();
-                let mut buffer = [0; 1024];
-                loop {
-                    let n = socket.read(&mut buffer).await.unwrap();
-                    assert_ne!(n, 0);
-                    request.extend_from_slice(&buffer[..n]);
-                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
-                        let headers = String::from_utf8_lossy(&request[..end]);
-                        let len: usize = headers.lines().find_map(|line| {
-                            line.to_ascii_lowercase().strip_prefix("content-length:")
-                                .map(|value| value.trim().parse().unwrap())
-                        }).unwrap();
-                        if request.len() >= end + 4 + len { break; }
-                    }
-                }
-                if let Some(response) = response {
-                    socket.write_all(response.as_bytes()).await.unwrap();
-                }
-                socket.shutdown().await.unwrap();
-            }
-        });
-        let mut runtime = runtime();
-        runtime.chains = Arc::new(RelayChains::for_test("monad-testnet").with_evm(
-            EvmChainAdapter::assume_verified(
-                "monad-testnet",
-                vec![
-                    format!("http://{address}/provider-url-secret?token=provider-token-secret")
-                        .parse()
-                        .unwrap(),
-                ],
-            ),
-        ));
-        let token = runtime
-            .auth
-            .issue_capability(customer_address(), "monad-testnet", now_ms(), 60_000)
-            .0;
-        let (_directory, server) = registered_server(Arc::new(runtime));
-        let body = Bytes::from_static(
-            br#"{"jsonrpc":"2.0","id":"request-secret","method":"eth_blockNumber","params":[]}"#,
-        );
-        for expected in [
-            Some("rpc_upstream_unavailable"),
-            Some("rpc_upstream_unavailable"),
-            Some("invalid_rpc_upstream_response"),
-            None,
-        ] {
-            let response = proxy_rpc_inner(
-                "monad-testnet".into(),
-                None,
-                HeaderMap::new(),
-                server.clone(),
-                body.clone(),
-                Some(token.clone()),
-            )
-            .await
-            .unwrap_or_else(IntoResponse::into_response);
-            if let Some(error) = expected {
-                assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-                assert_eq!(response_json(response).await, json!({"error":error}));
-            } else {
-                assert_eq!(response.status(), StatusCode::OK);
-                assert_eq!(
-                    response_json(response).await,
-                    json!({"jsonrpc":"2.0","id":"request-secret","result":"0x2a"})
+        // Callsite interest is process-wide. With only one registered scoped subscriber,
+        // tracing's JustOne fast path can cache a parallel thread's NoSubscriber verdict.
+        // Keep a second, uninstalled dispatch alive so interest includes both contexts.
+        let uninstalled_dispatch =
+            tracing::Dispatch::new(tracing::subscriber::NoSubscriber::default());
+        async {
+            // Another RPC test can first touch this same callsite with no scoped subscriber.
+            std::thread::spawn(|| {
+                log_rpc_failure(
+                    "monad-testnet",
+                    super::super::json_rpc::RpcFailurePhase::UpstreamRequest,
+                    super::super::json_rpc::RpcFailureClass::Other,
+                    1,
+                    1,
+                    0,
                 );
+            })
+            .join()
+            .unwrap();
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let upstream = tokio::spawn(async move {
+                for response in [
+                    None,
+                    Some("HTTP/1.1 200 OK\r\nContent-Length: 256\r\nConnection: close\r\n\r\n{"),
+                    Some("HTTP/1.1 503 Unavailable\r\nContent-Length: 20\r\nConnection: close\r\n\r\nprovider-body-secret"),
+                    Some("HTTP/1.1 200 OK\r\nContent-Length: 55\r\nConnection: close\r\n\r\n{\"jsonrpc\":\"2.0\",\"id\":\"request-secret\",\"result\":\"0x2a\"}"),
+                ] {
+                    let (mut socket, _) = listener.accept().await.unwrap();
+                    let mut request = Vec::new();
+                    let mut buffer = [0; 1024];
+                    loop {
+                        let n = socket.read(&mut buffer).await.unwrap();
+                        assert_ne!(n, 0);
+                        request.extend_from_slice(&buffer[..n]);
+                        if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                            let headers = String::from_utf8_lossy(&request[..end]);
+                            let len: usize = headers.lines().find_map(|line| {
+                                line.to_ascii_lowercase().strip_prefix("content-length:")
+                                    .map(|value| value.trim().parse().unwrap())
+                            }).unwrap();
+                            if request.len() >= end + 4 + len { break; }
+                        }
+                    }
+                    if let Some(response) = response {
+                        socket.write_all(response.as_bytes()).await.unwrap();
+                    }
+                    socket.shutdown().await.unwrap();
+                }
+            });
+            let mut runtime = runtime();
+            runtime.chains = Arc::new(RelayChains::for_test("monad-testnet").with_evm(
+                EvmChainAdapter::assume_verified(
+                    "monad-testnet",
+                    vec![
+                        format!("http://{address}/provider-url-secret?token=provider-token-secret")
+                            .parse()
+                            .unwrap(),
+                    ],
+                ),
+            ));
+            let token = runtime
+                .auth
+                .issue_capability(customer_address(), "monad-testnet", now_ms(), 60_000)
+                .0;
+            let (_directory, server) = registered_server(Arc::new(runtime));
+            let body = Bytes::from_static(
+                br#"{"jsonrpc":"2.0","id":"request-secret","method":"eth_blockNumber","params":[]}"#,
+            );
+            for expected in [
+                Some("rpc_upstream_unavailable"),
+                Some("rpc_upstream_unavailable"),
+                Some("invalid_rpc_upstream_response"),
+                None,
+            ] {
+                let response = proxy_rpc_inner(
+                    "monad-testnet".into(),
+                    None,
+                    HeaderMap::new(),
+                    server.clone(),
+                    body.clone(),
+                    Some(token.clone()),
+                )
+                .await
+                .unwrap_or_else(IntoResponse::into_response);
+                if let Some(error) = expected {
+                    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+                    assert_eq!(response_json(response).await, json!({"error":error}));
+                } else {
+                    assert_eq!(response.status(), StatusCode::OK);
+                    assert_eq!(
+                        response_json(response).await,
+                        json!({"jsonrpc":"2.0","id":"request-secret","result":"0x2a"})
+                    );
+                }
+            }
+            upstream.await.unwrap();
+            let events = capture.0.lock().unwrap();
+            assert_eq!(
+                events.len(),
+                3,
+                "one event per failed attempt, none on recovery"
+            );
+            assert_eq!(events[0]["phase"], "upstream_request");
+            assert_eq!(events[1]["phase"], "upstream_read");
+            assert_eq!(events[2]["phase"], "response_inspect");
+            assert_eq!(events[0]["upstream_status"], "0");
+            assert_eq!(events[1]["upstream_status"], "200");
+            assert_eq!(events[2]["upstream_status"], "503");
+            for event in events.iter() {
+                assert_eq!(event["chainIdentifier"], "monad-testnet");
+                assert_eq!(event["attempt"], "1");
+                assert_eq!(event["attempt_count"], "1");
+                assert!(event.contains_key("error_class"));
+                assert!(event.keys().all(|key| [
+                    "message",
+                    "phase",
+                    "error_class",
+                    "chainIdentifier",
+                    "attempt",
+                    "attempt_count",
+                    "upstream_status"
+                ]
+                .contains(&key.as_str())));
+            }
+            let serialized = format!("{events:?}");
+            for secret in [
+                "provider-url-secret",
+                "provider-token-secret",
+                "provider-body-secret",
+                "request-secret",
+                token.as_str(),
+                address.to_string().as_str(),
+            ] {
+                assert!(!serialized.contains(secret), "secret escaped diagnostics");
             }
         }
-        upstream.await.unwrap();
-        let events = capture.0.lock().unwrap();
-        assert_eq!(
-            events.len(),
-            3,
-            "one event per failed attempt, none on recovery"
-        );
-        assert_eq!(events[0]["phase"], "upstream_request");
-        assert_eq!(events[1]["phase"], "upstream_read");
-        assert_eq!(events[2]["phase"], "response_inspect");
-        assert_eq!(events[0]["upstream_status"], "0");
-        assert_eq!(events[1]["upstream_status"], "200");
-        assert_eq!(events[2]["upstream_status"], "503");
-        for event in events.iter() {
-            assert_eq!(event["chainIdentifier"], "monad-testnet");
-            assert_eq!(event["attempt"], "1");
-            assert_eq!(event["attempt_count"], "1");
-            assert!(event.contains_key("error_class"));
-            assert!(event.keys().all(|key| [
-                "message",
-                "phase",
-                "error_class",
-                "chainIdentifier",
-                "attempt",
-                "attempt_count",
-                "upstream_status"
-            ]
-            .contains(&key.as_str())));
-        }
-        let serialized = format!("{events:?}");
-        for secret in [
-            "provider-url-secret",
-            "provider-token-secret",
-            "provider-body-secret",
-            "request-secret",
-            token.as_str(),
-            address.to_string().as_str(),
-        ] {
-            assert!(!serialized.contains(secret), "secret escaped diagnostics");
-        }
+        .with_subscriber(capture.clone())
+        .await;
+        drop(uninstalled_dispatch);
     }
 
     #[test]

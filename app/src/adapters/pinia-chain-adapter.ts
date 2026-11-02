@@ -222,10 +222,13 @@ export function startDirectMessagePolling({
   wallet,
   intervalMs = DEFAULT_DIRECT_MESSAGE_POLL_INTERVAL_MS,
   onAuthRecovery,
+  onForeground,
 }: {
   wallet: WalletHandle
   intervalMs?: number
   onAuthRecovery?: () => Promise<void>
+  /** Reconfirm registration when this existing poller returns to the foreground. */
+  onForeground?: () => Promise<void>
 }): DirectMessagePolling {
   const chats = useChatStore()
   const mailboxStatus = useMailboxStatusStore()
@@ -561,6 +564,7 @@ export function startDirectMessagePolling({
   const onVisibilityChange = () => {
     if (stopped) return
     if (typeof document !== 'undefined' && !document.hidden) {
+      void onForeground?.().catch(() => undefined)
       if (timer !== undefined) {
         clearTimeout(timer)
         timer = undefined

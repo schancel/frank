@@ -251,7 +251,8 @@ export async function syncOwnProfile(options: {
 
 /**
  * The account whose published profile the relay has not answered for yet (lowercase address),
- * or `null`. Set when a restore lookup could not reach the relay; cleared when one is answered.
+ * or `null`. Covers restore and background sync: only an answered read or accepted publication
+ * clears uncertainty. A known missing profile is distinct from a failed request.
  * Shown to the user as a non-blocking notice; the profile form does not save while it names
  * the form's account.
  */
@@ -287,9 +288,8 @@ export async function restoreOwnProfileWithRelay(options: {
   if (sameAddress(ownProfileCheck.unchecked ?? undefined, address))
     ownProfileCheck.unchecked = null
   if (!published) {
-    store.profile = {}
-    store.unpublished = false
-    store.base = undefined
+    // Absence on a fresh relay is not absence of this account's saved presentation.
+    // The existing messaging sync republishes these same-owner fields after this read.
     return 'missing'
   }
   store.profile = storedProfileOf(published)
@@ -422,37 +422,56 @@ export async function syncOwnProfileWithRelay(options: {
     const signal = options.signal
       ? AbortSignal.any([options.signal, deadline])
       : deadline
-    return syncOwnProfile({
-      store,
-      isCancelled: () => options.isCancelled?.() === true || signal.aborted,
-      address: identity.address.raw,
-      fetchPublished: () =>
-        fetchMonadProfile({ relayBaseUrl, address: identity.address, signal }),
-      publish: async profile => {
-        // The relay refuses an avatar over its size limit: a smaller one, or none, is sent.
-        let avatar = profile.avatar
-        if (avatar && isAvatarTooLarge(avatar)) {
-          try {
-            const compressed = await compressAvatarDataUrl(avatar)
-            avatar =
-              compressed && !isAvatarTooLarge(compressed)
-                ? compressed
-                : undefined
-          } catch {
-            avatar = undefined
+    ownProfileCheck.unchecked = owner
+    try {
+      const outcome = await syncOwnProfile({
+        store,
+        isCancelled: () => options.isCancelled?.() === true || signal.aborted,
+        address: identity.address.raw,
+        fetchPublished: () =>
+          fetchMonadProfile({
+            relayBaseUrl,
+            address: identity.address,
+            signal,
+          }),
+        publish: async profile => {
+          // The relay refuses an avatar over its size limit: a smaller one, or none, is sent.
+          let avatar = profile.avatar
+          if (avatar && isAvatarTooLarge(avatar)) {
+            try {
+              const compressed = await compressAvatarDataUrl(avatar)
+              avatar =
+                compressed && !isAvatarTooLarge(compressed)
+                  ? compressed
+                  : undefined
+            } catch {
+              avatar = undefined
+            }
           }
-        }
-        if (signal.aborted || options.isCancelled?.() || store.owner !== owner)
-          return
-        await registerMonadIdentityCbor({
-          relayBaseUrl,
-          signal,
-          identity,
-          profile: { ...profile, avatar } as MonadProfileFields,
-          network,
-        })
-      },
-    })
+          if (
+            signal.aborted ||
+            options.isCancelled?.() ||
+            store.owner !== owner
+          )
+            throw new Error('Profile publication cancelled')
+          await registerMonadIdentityCbor({
+            relayBaseUrl,
+            signal,
+            identity,
+            profile: { ...profile, avatar } as MonadProfileFields,
+            network,
+          })
+        },
+      })
+      if (!options.isCancelled?.() && store.owner === owner) {
+        ownProfileCheck.unchecked = outcome === 'unreachable' ? owner : null
+      }
+      return outcome
+    } catch (error) {
+      if (!options.isCancelled?.() && store.owner === owner)
+        ownProfileCheck.unchecked = owner
+      throw error
+    }
   }
   const previous = relaySyncs.get(owner)
   const next = (previous ?? Promise.resolve()).then(run, run)

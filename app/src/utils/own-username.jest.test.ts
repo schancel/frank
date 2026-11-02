@@ -106,3 +106,33 @@ describe('own username', () => {
     })
   })
 })
+
+test.each(['accepted', 'refused', 'lookup'] as const)(
+  'late %s username confirmation cannot mutate the replacement account',
+  async outcome => {
+    let cancelled = false
+    let finish!: (value?: unknown) => void
+    const pending = new Promise((resolve, reject) => {
+      finish = value =>
+        outcome === 'refused'
+          ? reject(new UsernameError('taken'))
+          : resolve(value)
+    })
+    if (outcome === 'lookup')
+      (usernamesOfAddresses as jest.Mock).mockReturnValueOnce(pending)
+    else (claimUsername as jest.Mock).mockReturnValueOnce(pending)
+    const run = syncOwnUsername({
+      ...options(outcome === 'lookup' ? undefined : 'alice'),
+      isCancelled: () => cancelled,
+    })
+    cancelled = true
+    setOwnUsername('replacement')
+    finish(outcome === 'lookup' ? holds('alice') : { username: 'alice' })
+    await run
+    expect(ownUsername).toEqual({
+      held: 'replacement',
+      wanted: null,
+      problem: null,
+    })
+  },
+)

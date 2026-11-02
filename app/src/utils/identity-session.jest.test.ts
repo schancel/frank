@@ -215,12 +215,14 @@ test('a ready account publishes its own entry and starts messaging with no user 
   expect(registerProfile).toHaveBeenCalledWith({
     relayBaseUrl: RELAY,
     wallet: alice,
+    isCancelled: expect.any(Function),
   })
   expect(claimUsername).toHaveBeenCalledTimes(1)
   expect(claimUsername).toHaveBeenCalledWith({
     relayBaseUrl: RELAY,
     network: 'monad-testnet',
     wallet: alice,
+    isCancelled: expect.any(Function),
   })
   await claimUsername.mock.results[0].value
   // Exactly one self-signed revision zero, on the configured relay.
@@ -228,7 +230,11 @@ test('a ready account publishes its own entry and starts messaging with no user 
   expect(signedNext).not.toHaveBeenCalled()
   expect(relay.chain(subjectOf(alice))).toHaveLength(1)
   expect(d.deps.install).toHaveBeenCalledTimes(1)
-  expect(d.deps.startPolling).toHaveBeenCalledWith({ wallet: alice })
+  expect(d.deps.startPolling).toHaveBeenCalledWith({
+    wallet: alice,
+    onAuthRecovery: expect.any(Function),
+    onForeground: expect.any(Function),
+  })
   expect(d.deps.startReconcile).toHaveBeenCalledWith({ wallet: alice })
   // The account is open and can send its notes: transactions the wallet signed earlier and
   // did not finish are picked up now, whatever screen is showing.
@@ -606,4 +612,100 @@ test('startMessaging clears stale pin using identity.address.raw and immediately
   )
   expect(messagingState.status).toBe('ready')
   expect(messagingState.reason).toBeNull()
+})
+
+test('foreground republishes the same retained identity to a fresh relay at the same URL without restarting messaging', async () => {
+  const alice = await wallet(0, 'retained-foreground')
+  const d = device(alice)
+  let backend = relay
+  d.deps.directory.fetch = (...args) => backend.fetch(...args)
+  const registerProfile = jest.fn(async () => undefined)
+  d.deps.registerProfile = registerProfile
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(
+    () => messagingState.status === 'ready',
+    'initial directory publication',
+  )
+  const original = relay.chain(subjectOf(alice)).map(toHex)
+  const signatures = signedZero.mock.calls.length
+  const options = (d.deps.startPolling as jest.Mock).mock.calls[0][0]
+  expect(options.onForeground).toEqual(expect.any(Function))
+  backend = createFakeRelay({ endpoint: RELAY })
+  await Promise.all([
+    options.onForeground(),
+    options.onForeground(),
+    options.onAuthRecovery(),
+  ])
+  expect(backend.chain(subjectOf(alice)).map(toHex)).toEqual(original)
+  expect(signedZero).toHaveBeenCalledTimes(signatures)
+  expect(d.deps.install).toHaveBeenCalledTimes(1)
+  expect(messagingWallet()).toBe(alice)
+  expect(registerProfile).toHaveBeenCalledTimes(2)
+  // A retained foreground callback cannot touch the next account/session.
+  await stopMessaging()
+  const before = backend.requests.length
+  await options.onForeground()
+  expect(backend.requests).toHaveLength(before)
+})
+
+test('foreground directory uncertainty is not confirmation and retries the same identity on the next foreground', async () => {
+  const alice = await wallet(0, 'uncertain-foreground')
+  const d = device(alice)
+  const registerProfile = jest.fn(async () => undefined)
+  d.deps.registerProfile = registerProfile
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(
+    () => messagingState.status === 'ready',
+    'initial directory publication',
+  )
+  const options = (d.deps.startPolling as jest.Mock).mock.calls[0][0]
+  expect(options.onForeground).toEqual(expect.any(Function))
+  relay.down = true
+  await options.onForeground()
+  expect(messagingState.reason).toBe('relay-unreachable')
+  expect(registerProfile).toHaveBeenCalledTimes(1)
+  expect(messagingWallet()).toBe(alice)
+  relay.down = false
+  await options.onForeground()
+  expect(messagingState.status).toBe('ready')
+  expect(messagingState.reason).toBeNull()
+  expect(relay.chain(subjectOf(alice))).toHaveLength(1)
+})
+
+test('an in-flight foreground check cannot confirm or publish presentation after its session stops', async () => {
+  const alice = await wallet(0, 'stopped-foreground')
+  const d = device(alice)
+  const registerProfile = jest.fn(async () => undefined)
+  d.deps.registerProfile = registerProfile
+  let release!: () => void
+  const paused = new Promise<void>(resolve => {
+    release = resolve
+  })
+  let reading = false
+  let pause = false
+  d.deps.directory.fetch = async (...args) => {
+    if (pause) {
+      reading = true
+      await paused
+    }
+    return relay.fetch(...args)
+  }
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(() => messagingState.status === 'ready', 'initial publication')
+  const options = (d.deps.startPolling as jest.Mock).mock.calls[0][0]
+  pause = true
+  const checking = options.onForeground()
+  await until(() => reading, 'foreground request')
+  await stopMessaging()
+  release()
+  await checking
+  expect(messagingState.status).toBe('pending')
+  expect(messagingWallet()).toBeUndefined()
+  expect(registerProfile).toHaveBeenCalledTimes(1)
 })

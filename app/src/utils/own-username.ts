@@ -45,8 +45,10 @@ export async function syncOwnUsername(options: {
   signer: UsernameSigner
   address: string
   saved?: string | null
+  isCancelled?: () => boolean
 }): Promise<void> {
   const { relayBaseUrl, network, signer, saved } = options
+  if (options.isCancelled?.()) return
   if (saved) {
     try {
       const entry = await claimUsername({
@@ -55,9 +57,11 @@ export async function syncOwnUsername(options: {
         signer,
         username: saved,
       })
+      if (options.isCancelled?.()) return
       setOwnUsername(entry.username)
       return
     } catch (error) {
+      if (options.isCancelled?.()) return
       ownUsername.wanted = saved
       ownUsername.problem = usernameErrorKey(error)
     }
@@ -70,6 +74,7 @@ export async function syncOwnUsername(options: {
     const held = (
       await usernamesOfAddresses({ relayBaseUrl, addresses: [address] })
     ).find(user => user.address === address)
+    if (options.isCancelled?.()) return
     ownUsername.held = held?.username ?? null
   } catch {
     // The relay could not be asked: what was known stays.

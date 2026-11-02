@@ -41,6 +41,7 @@ import {
 } from './identity-session'
 import { useMonadWallet } from './clients'
 import { hasConversationIdSalt } from '../stores/chats'
+import { ownProfileCheck } from './own-profile'
 
 jest.setTimeout(30000)
 
@@ -175,6 +176,7 @@ const subjectOf = (w: EvmChainWalletHandle) =>
   toHex(w.identity.compressedPubKey)
 
 beforeEach(async () => {
+  ownProfileCheck.unchecked = null
   jest.clearAllMocks()
   dir = mkdtempSync(join(tmpdir(), 'messaging-session-'))
   relay = createFakeRelay({ endpoint: RELAY })
@@ -587,6 +589,9 @@ test('startMessaging becomes ready without waiting for a slow registerProfile ca
     'messaging ready before registerProfile resolves',
   )
   expect(messagingState.status).toBe('ready')
+  expect(ownProfileCheck.unchecked).toBe(
+    alice.identity.address.raw.toLowerCase(),
+  )
   expect(d.deps.registerProfile).toHaveBeenCalledTimes(1)
   finishProfile()
 })

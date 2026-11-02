@@ -422,7 +422,6 @@ export async function syncOwnProfileWithRelay(options: {
     const signal = options.signal
       ? AbortSignal.any([options.signal, deadline])
       : deadline
-    ownProfileCheck.unchecked = owner
     try {
       const outcome = await syncOwnProfile({
         store,

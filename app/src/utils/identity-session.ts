@@ -55,7 +55,11 @@ import {
 } from '../adapters/pinia-chain-adapter'
 import { useProfileStore } from '../stores/my-profile'
 import type { MonadIdentity } from '@frank/wallet/evm-identity'
-import { claimProfileStore, syncOwnProfileWithRelay } from './own-profile'
+import {
+  claimProfileStore,
+  ownProfileCheck,
+  syncOwnProfileWithRelay,
+} from './own-profile'
 import { clearOwnUsername, ownUsername, syncOwnUsername } from './own-username'
 import { errorNotify } from './notifications'
 
@@ -555,8 +559,18 @@ function isCurrent(current: Live, d: MessagingDeps): boolean {
   )
 }
 
-function refreshProfile(current: Live, d: MessagingDeps): void {
+function refreshProfile(
+  current: Live,
+  d: MessagingDeps,
+  initial = false,
+): void {
   if (!isCurrent(current, d) || current.profileRefresh) return
+  if (initial) {
+    const identity = (
+      current.wallet as unknown as { identity?: { address: { raw: string } } }
+    ).identity
+    if (identity) ownProfileCheck.unchecked = identity.address.raw.toLowerCase()
+  }
   const isCancelled = () => !isCurrent(current, d)
   const task = (async () => {
     await d.registerProfile?.({
@@ -781,7 +795,7 @@ async function startMessagingInternal(): Promise<void> {
       state.status = 'ready'
       state.reason = null
       d.resumeLegacy?.()
-      refreshProfile(live, d)
+      refreshProfile(live, d, true)
       return
     } catch (err) {
       console.error('[startMessaging] install failed:', err)

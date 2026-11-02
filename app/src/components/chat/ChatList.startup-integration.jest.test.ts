@@ -54,6 +54,7 @@ jest.mock('../../accounts/session', () => ({
   },
 }))
 jest.mock('../../utils/own-profile', () => ({
+  ...jest.requireActual('../../utils/own-profile'),
   syncOwnProfileWithRelay: jest.fn(async () => 'unchanged'),
 }))
 jest.mock('../../utils/notifications', () => ({ desktopNotify: jest.fn() }))

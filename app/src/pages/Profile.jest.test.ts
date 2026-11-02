@@ -1091,6 +1091,54 @@ describe('profile protocol field admission', () => {
 })
 
 describe('mounted profile during real background synchronization', () => {
+  // jsdom's AbortSignal predates these browser APIs. Keep real abort/deadline semantics in
+  // this fixture only, and retire every timer/listener instead of leaking the test process.
+  const descriptors = new Map<string, PropertyDescriptor | undefined>()
+  const timers: Array<ReturnType<typeof setTimeout>> = []
+  const cleanup: Array<() => void> = []
+  beforeAll(() => {
+    for (const [name, implementation] of Object.entries({
+      timeout: (ms: number) => {
+        const controller = new AbortController()
+        timers.push(
+          setTimeout(
+            () => controller.abort(new DOMException('Timeout', 'TimeoutError')),
+            ms,
+          ),
+        )
+        return controller.signal
+      },
+      any: (signals: AbortSignal[]) => {
+        const controller = new AbortController()
+        for (const signal of signals) {
+          if (signal.aborted) {
+            controller.abort(signal.reason)
+            break
+          }
+          const abort = () => controller.abort(signal.reason)
+          signal.addEventListener('abort', abort, { once: true })
+          cleanup.push(() => signal.removeEventListener('abort', abort))
+        }
+        return controller.signal
+      },
+    })) {
+      descriptors.set(name, Object.getOwnPropertyDescriptor(AbortSignal, name))
+      Object.defineProperty(AbortSignal, name, {
+        configurable: true,
+        value: implementation,
+      })
+    }
+  })
+  afterEach(() => {
+    for (const timer of timers.splice(0)) clearTimeout(timer)
+    for (const dispose of cleanup.splice(0)) dispose()
+  })
+  afterAll(() => {
+    for (const [name, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(AbortSignal, name, descriptor)
+      else Reflect.deleteProperty(AbortSignal, name)
+    }
+  })
   test.each(['unchanged', 'remote-update', 'error-recovery'] as const)(
     '%s preserves unsaved fields and merges untouched remote fields',
     async scenario => {

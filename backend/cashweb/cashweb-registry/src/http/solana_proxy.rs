@@ -1257,13 +1257,24 @@ mod tests {
             .unwrap()
             .unwrap();
         let customer = Address([6; 20]);
-        a.customer_quota.charge(customer, 2, 3600).await.unwrap();
-        assert!(b.customer_quota.charge(customer, 1, 3600).await.is_err());
+        // Redis expiry uses real UTC time, so this bucket must still be live.
+        let now = unix_seconds();
+        assert_eq!(
+            a.customer_quota
+                .charge(customer, 2, now)
+                .await
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .remaining,
+            0
+        );
+        assert!(b.customer_quota.charge(customer, 1, now).await.is_err());
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
-        a.anonymous_quota.charge(ip, 1, 3600).await.unwrap();
+        a.anonymous_quota.charge(ip, 1, now).await.unwrap();
         assert_eq!(
             b.anonymous_quota
-                .charge(ip, 1, 3600)
+                .charge(ip, 1, now)
                 .await
                 .unwrap()
                 .snapshot()

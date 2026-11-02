@@ -5322,18 +5322,29 @@ mod tests {
             .unwrap()
             .unwrap();
         let customer = customer_address();
-        a.customer_quota.charge(customer, 2, 3600).await.unwrap();
+        // Redis expiry uses real UTC time, so this bucket must still be live.
+        let now = now_seconds();
+        assert_eq!(
+            a.customer_quota
+                .charge(customer, 2, now)
+                .await
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .remaining,
+            0
+        );
         // This is the same handle passed to the WebSocket request/notification loop.
         let ws_quota = b.customer_quota.clone();
         assert!(matches!(
-            ws_quota.charge(customer, 1, 3600).await,
+            ws_quota.charge(customer, 1, now).await,
             Err(QuotaDenial::Exhausted { .. })
         ));
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
-        a.anonymous_quota.charge(ip, 1, 3600).await.unwrap();
+        a.anonymous_quota.charge(ip, 1, now).await.unwrap();
         assert_eq!(
             b.anonymous_quota
-                .charge(ip, 1, 3600)
+                .charge(ip, 1, now)
                 .await
                 .unwrap()
                 .snapshot()
@@ -5342,7 +5353,7 @@ mod tests {
             0
         );
         assert!(matches!(
-            a.anonymous_quota.charge(ip, 1, 3600).await,
+            a.anonymous_quota.charge(ip, 1, now).await,
             Err(QuotaDenial::Exhausted { .. })
         ));
     }

@@ -2276,6 +2276,9 @@ impl BlobStore for LocalFsBlobStore {
 /// Configuration for connecting [`S3BlobStore`] to AWS S3, MinIO, Cloudflare R2, or SeaweedFS.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct S3BlobStoreConfig {
+    /// Explicit HTTP dialect; never inferred from the endpoint.
+    #[serde(default)]
+    pub api: cashweb_config::S3Api,
     /// Base HTTP/HTTPS endpoint URL (e.g. `"http://127.0.0.1:9000"`).
     pub endpoint: String,
     /// S3 region name (e.g. `"us-east-1"` or `"auto"`).
@@ -2295,6 +2298,7 @@ pub struct S3BlobStoreConfig {
 impl Debug for S3BlobStoreConfig {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("S3BlobStoreConfig")
+            .field("api", &self.api)
             .field("endpoint", &self.endpoint)
             .field("region", &self.region)
             .field("bucket", &self.bucket)
@@ -2422,10 +2426,41 @@ pub fn sign_s3_v4_request(
     amz_date: &str,
     content_sha256_hex: &str,
 ) -> S3SigV4Headers {
+    sign_s3_v4_request_with_generation(
+        method,
+        host,
+        canonical_uri,
+        region,
+        access_key_id,
+        secret_access_key,
+        amz_date,
+        content_sha256_hex,
+        false,
+    )
+}
+
+// Only a trusted, typed precondition can extend the canonical headers. All used x-goog
+// headers must be signed, even when authentication retains the AWS4 HMAC dialect.
+#[allow(clippy::too_many_arguments)]
+fn sign_s3_v4_request_with_generation(
+    method: &str,
+    host: &str,
+    canonical_uri: &str,
+    region: &str,
+    access_key_id: &str,
+    secret_access_key: &str,
+    amz_date: &str,
+    content_sha256_hex: &str,
+    generation_match_zero: bool,
+) -> S3SigV4Headers {
     let date_stamp = &amz_date[0..8];
-    let canonical_headers =
+    let mut canonical_headers =
         format!("host:{host}\nx-amz-content-sha256:{content_sha256_hex}\nx-amz-date:{amz_date}\n");
-    let signed_headers = "host;x-amz-content-sha256;x-amz-date";
+    let mut signed_headers = "host;x-amz-content-sha256;x-amz-date".to_string();
+    if generation_match_zero {
+        canonical_headers.push_str("x-goog-if-generation-match:0\n");
+        signed_headers.push_str(";x-goog-if-generation-match");
+    }
     let canonical_request = format!(
         "{method}\n{canonical_uri}\n\n{canonical_headers}\n{signed_headers}\n{content_sha256_hex}"
     );
@@ -2539,8 +2574,8 @@ impl ReqwestS3Transport {
         Ok((url, host, canonical_uri))
     }
 
-    /// `PUT` an object; with `if_absent`, only when none exists (`If-None-Match: *`, an
-    /// unsigned header). Returns false on `412 Precondition Failed`.
+    /// `PUT` an object; conditional creation uses the configured dialect's precondition.
+    /// Only a conditional `412 Precondition Failed` returns false.
     async fn put(
         &self,
         key: &str,
@@ -2549,9 +2584,15 @@ impl ReqwestS3Transport {
         if_absent: bool,
     ) -> Result<bool, BlobError> {
         let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
-        let mut headers =
-            self.build_signed_headers("PUT", &host, &canonical_uri, content_sha256_hex)?;
-        if if_absent {
+        let generation_match_zero = if_absent && self.config.api == cashweb_config::S3Api::GcsXml;
+        let mut headers = self.build_signed_headers_with_generation(
+            "PUT",
+            &host,
+            &canonical_uri,
+            content_sha256_hex,
+            generation_match_zero,
+        )?;
+        if if_absent && !generation_match_zero {
             headers.insert(
                 "if-none-match",
                 reqwest::header::HeaderValue::from_static("*"),
@@ -2585,9 +2626,26 @@ impl ReqwestS3Transport {
         canonical_uri: &str,
         content_sha256_hex: &str,
     ) -> Result<HeaderMap, BlobError> {
+        self.build_signed_headers_with_generation(
+            method,
+            host,
+            canonical_uri,
+            content_sha256_hex,
+            false,
+        )
+    }
+
+    fn build_signed_headers_with_generation(
+        &self,
+        method: &str,
+        host: &str,
+        canonical_uri: &str,
+        content_sha256_hex: &str,
+        generation_match_zero: bool,
+    ) -> Result<HeaderMap, BlobError> {
         // S3 rejects a request whose date is more than 15 minutes from its clock.
         let amz_date = amz_date(std::time::SystemTime::now());
-        let sig = sign_s3_v4_request(
+        let sig = sign_s3_v4_request_with_generation(
             method,
             host,
             canonical_uri,
@@ -2596,8 +2654,15 @@ impl ReqwestS3Transport {
             &self.config.secret_access_key,
             &amz_date,
             content_sha256_hex,
+            generation_match_zero,
         );
         let mut headers = HeaderMap::new();
+        if generation_match_zero {
+            headers.insert(
+                "x-goog-if-generation-match",
+                reqwest::header::HeaderValue::from_static("0"),
+            );
+        }
         headers.insert(
             "x-amz-date",
             sig.amz_date
@@ -2962,6 +3027,7 @@ mod tests {
 
     fn s3_config(endpoint: &str, bucket: &str, prefix: &str) -> S3BlobStoreConfig {
         S3BlobStoreConfig {
+            api: cashweb_config::S3Api::S3,
             endpoint: endpoint.into(),
             region: "us-east-1".into(),
             bucket: bucket.into(),
@@ -3061,6 +3127,8 @@ mod tests {
     #[derive(Clone, Default)]
     struct MockS3ServerState {
         objects: Arc<Mutex<HashMap<String, Vec<u8>>>>,
+        requests: Arc<Mutex<Vec<(axum::http::Method, AxumHeaderMap, Vec<u8>)>>>,
+        response_status: Arc<Mutex<Option<AxumStatusCode>>>,
     }
 
     impl MockS3ServerState {
@@ -3083,6 +3151,11 @@ mod tests {
         Extension(state): Extension<MockS3ServerState>,
         body: Bytes,
     ) -> impl IntoResponse {
+        state
+            .requests
+            .lock()
+            .unwrap()
+            .push((method.clone(), headers.clone(), body.to_vec()));
         // Verify AWS4-HMAC-SHA256 Authorization and x-amz-content-sha256 headers on every request.
         let Some(auth) = headers.get("authorization").and_then(|v| v.to_str().ok()) else {
             return (AxumStatusCode::FORBIDDEN, Vec::new()).into_response();
@@ -3097,6 +3170,45 @@ mod tests {
             return (AxumStatusCode::BAD_REQUEST, Vec::new()).into_response();
         };
 
+        let generation = headers.get("x-goog-if-generation-match");
+        if generation.is_some_and(|value| value != "0") {
+            return (AxumStatusCode::BAD_REQUEST, Vec::new()).into_response();
+        }
+        let Some(date) = headers.get("x-amz-date").and_then(|v| v.to_str().ok()) else {
+            return (AxumStatusCode::FORBIDDEN, Vec::new()).into_response();
+        };
+        let Some(host) = headers.get("host").and_then(|v| v.to_str().ok()) else {
+            return (AxumStatusCode::FORBIDDEN, Vec::new()).into_response();
+        };
+        let (access, secret) = if auth.contains("Credential=id/") {
+            ("id", "hunter2")
+        } else {
+            (
+                "AKIAIOSFODNN7EXAMPLE",
+                "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
+            )
+        };
+        let uri = std::iter::once(bucket.as_str())
+            .chain(key.split('/'))
+            .map(|part| format!("/{}", uri_encode_segment(part)))
+            .collect::<String>();
+        let expected = sign_s3_v4_request_with_generation(
+            method.as_str(),
+            host,
+            &uri,
+            "us-east-1",
+            access,
+            secret,
+            date,
+            content_sha,
+            generation.is_some(),
+        );
+        if auth != expected.authorization {
+            return (AxumStatusCode::FORBIDDEN, Vec::new()).into_response();
+        }
+        if let Some(status) = *state.response_status.lock().unwrap() {
+            return (status, Vec::new()).into_response();
+        }
         let full_key = format!("{bucket}/{}", key.trim_start_matches('/'));
 
         match method {
@@ -3109,11 +3221,13 @@ mod tests {
                     )
                         .into_response();
                 }
-                state
-                    .objects
-                    .lock()
-                    .unwrap()
-                    .insert(full_key, body.to_vec());
+                let mut objects = state.objects.lock().unwrap();
+                if (generation.is_some() || headers.get("if-none-match").is_some())
+                    && objects.contains_key(&full_key)
+                {
+                    return (AxumStatusCode::PRECONDITION_FAILED, Vec::new()).into_response();
+                }
+                objects.insert(full_key, body.to_vec());
                 (AxumStatusCode::OK, Vec::new()).into_response()
             }
             axum::http::Method::GET => {
@@ -3166,6 +3280,174 @@ mod tests {
                 .unwrap();
         });
         (addr, state)
+    }
+
+    #[test]
+    fn gcs_xml_signature_binds_generation_precondition() {
+        // Fixed independent AWS4/HMAC fixture; no real credentials or service call.
+        let sign = |generation| {
+            sign_s3_v4_request_with_generation(
+                "PUT",
+                "storage.googleapis.com",
+                "/frank/claim",
+                "us-east-1",
+                "id",
+                "hunter2",
+                "20261102T120000Z",
+                &sha256_hex(b"claim"),
+                generation,
+            )
+        };
+        let gcs = sign(true);
+        assert_eq!(gcs.authorization, "AWS4-HMAC-SHA256 Credential=id/20261102/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-goog-if-generation-match, Signature=0685e96e1c3f97bf62e2d96eca0e47992eadb2038d53ee750a06455f733f924e");
+        assert_ne!(gcs.authorization, sign(false).authorization);
+        assert_eq!(sign(false).authorization, "AWS4-HMAC-SHA256 Credential=id/20261102/us-east-1/s3/aws4_request, SignedHeaders=host;x-amz-content-sha256;x-amz-date, Signature=6c92abbd9b3f2745577f7cd4ad2fdbdd2a5c1452e299a953361094911d0af5b2");
+        assert_eq!(
+            sign(false).authorization,
+            sign_s3_v4_request(
+                "PUT",
+                "storage.googleapis.com",
+                "/frank/claim",
+                "us-east-1",
+                "id",
+                "hunter2",
+                "20261102T120000Z",
+                &sha256_hex(b"claim"),
+            )
+            .authorization
+        );
+    }
+
+    #[tokio::test]
+    async fn conditional_object_put_uses_explicit_dialect_and_propagates_failures() {
+        for api in [cashweb_config::S3Api::S3, cashweb_config::S3Api::GcsXml] {
+            let (addr, state) = spawn_mock_s3_server().await;
+            let mut config = s3_config(&format!("http://{addr}"), "frank", "scope");
+            config.api = api;
+            let transport = ReqwestS3Transport::new(config);
+            let bytes = vec![0, 255, 1, 128, b'\n'];
+            let hash = sha256_hex(&bytes);
+            assert!(transport
+                .put_object_if_absent("claim", bytes.clone(), &hash)
+                .await
+                .unwrap());
+            assert!(!transport
+                .put_object_if_absent("claim", b"loser".to_vec(), &sha256_hex(b"loser"))
+                .await
+                .unwrap());
+            assert_eq!(
+                transport.get_object("claim").await.unwrap(),
+                Some(bytes.clone())
+            );
+            assert_eq!(
+                transport.head_object("claim").await.unwrap(),
+                Some(bytes.len() as u64)
+            );
+            {
+                let requests = state.requests.lock().unwrap();
+                let (_, headers, body) = &requests[0];
+                assert_eq!(body, &bytes); // exact binary bytes, no JSON envelope
+                assert_eq!(
+                    headers.get("content-length").unwrap(),
+                    bytes.len().to_string().as_str()
+                );
+                assert!(headers.get("transfer-encoding").is_none());
+                assert_eq!(headers.get("x-amz-content-sha256").unwrap(), hash.as_str());
+                let auth = headers.get("authorization").unwrap().to_str().unwrap();
+                if api == cashweb_config::S3Api::GcsXml {
+                    assert_eq!(headers.get("x-goog-if-generation-match").unwrap(), "0");
+                    assert!(headers.get("if-none-match").is_none());
+                    assert!(auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date;x-goog-if-generation-match,"));
+                } else {
+                    assert_eq!(headers.get("if-none-match").unwrap(), "*");
+                    assert!(headers.get("x-goog-if-generation-match").is_none());
+                    assert!(auth.contains("SignedHeaders=host;x-amz-content-sha256;x-amz-date,"));
+                }
+                for (_, headers, _) in &requests[2..] {
+                    assert!(headers.get("x-goog-if-generation-match").is_none());
+                    assert!(headers.get("if-none-match").is_none());
+                }
+            }
+            for code in [400, 403, 429, 500, 503] {
+                *state.response_status.lock().unwrap() =
+                    Some(AxumStatusCode::from_u16(code).unwrap());
+                let error = transport
+                    .put_object_if_absent("claim", bytes.clone(), &hash)
+                    .await
+                    .unwrap_err();
+                assert!(error.to_string().contains(&code.to_string()), "{error}");
+            }
+            *state.response_status.lock().unwrap() = Some(AxumStatusCode::PRECONDITION_FAILED);
+            assert!(transport
+                .put_object("claim", bytes.clone(), &hash)
+                .await
+                .is_err());
+            *state.response_status.lock().unwrap() = None;
+            transport
+                .put_object("ordinary", bytes.clone(), &hash)
+                .await
+                .unwrap();
+            assert!(transport.delete_object("claim").await.unwrap());
+            assert_eq!(transport.get_object("claim").await.unwrap(), None);
+            assert_eq!(transport.head_object("claim").await.unwrap(), None);
+            assert!(!transport.delete_object("claim").await.unwrap());
+        }
+        // A closed local port is a transport failure, not a lost conditional race.
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        drop(listener);
+        let mut config = s3_config(&format!("http://{addr}"), "frank", "scope");
+        config.api = cashweb_config::S3Api::GcsXml;
+        assert!(ReqwestS3Transport::new(config)
+            .put_object_if_absent("claim", vec![], &sha256_hex(b""))
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn gcs_xml_mock_rejects_header_and_payload_tampering() {
+        let (addr, state) = spawn_mock_s3_server().await;
+        let mut config = s3_config(&format!("http://{addr}"), "frank", "scope");
+        config.api = cashweb_config::S3Api::GcsXml;
+        let transport = ReqwestS3Transport::new(config);
+        let (url, host, uri) = transport.endpoint_url_and_uri("claim").unwrap();
+        let hash = sha256_hex(b"claim");
+        let signed = transport
+            .build_signed_headers_with_generation("PUT", &host, &uri, &hash, true)
+            .unwrap();
+        let mut tampered = signed.clone();
+        tampered.remove("x-goog-if-generation-match");
+        assert_eq!(
+            transport
+                .client
+                .put(&url)
+                .headers(tampered)
+                .body("claim")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::FORBIDDEN
+        );
+        assert_eq!(
+            transport
+                .client
+                .put(&url)
+                .headers(signed)
+                .body("wrong")
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        let mut wrong_credentials = transport.config.clone();
+        wrong_credentials.secret_access_key = "wrong-fixture-secret".into();
+        assert!(ReqwestS3Transport::new(wrong_credentials)
+            .put_object_if_absent("claim", b"claim".to_vec(), &hash)
+            .await
+            .is_err());
+        assert!(state.object_keys().is_empty());
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3409,6 +3691,7 @@ mod tests {
         let (addr, s3_state) = spawn_mock_s3_server().await;
         let kv = Arc::new(RocksDbKvStore::open_temporary().unwrap());
         let config = S3BlobStoreConfig {
+            api: cashweb_config::S3Api::S3,
             endpoint: format!("http://{addr}"),
             region: "us-east-1".to_string(),
             bucket: "frank-test-bucket".to_string(),

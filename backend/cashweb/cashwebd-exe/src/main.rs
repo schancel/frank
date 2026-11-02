@@ -78,6 +78,7 @@ fn large_value_objects(
             Ok(Arc::new(LocalFsObjectStore::new(path)))
         }
         Some(LargeValuesConf::S3 {
+            api,
             endpoint,
             region,
             bucket,
@@ -114,6 +115,7 @@ fn large_value_objects(
                 };
             info!("Large values are stored in S3 bucket {bucket} at {endpoint}");
             let store = S3ObjectStore::new(S3BlobStoreConfig {
+                api: *api,
                 endpoint: endpoint.as_str().trim_end_matches('/').to_string(),
                 region: region.clone(),
                 bucket: bucket.clone(),
@@ -1553,6 +1555,53 @@ max_get_logs_range = 10\n\n\
         assert!(conf.registry.forum.is_none());
         assert_eq!(chains.network().id, "monad-testnet");
         assert!(chains.network_adapter().is_none());
+    }
+
+    #[test]
+    fn large_value_composition_forwards_explicit_gcs_xml_api() {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            stream
+                .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                .unwrap();
+            let mut request = Vec::new();
+            let mut byte = [0];
+            while !request.ends_with(b"\r\n\r\n") {
+                stream.read_exact(&mut byte).unwrap();
+                request.push(byte[0]);
+                assert!(request.len() < 16_384);
+            }
+            stream.write_all(b"HTTP/1.1 412 Precondition Failed\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+            String::from_utf8(request).unwrap()
+        });
+        // An arbitrary localhost endpoint proves selection comes from config, not URL sniffing.
+        let config = format!("{LOCAL}\n[registry.large_values]\ndriver = 's3'\napi = 'gcs_xml'\nendpoint = 'http://{addr}'\nregion = 'us-east-1'\nbucket = 'frank'\n");
+        let conf = read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
+            .unwrap()
+            .0;
+        let objects = super::large_value_objects(&conf.registry, |name| match name {
+            "FRANK_S3_ACCESS_KEY_ID" => Some("id".into()),
+            "FRANK_S3_SECRET_ACCESS_KEY" => Some("fixture-secret".into()),
+            _ => None,
+        })
+        .unwrap();
+        let empty_sha = [
+            0xe3, 0xb0, 0xc4, 0x42, 0x98, 0xfc, 0x1c, 0x14, 0x9a, 0xfb, 0xf4, 0xc8, 0x99, 0x6f,
+            0xb9, 0x24, 0x27, 0xae, 0x41, 0xe4, 0x64, 0x9b, 0x93, 0x4c, 0xa4, 0x95, 0x99, 0x1b,
+            0x78, 0x52, 0xb8, 0x55,
+        ];
+        assert!(!objects
+            .put_if_absent("directory/claim", b"", &empty_sha)
+            .unwrap());
+        let request = server.join().unwrap().to_lowercase();
+        assert!(request.contains("x-goog-if-generation-match: 0\r\n"));
+        assert!(request.contains(
+            "signedheaders=host;x-amz-content-sha256;x-amz-date;x-goog-if-generation-match,"
+        ));
+        assert!(!request.contains("if-none-match:"));
     }
 
     #[test]

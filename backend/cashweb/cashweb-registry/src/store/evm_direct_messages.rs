@@ -2011,6 +2011,7 @@ mod large_request_tests {
             );
             let objects = Arc::new(
                 S3ObjectStore::new(S3BlobStoreConfig {
+                    api: cashweb_config::S3Api::S3,
                     endpoint: env("FRANK_LAB_S3_ENDPOINT"),
                     region: "us-east-1".into(),
                     bucket: env("FRANK_LAB_S3_BUCKET"),

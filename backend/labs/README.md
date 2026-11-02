@@ -571,3 +571,36 @@ yarn --cwd packages/bot regtest:monad-dm-cluster
 - [NATS configuration](https://docs.nats.io/running-a-nats-service/configuration)
   and [Core NATS](https://docs.nats.io/nats-concepts/core-nats) describe its
   ephemeral delivery semantics. No JetStream persistence is enabled here.
+
+### GCS XML dialect (source capability; service qualification pending)
+
+The existing `[registry.large_values]` `driver = "s3"` transport accepts
+`api = "s3"` (the default, used with Seaweed) or `api = "gcs_xml"`. Select it
+explicitly; endpoint hostnames do not select behavior. A prospective GCS example:
+
+```toml
+[registry.large_values]
+driver = "s3"
+api = "gcs_xml"
+endpoint = "https://storage.googleapis.com"
+region = "us-east-1"
+bucket = "owner-provisioned-isolated-bucket"
+prefix = "owner-selected-application-scope"
+credentials_file = "/run/secrets/object-hmac.toml"
+```
+
+The existing credentials file holds `access_key_id` and `secret_access_key`;
+for GCS these must be Google HMAC credentials, not an RSA service-account JSON
+key or an ADC token. This adds no credential discovery, provisioning or keyless
+authentication. GCS conditional creation signs `x-goog-if-generation-match: 0`
+using the existing AWS4 HMAC signer; S3 retains `If-None-Match: *`.
+See Google's [preconditions](https://docs.cloud.google.com/storage/docs/request-preconditions),
+[canonical headers](https://docs.cloud.google.com/storage/docs/authentication/canonical-requests)
+and [HMAC interoperability](https://docs.cloud.google.com/storage/docs/aws-simple-migration).
+
+The HTTP mock tests config forwarding, mixed signature headers, exact binary
+bodies and failures. They do **not** qualify GCS. Actual GCS authentication,
+payload-hash rejection, atomic concurrent namespace claims and LargeValues
+reopen/GC still require a separately authorized isolated service run. No bucket,
+key or IAM creation, deployment, persistent-format change or migration is implied.
+The existing large-value lab still defaults to the S3 dialect.

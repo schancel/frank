@@ -81,6 +81,7 @@ fn s3() -> Arc<S3ObjectStore> {
 fn scoped_s3(scope: &str) -> Arc<S3ObjectStore> {
     Arc::new(
         S3ObjectStore::new(S3BlobStoreConfig {
+            api: cashweb_config::S3Api::S3,
             endpoint: env("FRANK_LAB_S3_ENDPOINT"),
             region: "us-east-1".into(),
             bucket: env("FRANK_LAB_S3_BUCKET"),

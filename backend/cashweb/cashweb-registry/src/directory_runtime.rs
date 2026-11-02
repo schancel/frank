@@ -741,15 +741,6 @@ impl From<AdmissionError> for Failure {
     }
 }
 impl DirectoryRuntime {
-    /// Existing native-owner queue capacity, also used to bound host quota blocking work.
-    pub fn pending_capacity() -> usize {
-        if cfg!(test) {
-            8
-        } else {
-            128
-        }
-    }
-
     /// Start exactly one native owner per registry, serving entries for the relay network
     /// `network`, on the system clock.
     pub fn start(
@@ -790,7 +781,7 @@ impl DirectoryRuntime {
             }
         }
         let claim = Claim(address);
-        let (sender, mut receiver) = mpsc::channel::<Job>(Self::pending_capacity());
+        let (sender, mut receiver) = mpsc::channel::<Job>(if cfg!(test) { 8 } else { 128 });
         let (ready_send, ready) = oneshot::channel();
         let (stopped, _) = watch::channel(false);
         let shared = Arc::new(Shared {

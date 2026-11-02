@@ -60,38 +60,65 @@ replicas share data. Clients recover missed notifications by reading durable sta
 | Registry metadata, profiles, topics, usernames and derived indexes | `store/db.rs` and its typed stores over `RelayKvStore` | RocksDB at the registry path, or FoundationDB (`driver = "foundationdb"`); one transaction per claim or replace, including its index rows (key layout in `store/db.rs`) |
 | Canonical messages, payment claims, inboxes, challenges, notification policies and VAPID identity (the provisioned `registry.vapid_private_key_file` when set) | `store/evm_direct_messages.rs::Owner` | Separate RocksDB database, lazy opening and process-local mutation locks |
 | Directory preview history, self-published subjects and continuity, address and first-accepted indexes, subject counters, forwards and their bodies, federation lease | `store/directory_store.rs` (`directory_preview.rs`, `directory_subjects.rs`) over `RelayKvStore` | RocksDB `directory-kv-v1.rocksdb` inside the registry path, or FoundationDB (`driver = "foundationdb"`); values over 64 KiB in the object store (`[registry.large_values]`) |
-| Existing directory enrollment and RPC/WS/Electrum hourly quotas | `http/hourly_quota.rs::FixedHourQuota`, composed explicitly into every consumer | Standalone process memory; FoundationDB under `<fdb_subspace_prefix>hourly-quotas-v1/` in cluster mode |
+| Existing directory enrollment and RPC/WS/Electrum hourly quotas | `http/hourly_quota.rs::FixedHourQuota`, composed explicitly into every consumer | Standalone process memory by default; explicitly configured ephemeral Redis hashes with TTL/fail-open behavior |
 | Shared group mailboxes | `store/groups.rs::GroupStore` over `RelayKvStore` | RocksDB beside the registry database, or FoundationDB (`driver = "foundationdb"`) |
 | Session signing secret for challenges, cursors and RPC capabilities | Daemon composition / `SessionSecret` | `registry.session_secret_file` (required in cluster mode), else a file beside the registry database |
 | Notification delivery hints | `events::RelayEventBus` | In-memory broadcast or Core NATS; no durable authority |
 
-The shared quota store uses `format = frank-hourly-quotas-v1` and hourly `q/` rows,
-scoped by canonical relay network and the existing quota domain. Charging conflict-reads
-usage and the distinct-payer count, then commits checked counters before any upstream
-request. Failure or an unknown commit denies admission without local fallback. Directory
-publishing retains its existing signed-attempt precharge; a later refusal does not refund it.
-The current and previous UTC buckets remain; cleanup clears at most 128 rows per transaction,
-eight pages per turn, with a short yield while expired pages remain. Cleanup failures retain
-rows and back off; they never reset active allowances. No old quota maps or other stores are
-migrated or cleared. A future quota identity/format change needs a new quota namespace.
+Hourly allowances are ephemeral and independent of the durable transaction driver. Standalone
+relays default to process-local counters. Shared deployments explicitly configure:
 
-Shared quota blocking transactions hold one host-configured permit through completion, even
-when the calling request is cancelled. Admission never queues waiting for a quota permit.
-The bound is shared across quota domains and cleanup, derived from existing directory queue
-and enabled proxy inflight limits (plus one cleanup slot); it introduces no new quota setting.
-Shutdown stops quota admission and drains those transactions before dropping the FDB network.
-WebSocket quota waits remain subordinate to session expiry and the earliest pending-request
-deadline. Cancelling that wait closes or resumes existing deadline handling; it neither
-refunds a committed charge nor releases the blocking worker permit early.
+```toml
+[registry.hourly_quotas]
+driver = "redis"
+redis_url_env = "FRANK_QUOTA_REDIS_URL"
+key_prefix = "frank-hourly-v1/frank-demo/"
+timeout_ms = 100
+max_in_flight = 64
+```
 
-Each successful repeat-payer charge adds one conflict read and one small write; a new payer
-also reads and writes its bucket count. With all seven domains saturated, each network adds
-at most 700,000 payer rows plus seven count rows per hour. Healthy cleanup retains the
-current and previous hour plus its drain backlog; outage retention grows until cleanup
-recovers. Eight 128-row pages per turn with a 10 ms yield is a work bound, not a measured
-throughput claim. Sustained cleanup must exceed new expired-row arrival (about 195 rows/s
-per fully saturated network). Reversing to local accounting loses shared enforcement and
-requires the strict cluster guard again; no counter conversion or key deletion is implied.
+Host composition reads the named environment variable (a `redis://` single-node URL; optional
+Redis credentials stay in that variable), validates it without connecting, then shares one
+bounded multiplexed client across all existing directory, RPC HTTP, WS and Electrum consumers.
+The example URL for a private service is `redis://redis:6379/`; the Redis service's access and
+resource policy belongs to operator deployment configuration. Redis 7+ is required by the Lua
+ACL checks. No connection manager, local counter fallback, TLS/cluster transport, or background
+unbounded reconnect queue is installed. A worker is spawned only after acquiring the shared
+permit; at most the configured number can exist. It retains its permit and absolute deadline
+after caller cancellation, and synchronously retires timed-out connection generations. This
+bounds unanswered Redis commands even when WebSocket deadline handling cancels a quota wait. Static invalid configuration fails startup; a valid
+unavailable Redis does not. The total quota deadline includes bounded connector waiting,
+connect and command time. Saturation degrades immediately; reconnect attempts share one connector
+and a cooldown of at least one second (never shorter than the configured timeout). Warnings contain fixed failure classes and the canonical relay
+network, never URL/credentials/payers/body, and are suppressed for 30 seconds per backend.
+
+One atomic script owns a hash per configured prefix, canonical relay network, existing domain
+and UTC hour. Payer fields store weighted usage; distinct payer capacity stays 100,000 per bucket.
+Arguments, existing counter values and write permissions are checked before writing. Absolute
+expiry at `(hour+2)*3600` retains the current and previous bucket without a GC loop. Existing
+weights, exemptions, IP normalization and per-handle rollback clock semantics remain. A typed
+prepared request crosses reusable Axum middleware on directory PUT after its bounded body,
+federation and signed-subject checks; known publishers are exempt, and first signed attempts
+still precharge before business admission. RPC handlers and long-lived WS/Electrum messages
+use the same limiter after their existing authentication and retain absolute session/pending
+deadlines. No body decoding, signature verification or charge is duplicated by the generic layer.
+
+Confirmed hourly exhaustion returns HTTP 429. Other policy denials retain each route’s existing
+status: for example, RPC distinct-payer capacity is HTTP 503 while directory resource capacity
+is HTTP 429. Redis connection/timeout/AUTH/OOM/script/uncertain
+results produce explicit degraded allowance with no measured remaining snapshot; they fail
+OPEN. Frank request authentication, enrollment/business rules, payments and durable FDB errors
+retain their existing failure behavior. Disabled quotas and individually oversized charges
+retain their existing rejection semantics even during Redis outage. This is deliberately a
+best-effort allowance under backend failure, not a durable security or financial boundary.
+
+Redis restart, data loss or initial switch resets ephemeral allowances; no allowance backup,
+migration or continuity claim is made. Memory pressure with noeviction produces errors that
+also fail open. Operators bound Redis memory separately. Reversing this choice changes failure
+behavior and may reset the hourly budget; it does not change durable enrollment/payment data.
+The superseded `<fdb_subspace_prefix>hourly-quotas-v1/` quota path has no reader/writer or cleanup
+worker. Existing records are left untouched; quota-only disposal is an explicit operator action
+after old writers are stopped, never a startup reset. Other FDB owners and formats are unchanged.
 
 `RelayKvStore` is a component transaction interface. Its existence does not replace the
 owners above: `GroupStore`, the registry `Db` and the directory use it today, so it is not

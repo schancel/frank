@@ -829,20 +829,18 @@ async fn conflicting_first_entry_and_a_second_renewal_of_the_same_revision_are_r
     runtime.wait_stopped().await;
 }
 
-fn shared_quota_backend(path: &std::path::Path) -> QuotaBackend {
-    let store = Arc::new(crate::store::kv_store::RocksDbKvStore::open(path).unwrap());
-    let backend = QuotaBackend::shared(NETWORK, store, 64).unwrap();
-    backend.probe().unwrap();
-    backend
+fn shared_quota_backend() -> QuotaBackend {
+    super::super::hourly_quota::tests::redis_backend(NETWORK)
 }
 
 #[tokio::test]
+#[ignore = "requires explicitly approved FRANK_QUOTA_TEST_REDIS_URL"]
 async fn shared_quota_directory_routers_share_precharge_and_do_not_refill_on_reopen() {
     let root = tempfile::tempdir().unwrap();
     let (registry, mut config, clock) = setup(root.path());
     config.enrollments_per_source_per_hour = 2;
     let runtime = start(registry, config, &clock).await;
-    let backend = shared_quota_backend(&root.path().join("quotas"));
+    let backend = shared_quota_backend();
     let replicas: Vec<_> = (0..3)
         .map(|_| router(Arc::new(runtime.clone()), backend.clone()))
         .collect();
@@ -903,12 +901,13 @@ async fn shared_quota_directory_routers_share_precharge_and_do_not_refill_on_reo
 }
 
 #[tokio::test]
+#[ignore = "requires explicitly approved FRANK_QUOTA_TEST_REDIS_URL"]
 async fn shared_quota_directory_preserves_forgery_and_failed_admission_charging() {
     let root = tempfile::tempdir().unwrap();
     let (registry, mut config, clock) = setup(root.path());
     config.enrollments_per_source_per_hour = 1;
     let runtime = start(registry, config, &clock).await;
-    let backend = shared_quota_backend(&root.path().join("quotas"));
+    let backend = shared_quota_backend();
     let a = router(Arc::new(runtime.clone()), backend.clone());
     let b = router(Arc::new(runtime.clone()), backend);
     let forged = signed(180, 181, |_| ());
@@ -1389,4 +1388,51 @@ async fn forwarded_for_is_ignored_unless_the_connection_is_from_a_listed_proxy()
 
 mod replicas {
     include!("directory_replica_tests.rs");
+}
+
+#[tokio::test]
+async fn redis_quota_outage_preserves_directory_signature_trust_and_body_admission() {
+    let root = tempfile::tempdir().unwrap();
+    let (registry, mut config, clock) = setup(root.path());
+    config.enrollments_per_source_per_hour = 1;
+    let runtime = start(registry, config, &clock).await;
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("redis://{}/", listener.local_addr().unwrap());
+    let conf = cashweb_config::HourlyQuotasConf {
+        driver: cashweb_config::HourlyQuotaDriver::Redis,
+        key_prefix: Some("directory-outage/".into()),
+        timeout_ms: 20,
+        ..Default::default()
+    };
+    let backend = QuotaBackend::configured(NETWORK, &conf, |_| Some(url.clone())).unwrap();
+    let app = router(Arc::new(runtime.clone()), backend);
+    let forged = signed(180, 181, |_| ());
+    assert_eq!(
+        put(&app, &forged.subject, forged.attestation).await.0,
+        StatusCode::BAD_REQUEST
+    );
+    let later = entry(180, |fields| {
+        for (key, value) in fields.iter_mut() {
+            match *key {
+                2 => *value = CborValue::Int(1),
+                13 => *value = CborValue::Bytes(vec![7; 32]),
+                _ => (),
+            }
+        }
+    });
+    assert_eq!(
+        put(&app, &later.subject, later.attestation).await.0,
+        StatusCode::CONFLICT,
+        "business/trust failure is never failed open"
+    );
+    for n in [180, 181] {
+        let valid = entry(n, |_| ());
+        assert_eq!(
+            put(&app, &valid.subject, valid.attestation).await.0,
+            StatusCode::OK,
+            "only ephemeral allowance degrades open"
+        );
+    }
+    runtime.begin_shutdown();
+    runtime.wait_stopped().await;
 }

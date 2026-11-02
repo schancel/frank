@@ -36,8 +36,8 @@ fdb_cluster_file = "/cluster/fdb.cluster"
 fdb_subspace_prefix = "frank-cluster-lab/"
 cluster_name = "lab"
 # Groups, direct messages, large values, the registry database, the directory and the forum are
-# shared, including the directory and proxy hourly quotas. The preview escape hatch remains
-# explicit for lab-only configurations; strict mode still refuses any remaining local owner.
+# shared. Hourly allowances default local unless [registry.hourly_quotas] explicitly selects
+# Redis. This lab keeps its preview escape hatch; strict shared deployment must configure Redis.
 preview_replica_local_owners = true
 
 [registry.cluster.nats]

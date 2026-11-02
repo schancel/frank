@@ -1237,13 +1237,9 @@ mod tests {
         );
     }
     #[tokio::test]
+    #[ignore = "requires explicitly approved FRANK_QUOTA_TEST_REDIS_URL"]
     async fn shared_quota_constructor_preserves_solana_customer_and_anonymous_domains() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            crate::store::kv_store::RocksDbKvStore::open(directory.path().join("quotas")).unwrap(),
-        );
-        let backend = QuotaBackend::shared("monad-testnet", store, 64).unwrap();
-        backend.probe().unwrap();
+        let backend = super::super::hourly_quota::tests::redis_backend("monad-testnet");
         let session = crate::evm_mailbox::SessionSecret::random();
 
         let conf = SolanaProxyConf {
@@ -1269,6 +1265,8 @@ mod tests {
             b.anonymous_quota
                 .charge(ip, 1, 3600)
                 .await
+                .unwrap()
+                .snapshot()
                 .unwrap()
                 .remaining,
             0

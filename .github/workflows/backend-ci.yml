@@ -233,6 +233,22 @@ jobs:
           BITCOINSUITE_BIN_DIR=$(pwd)/../bitcoinsuite/downloads \
           cargo make
 
+    - name: Real Redis hourly quota boundaries
+      timeout-minutes: 20
+      run: |
+        python3 backend/cashweb/test-redis-quotas.py \
+          --docker-context default \
+          --evidence-dir "$RUNNER_TEMP/redis-quota-proof"
+
+    - name: Preserve Redis quota boundary receipt
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: redis-quota-proof-${{ github.run_id }}-${{ github.run_attempt }}
+        path: ${{ runner.temp }}/redis-quota-proof/
+        if-no-files-found: ignore
+        retention-days: 7
+
     # RUSTFLAGS="-D warnings" was inherited from the pre-fork upstream ci.yml and, per this
     # file's own header comment, was never actually validated against a real CI run before
     # tonight. It promotes every rustc warning workspace-wide to a hard error, including in the

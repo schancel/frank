@@ -325,6 +325,7 @@ fn cluster_mode_refusals_happen_before_any_state_is_created() {
             "refuses to start while these enabled owners keep their state on this replica: \
              registry database (profiles, usernames, metadata); directory (registry.directory, \
              registry.cluster.driver = \"rocksdb\"); \
+             directory enrollment hourly quotas (registry.hourly_quotas.driver = local); \
              forum (registry.forum); hourly RPC proxy quotas",
         ),
         (

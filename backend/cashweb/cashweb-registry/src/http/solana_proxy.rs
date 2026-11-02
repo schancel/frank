@@ -1237,13 +1237,9 @@ mod tests {
         );
     }
     #[tokio::test]
+    #[ignore = "requires explicitly approved FRANK_QUOTA_TEST_REDIS_URL"]
     async fn shared_quota_constructor_preserves_solana_customer_and_anonymous_domains() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = Arc::new(
-            crate::store::kv_store::RocksDbKvStore::open(directory.path().join("quotas")).unwrap(),
-        );
-        let backend = QuotaBackend::shared("monad-testnet", store, 64).unwrap();
-        backend.probe().unwrap();
+        let backend = super::super::hourly_quota::tests::redis_backend("monad-testnet");
         let session = crate::evm_mailbox::SessionSecret::random();
 
         let conf = SolanaProxyConf {
@@ -1261,14 +1257,27 @@ mod tests {
             .unwrap()
             .unwrap();
         let customer = Address([6; 20]);
-        a.customer_quota.charge(customer, 2, 3600).await.unwrap();
-        assert!(b.customer_quota.charge(customer, 1, 3600).await.is_err());
+        // Redis expiry uses real UTC time, so this bucket must still be live.
+        let now = unix_seconds();
+        assert_eq!(
+            a.customer_quota
+                .charge(customer, 2, now)
+                .await
+                .unwrap()
+                .snapshot()
+                .unwrap()
+                .remaining,
+            0
+        );
+        assert!(b.customer_quota.charge(customer, 1, now).await.is_err());
         let ip: IpAddr = "192.0.2.1".parse().unwrap();
-        a.anonymous_quota.charge(ip, 1, 3600).await.unwrap();
+        a.anonymous_quota.charge(ip, 1, now).await.unwrap();
         assert_eq!(
             b.anonymous_quota
-                .charge(ip, 1, 3600)
+                .charge(ip, 1, now)
                 .await
+                .unwrap()
+                .snapshot()
                 .unwrap()
                 .remaining,
             0

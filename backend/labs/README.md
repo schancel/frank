@@ -187,8 +187,8 @@ service).
 **What it is for today:** the app and the bots through the proxy (see "The app and the bots
 on the cluster" below), the HTTP contract, and the direct-message livecheck. Groups, direct
 messages (the solonet mailbox, paid with stamps), profiles, usernames, metadata, topics, the
-directory and the forum are shared through FoundationDB. The existing directory and
-RPC/WS/Electrum hourly quotas also share one cluster allowance through FoundationDB.
+directory and the forum are shared through FoundationDB. Shared hourly allowances require
+explicit Redis configuration (`registry.hourly_quotas`); the base lab retains local preview quotas.
 
 Overrides, all optional:
 
@@ -236,10 +236,10 @@ Services:
   address), large values in the MinIO bucket above, the open directory with the proxy origin
   as its endpoint, and the forum with the burn address. Each keeps its own RocksDB volume.
   Groups, direct messages, the registry database, the directory and the forum are shared
-  through FoundationDB, and large values through MinIO. The existing hourly quotas are
-  shared as well. The lab retains its explicit preview escape hatch for experimentation;
+  through FoundationDB, and large values through MinIO. Hourly quotas are local unless an
+  operator adds the explicit Redis policy. The lab retains its preview escape hatch;
   strict configuration still refuses any enabled owner that is actually replica-local.
-  No quota owner should appear in this inspection:
+  With the base configuration, hourly quota owners appear in this inspection:
 
 ```sh
 docker compose -f backend/labs/compose.cluster.yml logs relay-a | grep 'Replica-local owner'

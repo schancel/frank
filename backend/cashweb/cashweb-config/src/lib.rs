@@ -578,6 +578,9 @@ pub struct RegistryConf {
     /// Cluster configuration for high-availability multi-node deployments (ticket #981 / #982 / Track C).
     #[serde(default)]
     pub cluster: Option<ClusterConf>,
+    /// Ephemeral hourly admission, independent of durable cluster storage.
+    #[serde(default)]
+    pub hourly_quotas: HourlyQuotasConf,
     /// Price and energy oracle (`GET /oracle/v1/feed`). Omitted means no collector and no route.
     #[serde(default)]
     pub oracle: Option<OracleConf>,
@@ -660,17 +663,88 @@ pub struct ForumConf {
     pub burn_address: String,
 }
 
+/// Host-owned hourly admission storage. Redis errors degrade open; durable admission does not.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub struct HourlyQuotasConf {
+    #[serde(default)]
+    pub driver: HourlyQuotaDriver,
+    #[serde(default = "default_quota_redis_env")]
+    pub redis_url_env: String,
+    #[serde(default)]
+    pub key_prefix: Option<String>,
+    #[serde(default = "default_quota_timeout")]
+    pub timeout_ms: u64,
+    #[serde(default = "default_quota_inflight")]
+    pub max_in_flight: usize,
+}
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum HourlyQuotaDriver {
+    #[default]
+    Local,
+    Redis,
+}
+fn default_quota_redis_env() -> String {
+    "FRANK_QUOTA_REDIS_URL".into()
+}
+fn default_quota_timeout() -> u64 {
+    100
+}
+fn default_quota_inflight() -> usize {
+    64
+}
+impl Default for HourlyQuotasConf {
+    fn default() -> Self {
+        Self {
+            driver: HourlyQuotaDriver::Local,
+            redis_url_env: default_quota_redis_env(),
+            key_prefix: None,
+            timeout_ms: 100,
+            max_in_flight: 64,
+        }
+    }
+}
+impl HourlyQuotasConf {
+    pub fn validate(&self) -> Result<(), &'static str> {
+        if !(1..=5000).contains(&self.timeout_ms) || !(1..=1024).contains(&self.max_in_flight) {
+            return Err("invalid hourly quota timeout/concurrency bounds");
+        }
+        if self.driver == HourlyQuotaDriver::Redis {
+            if self.redis_url_env.is_empty()
+                || self.redis_url_env.len() > 128
+                || !self
+                    .redis_url_env
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            {
+                return Err("invalid hourly quota Redis environment name");
+            }
+            if !self
+                .key_prefix
+                .as_deref()
+                .is_some_and(|p| p.len() <= 128 && is_valid_subspace_prefix(p))
+            {
+                return Err("Redis hourly quotas require an explicit nonoverlapping key prefix ending in slash");
+            }
+        } else if self.key_prefix.is_some() {
+            return Err("local hourly quotas do not use a Redis key prefix");
+        }
+        Ok(())
+    }
+}
+
 /// Clustered relay configuration for multi-node deployments.
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 pub struct ClusterConf {
     /// Whether clustered mode is enabled.
     #[serde(default)]
     pub enabled: bool,
-    /// Relay storage driver. Only `rocksdb` is currently wired into the daemon.
-    /// Other names are rejected at startup rather than silently using local storage.
+    /// Durable storage driver: `rocksdb` or `foundationdb`. Hourly admission has its own
+    /// explicit configuration and never substitutes for durable storage.
     #[serde(default = "default_cluster_driver")]
     pub driver: String,
-    /// Reserved Redis / Apache Kvrocks URL; rejected until a relay driver is implemented.
+    /// Reserved durable Redis / Apache Kvrocks URL; unrelated to hourly admission and rejected.
     #[serde(default)]
     pub kvrocks_url: Option<String>,
     /// Optional FoundationDB `fdb.cluster` configuration file path (`#1575`).
@@ -833,10 +907,13 @@ impl RegistryConf {
         if self.directory.is_some() && local_driver {
             owners.push(ReplicaLocalOwner::Directory);
         }
+        if self.directory.is_some() && self.hourly_quotas.driver == HourlyQuotaDriver::Local {
+            owners.push(ReplicaLocalOwner::DirectoryEnrollmentQuotas);
+        }
         if self.forum.is_some() && local_driver {
             owners.push(ReplicaLocalOwner::Forum);
         }
-        if local_driver
+        if self.hourly_quotas.driver == HourlyQuotaDriver::Local
             && (self.evm_rpc.enabled || self.bitcoin_proxy.enabled || self.solana_proxy.enabled)
         {
             owners.push(ReplicaLocalOwner::HourlyQuotas);
@@ -853,6 +930,9 @@ impl RegistryConf {
     /// Validate `[registry.cluster]` before any state is opened: the driver, the bus endpoint,
     /// and in cluster mode the shared secrets and the replica-local owner rule.
     pub fn validate_cluster(&self) -> Result<(), ClusterConfigError> {
+        self.hourly_quotas
+            .validate()
+            .map_err(|_| ClusterConfigError::InvalidHourlyQuotaConfig)?;
         self.storage_driver()?;
         let Some(cluster) = &self.cluster else {
             return Ok(());
@@ -962,13 +1042,14 @@ pub enum RelayStorageDriver {
 /// An enabled owner whose durable state is still kept by this replica alone.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ReplicaLocalOwner {
+    /// Directory hourly allowance remains local unless Redis is explicitly selected.
+    DirectoryEnrollmentQuotas,
     /// Registry `Db` on the RocksDB driver: profiles, usernames, metadata, topics and their
     /// indexes.
     RegistryDb,
     /// Direct-message owner (`registry.evm_mailbox`).
     DirectMessages,
-    /// Directory preview, subjects, forwards and its enrollment quota (`registry.directory`) on
-    /// the RocksDB driver.
+    /// Directory preview, subjects and forwards (`registry.directory`) on the RocksDB driver.
     Directory,
     /// Forum (`registry.forum`).
     Forum,
@@ -984,6 +1065,9 @@ impl ReplicaLocalOwner {
     /// The name used in startup logs and refusals.
     pub fn name(self) -> &'static str {
         match self {
+            Self::DirectoryEnrollmentQuotas => {
+                "directory enrollment hourly quotas (registry.hourly_quotas.driver = local)"
+            }
             Self::RegistryDb => "registry database (profiles, usernames, metadata)",
             Self::DirectMessages => "direct messages (registry.evm_mailbox)",
             Self::Directory => {
@@ -1004,6 +1088,8 @@ impl ReplicaLocalOwner {
 /// Invalid or unsupported runtime cluster configuration. Errors omit endpoint credentials.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ClusterConfigError {
+    /// Malformed hourly admission configuration, distinct from a Redis outage.
+    InvalidHourlyQuotaConfig,
     /// The driver is neither `rocksdb` nor `foundationdb`.
     UnsupportedStorageDriver,
     /// A Kvrocks endpoint would otherwise be silently ignored.
@@ -1035,6 +1121,7 @@ pub enum ClusterConfigError {
 impl fmt::Display for ClusterConfigError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidHourlyQuotaConfig => formatter.write_str("invalid registry.hourly_quotas configuration"),
             Self::UnsupportedStorageDriver => formatter.write_str("registry.cluster.driver is unsupported: use \"rocksdb\" or \"foundationdb\""),
             Self::UnusedKvrocksUrl => formatter.write_str("registry.cluster.kvrocks_url is unsupported: no relay driver uses Kvrocks, so this endpoint would be ignored"),
             Self::UnusedFdbSettings => formatter.write_str("registry.cluster.fdb_cluster_file and fdb_subspace_prefix are only used with driver = \"foundationdb\""),
@@ -3014,6 +3101,7 @@ continuity_file = "/var/lib/frank/continuity"
                     curated_defaults: vec![],
                     spa_dir: None,
                     cluster: None,
+                    hourly_quotas: Default::default(),
                     oracle: None,
                     session_secret_file: None,
                     vapid_private_key_file: None,
@@ -3105,6 +3193,7 @@ continuity_file = "/var/lib/frank/continuity"
                     curated_defaults: vec![],
                     spa_dir: None,
                     cluster: None,
+                    hourly_quotas: Default::default(),
                     oracle: None,
                     session_secret_file: None,
                     vapid_private_key_file: None,
@@ -3801,6 +3890,11 @@ continuity_file = "/var/lib/frank/continuity"
         let mut conf: RegistryConf = parse_conf(include_str!("../../cashwebd.local.toml"))
             .unwrap()
             .registry;
+        conf.hourly_quotas = super::HourlyQuotasConf {
+            driver: super::HourlyQuotaDriver::Redis,
+            key_prefix: Some("frank-test/".into()),
+            ..Default::default()
+        };
         conf.session_secret_file = Some("/run/secrets/session-secret".into());
         conf.vapid_private_key_file = Some("/run/secrets/vapid-private-key".into());
         conf.cluster = Some(ClusterConf {
@@ -3896,7 +3990,7 @@ continuity_file = "/var/lib/frank/continuity"
     fn cluster_mode_refuses_replica_local_owners_without_the_preview_flag() {
         use super::ReplicaLocalOwner;
         let mut conf = cluster_mode_conf();
-        // Every enabled owner, including every public quota consumer, is shared on FDB.
+        // Durable owners use FDB; every public hourly allowance explicitly uses Redis.
         assert_eq!(conf.replica_local_owners(), vec![]);
         conf.cluster.as_mut().unwrap().preview_replica_local_owners = false;
         assert_eq!(conf.validate_cluster(), Ok(()));
@@ -4107,5 +4201,28 @@ min_value_wei = "0"
             config.registry.validate_network().unwrap().id,
             "monad-regtest"
         );
+    }
+    #[test]
+    fn hourly_quota_config_is_explicit_and_independent_of_durable_fdb() {
+        let mut conf = cluster_mode_conf();
+        conf.cluster.as_mut().unwrap().preview_replica_local_owners = false;
+        assert_eq!(conf.validate_cluster(), Ok(()));
+        conf.hourly_quotas = super::HourlyQuotasConf::default();
+        let owners = conf.replica_local_owners();
+        assert!(owners.contains(&super::ReplicaLocalOwner::HourlyQuotas));
+        assert!(owners.contains(&super::ReplicaLocalOwner::DirectoryEnrollmentQuotas));
+        assert!(conf.validate_cluster().is_err());
+        let mut quota = super::HourlyQuotasConf {
+            driver: super::HourlyQuotaDriver::Redis,
+            ..Default::default()
+        };
+        assert!(quota.validate().is_err());
+        quota.key_prefix = Some("separate-deployment/".into());
+        assert_eq!(quota.validate(), Ok(()));
+        quota.timeout_ms = 0;
+        assert!(quota.validate().is_err());
+        quota.timeout_ms = 100;
+        quota.max_in_flight = 0;
+        assert!(quota.validate().is_err());
     }
 }

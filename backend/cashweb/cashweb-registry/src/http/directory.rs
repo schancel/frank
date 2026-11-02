@@ -1,4 +1,4 @@
-//! Exact CBOR directory routes. Capacity is reserved before request-body collection.
+//! Exact CBOR directory routes. Bounded authenticated preparation precedes quota admission.
 //!
 //! Publishing is open: any key may PUT its own signed entry. The only gates are the signature,
 //! the chain rules, a relay-wide subject cap and a per-source limit on first publications.
@@ -7,9 +7,10 @@ use crate::directory_runtime::{
     DirectoryRuntime, Evidence, Operation, RuntimeError, FIRST_ACCEPTED_POSITION_BYTES,
 };
 use axum::{
-    body::HttpBody,
-    extract::{connect_info::ConnectInfo, Extension, Path, RawBody},
-    http::{header, HeaderMap, StatusCode},
+    body::{Body, HttpBody},
+    extract::{connect_info::ConnectInfo, Extension, FromRequest, Path, RequestParts},
+    http::{header, HeaderMap, Request, StatusCode},
+    middleware::{from_fn, Next},
     response::{IntoResponse, Response},
     routing, Json, Router,
 };
@@ -77,7 +78,6 @@ fn evidence(result: std::result::Result<Evidence, RuntimeError>) -> Response {
 #[derive(Debug)]
 pub(crate) struct Routes {
     pub(crate) runtime: Arc<DirectoryRuntime>,
-    enrollments: FixedHourQuota<IpAddr>,
 }
 /// Largest directory entry accepted over HTTP. An ordinary entry is under 600 bytes.
 pub(crate) const MAX_ENTRY_BYTES: usize = 8 * 1024;
@@ -101,12 +101,6 @@ impl Routes {
         };
         normalize_quota_ip(forwarded.unwrap_or(peer))
     }
-}
-fn now_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
 }
 async fn current(routes: &Routes, network: &str, subject: &str) -> Result<Evidence, RuntimeError> {
     let slot = routes.runtime.reserve(network, subject)?;
@@ -165,13 +159,32 @@ async fn historical(
         ),
     }
 }
-async fn put(
-    Extension(routes): Extension<Arc<Routes>>,
-    Path((network, subject, leaf)): Path<(String, String, String)>,
-    peer: Option<ConnectInfo<SocketAddr>>,
-    headers: HeaderMap,
-    RawBody(mut body): RawBody,
-) -> Response {
+struct PreparedDirectoryPut {
+    network: String,
+    subject: String,
+    bytes: Vec<u8>,
+}
+
+async fn prepare_put(request: Request<Body>, next: Next<Body>) -> Response {
+    let Some(routes) = request.extensions().get::<Arc<Routes>>().cloned() else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .cloned();
+    let mut parts = RequestParts::new(request);
+    let Path((network, subject, leaf)) =
+        match Path::<(String, String, String)>::from_request(&mut parts).await {
+            Ok(path) => path,
+            Err(rejection) => return rejection.into_response(),
+        };
+    let request = match parts.try_into_request() {
+        Ok(request) => request,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let headers = request.headers().clone();
+    let (parts, mut body) = request.into_parts();
     let runtime = &routes.runtime;
     if leaf != "head" || subject == "address" {
         return error(RuntimeError::NotFound);
@@ -212,6 +225,7 @@ async fn put(
     // Publishing is free, so a key this relay has never seen is charged to its source, and only
     // once the entry is known to be signed by that key: a forgery costs its sender nothing here
     // and cannot use up anyone's allowance.
+    let mut prepared = super::quota_middleware::PreparedQuota::<IpAddr>::Exempt;
     if !runtime.is_published(&network, &subject).await {
         let signed_by_subject = frank_cbor::verify_preview_directory_evidence(&bytes, &network)
             .ok()
@@ -225,15 +239,32 @@ async fn put(
         if !signed_by_subject {
             return error(RuntimeError::Invalid);
         }
-        if routes
-            .enrollments
-            .charge(routes.source(peer, &headers), 1, now_seconds())
-            .await
-            .is_err()
-        {
-            return error(RuntimeError::Resource);
-        }
+        prepared = super::quota_middleware::PreparedQuota::Charge {
+            payer: routes.source(peer, &headers),
+            units: 1,
+        };
     }
+    // The only body read and signature verification happened above. The generic layer
+    // touches neither bytes nor authentication. The mutation consumes this exact owned body.
+    let mut request = Request::from_parts(parts, Body::empty());
+    request.extensions_mut().insert(prepared);
+    request.extensions_mut().insert(PreparedDirectoryPut {
+        network,
+        subject,
+        bytes,
+    });
+    next.run(request).await
+}
+async fn put(Extension(routes): Extension<Arc<Routes>>, mut request: Request<Body>) -> Response {
+    let Some(PreparedDirectoryPut {
+        network,
+        subject,
+        bytes,
+    }) = request.extensions_mut().remove::<PreparedDirectoryPut>()
+    else {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    };
+    let runtime = &routes.runtime;
     let slot = match runtime.reserve(&network, &subject) {
         Ok(s) => s,
         Err(e) => return error(e),
@@ -337,18 +368,23 @@ async fn new_accounts(
 }
 /// Mount the open directory. Present whenever the relay has a `[registry.directory]` tuple.
 pub fn router(runtime: Arc<DirectoryRuntime>, quota_backend: QuotaBackend) -> Router {
-    let routes = Arc::new(Routes {
-        enrollments: FixedHourQuota::with_backend(
+    let policy = Arc::new(super::quota_middleware::QuotaPolicy::new(
+        FixedHourQuota::<IpAddr>::with_backend(
             runtime.enrollments_per_source_per_hour(),
             QuotaDomain::DirectoryEnrollment,
             quota_backend,
         ),
-        runtime,
-    });
+        |_| error(RuntimeError::Resource),
+    ));
+    let routes = Arc::new(Routes { runtime });
+    let publish = routing::put(put)
+        .route_layer(from_fn(super::quota_middleware::admit::<IpAddr>))
+        .route_layer(Extension(policy))
+        .route_layer(from_fn(prepare_put));
     Router::new()
         .route(
             "/directory/v1/:network/:subject/:leaf",
-            routing::get(lookup).put(put),
+            routing::get(lookup).merge(publish),
         )
         .route(
             "/directory/v1/:network/:subject/statements/:t1",

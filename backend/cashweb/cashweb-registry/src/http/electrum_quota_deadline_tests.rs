@@ -137,7 +137,6 @@ async fn quota_wait(boundary: Boundary) {
         .await
         .unwrap()
         .unwrap();
-    backend.close_and_drain().await;
     let forwarded = forwarded.load(Ordering::SeqCst);
     println!("electrum local={local} forwarded={forwarded} completed_while_paused={completed_while_paused}");
     assert_eq!(

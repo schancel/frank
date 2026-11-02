@@ -158,7 +158,6 @@ async fn quota_wait(notification: bool, boundary: Boundary) {
         .await
         .unwrap()
         .unwrap();
-    backend.close_and_drain().await;
     let forwarded = forwarded.load(Ordering::SeqCst);
     let delivered = delivered.load(Ordering::SeqCst);
     println!("notification={notification} local={local} forwarded={forwarded} delivered={delivered} completed_while_paused={completed_while_paused}");

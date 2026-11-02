@@ -9,7 +9,11 @@ x-s3: &s3
   FRANK_S3_SECRET_ACCESS_KEY: frank-lab-not-a-secret
 services:
   fdb:
-    image: foundationdb/foundationdb:7.3.63
+    image: foundationdb/foundationdb:7.3.63@sha256:55476d3d0066eafc743a82ddb197604e6863528e22dccf88508acbb306fce8a4
+    mem_limit: 2g
+    memswap_limit: 2g
+    cpus: 1
+    pids_limit: 256
     environment:
       FDB_NETWORKING_MODE: container
       FDB_CLUSTER_FILE: /cluster/fdb.cluster
@@ -46,6 +50,10 @@ services:
   relay-a:
     profiles: ["test"]
     image: frank-lab-large-values-contract:local
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 2
+    pids_limit: 256
     build:
       context: ../..
       dockerfile: backend/labs/Dockerfile.large-values
@@ -59,6 +67,10 @@ services:
     profiles: ["test"]
     image: frank-lab-large-values-contract:local
     pull_policy: never
+    mem_limit: 3g
+    memswap_limit: 3g
+    cpus: 2
+    pids_limit: 256
     environment:
       <<: *s3
       FRANK_FDB_CLUSTER_FILE: /cluster/fdb.cluster

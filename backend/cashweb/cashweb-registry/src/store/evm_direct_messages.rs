@@ -1985,6 +1985,111 @@ mod large_request_tests {
         assert_eq!(reopened.get(&hash).unwrap().unwrap().request.body(), body);
     }
 
+    // These phases exercise the private owner without exporting it for a lab.
+    // Each invocation is a separate process selected by large-values-acceptance.sh.
+    #[cfg(feature = "foundationdb")]
+    mod live_fdb_s3 {
+        use super::*;
+        use crate::store::{
+            blob_store::S3BlobStoreConfig, foundationdb_driver::FoundationDbKvStore,
+            s3_objects::S3ObjectStore,
+        };
+        use sha2::{Digest, Sha256};
+
+        fn env(name: &str) -> String {
+            std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
+        }
+
+        fn open() -> (Owner, Arc<S3ObjectStore>) {
+            let run = env("FRANK_LAB_RUN_ID");
+            let kv = Arc::new(
+                FoundationDbKvStore::open(
+                    &env("FRANK_FDB_CLUSTER_FILE"),
+                    format!("frank-large-value-lab:{run}:dm/"),
+                )
+                .unwrap(),
+            );
+            let objects = Arc::new(
+                S3ObjectStore::new(S3BlobStoreConfig {
+                    endpoint: env("FRANK_LAB_S3_ENDPOINT"),
+                    region: "us-east-1".into(),
+                    bucket: env("FRANK_LAB_S3_BUCKET"),
+                    prefix: format!("lab-{run}/dm"),
+                    access_key_id: env("FRANK_S3_ACCESS_KEY_ID"),
+                    secret_access_key: env("FRANK_S3_SECRET_ACCESS_KEY"),
+                    force_path_style: true,
+                })
+                .unwrap(),
+            );
+            (Owner::with_store(kv, objects.clone()), objects)
+        }
+
+        #[test]
+        #[ignore = "phase of backend/labs/large-values-acceptance.sh"]
+        fn append_largest_request() {
+            // SAFETY: one exact test per process, with stores dropped before the guard.
+            let _network = unsafe { foundationdb::boot() };
+            let (owner, objects) = open();
+            let (input, _) = paid_input_sealing(Some(LARGEST_ENVELOPE));
+            let body = input.request.body().to_vec();
+            assert_eq!(LARGEST_ENVELOPE, 8 * 1024 * 1024 + 88);
+            assert!(body.len() > LARGEST_ENVELOPE);
+            assert!(body.len() <= frank_cbor::MAX_DIRECT_MESSAGE_FRAME_BYTES);
+            let hash = input.policy.payload_hash;
+            assert!(owner.claim(input, 1234).unwrap().new);
+            let Some(Row {
+                body: Stored::Large(reference),
+                ..
+            }) = stored_row(&owner, &hash)
+            else {
+                panic!("the full enclosing request must be stored by reference");
+            };
+            assert_eq!(reference.len, body.len() as u64);
+            assert!(reference.matches(&body));
+            let store = owner.writable().unwrap();
+            let values = owner.large(&store);
+            assert_eq!(values.references(10).unwrap(), vec![reference]);
+            assert_eq!(
+                objects.get(&values.object_key(&reference)).unwrap(),
+                Some(body.clone())
+            );
+            assert_eq!(owner.get(&hash).unwrap().unwrap().request.body(), body);
+            eprintln!(
+                "DM envelope={LARGEST_ENVELOPE} enclosing_request={} sha256={}",
+                body.len(),
+                hex::encode(Sha256::digest(&body))
+            );
+        }
+
+        #[test]
+        #[ignore = "phase of backend/labs/large-values-acceptance.sh"]
+        fn reopen_largest_request_and_retry_without_duplicate() {
+            // Run after the same S3 volume restarts, with a fresh FDB/S3 client.
+            let _network = unsafe { foundationdb::boot() };
+            let (owner, _) = open();
+            let (input, _) = paid_input_sealing(Some(LARGEST_ENVELOPE));
+            let body = input.request.body().to_vec();
+            let hash = input.policy.payload_hash;
+            let original = owner.get(&hash).unwrap().unwrap();
+            assert_eq!(original.request.body(), body);
+            assert_eq!(original.delivered_at, 1234);
+            let recipient = original.policy.recipient().unwrap();
+            let inbox = owner.inbox(recipient, 0, None, 10).unwrap();
+            assert_eq!(inbox.len(), 1);
+            assert_eq!(inbox[0].request.body(), body);
+            let repeated = owner.claim(input, 9999).unwrap();
+            assert!(!repeated.new);
+            assert_eq!(repeated.claim.delivered_at, 1234);
+            let store = owner.writable().unwrap();
+            assert_eq!(owner.large(&store).references(10).unwrap().len(), 1);
+            assert_eq!(owner.sweep_large_values([4; 16]).unwrap().deleted, 1);
+            assert_eq!(owner.sweep_large_values([4; 16]).unwrap().deleted, 0);
+            assert_eq!(owner.get(&hash).unwrap().unwrap().request.body(), body);
+            assert_eq!(owner.inbox(recipient, 0, None, 10).unwrap().len(), 1);
+            eprintln!("DM cold reopen: byte-exact; original delivery retained; duplicate upload collected once");
+        }
+    }
+
     #[test]
     fn a_request_one_byte_over_the_envelope_limit_is_not_a_valid_message() {
         let result = std::panic::catch_unwind(|| paid_input_sealing(Some(LARGEST_ENVELOPE + 1)));

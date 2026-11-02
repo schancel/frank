@@ -8,6 +8,7 @@ import {
   restoreOwnProfileAtStartup,
   restoreOwnProfileWithRelay,
   syncOwnProfile,
+  syncOwnProfileWithRelay,
 } from './own-profile'
 
 const identity = identityApi.MonadIdentity.fromPrivateKeyHex(
@@ -53,8 +54,8 @@ test.each(['existing', 'missing', 'unreachable'] as const)(
       })
       expect(store.unpublished).toBe(false)
     } else if (situation === 'missing') {
-      expect(store.profile).toEqual({})
-      expect(store.unpublished).toBe(false)
+      expect(store.profile).toEqual({ name: 'Stale local edit' })
+      expect(store.unpublished).toBe(true)
     } else {
       expect(store.profile.name).toBe('Stale local edit')
       expect(store.unpublished).toBe(true)
@@ -226,4 +227,90 @@ test('profile retries back off to a bounded delay', async () => {
   expect(profileRetryDelayMs(0)).toBe(2_000)
   expect(profileRetryDelayMs(1)).toBe(4_000)
   expect(profileRetryDelayMs(20)).toBe(60_000)
+})
+
+test('a retained same-owner profile survives absent backend recovery and is republished by existing sync', async () => {
+  jest.spyOn(identityApi, 'fetchMonadProfile').mockResolvedValue(undefined)
+  const store = useProfileStore()
+  store.owner = identity.address.raw.toLowerCase()
+  store.profile = { name: 'Retained account', bio: 'Saved bio' }
+  store.unpublished = false
+  store.base = { ...store.profile }
+  const saved = { ...store.profile }
+  await restoreOwnProfileAtStartup({
+    relayBaseUrl: 'https://relay.example',
+    identity,
+    accountId: 'retained-account',
+    isCancelled: () => false,
+  })
+  expect(store.profile).toEqual(saved)
+  const publish = jest.fn(async () => undefined)
+  expect(
+    await syncOwnProfile({
+      store,
+      address: identity.address.raw,
+      fetchPublished: async () => undefined,
+      publish,
+    }),
+  ).toBe('published')
+  expect(publish).toHaveBeenCalledWith(saved)
+})
+
+test.each([401, 403, 500, 503, 'offline'])(
+  'profile uncertainty %s preserves the retained copy and remains visible until the relay confirms',
+  async status => {
+    const fetch = jest
+      .spyOn(identityApi, 'fetchMonadProfile')
+      .mockRejectedValue(Object.assign(new Error('unknown'), { status }))
+    const publish = jest
+      .spyOn(identityApi, 'registerMonadIdentityCbor')
+      .mockResolvedValue(undefined)
+    const store = useProfileStore()
+    store.owner = identity.address.raw.toLowerCase()
+    store.profile = { name: 'Retained' }
+    store.unpublished = false
+    expect(
+      await syncOwnProfileWithRelay({
+        relayBaseUrl: 'https://relay.example',
+        identity,
+      }),
+    ).toBe('unreachable')
+    expect(store.profile).toEqual({ name: 'Retained' })
+    expect(publish).not.toHaveBeenCalled()
+    expect(ownProfileCheck.unchecked).toBe(store.owner)
+    fetch.mockResolvedValue(undefined)
+    expect(
+      await syncOwnProfileWithRelay({
+        relayBaseUrl: 'https://relay.example',
+        identity,
+      }),
+    ).toBe('published')
+    expect(publish).toHaveBeenCalledTimes(1)
+    expect(ownProfileCheck.unchecked).toBeNull()
+  },
+)
+
+test('a refused publication is not confirmed or cleared and the same saved profile can retry', async () => {
+  jest.spyOn(identityApi, 'fetchMonadProfile').mockResolvedValue(undefined)
+  const publish = jest
+    .spyOn(identityApi, 'registerMonadIdentityCbor')
+    .mockRejectedValueOnce(new Error('503'))
+    .mockResolvedValue(undefined)
+  const store = useProfileStore()
+  store.owner = identity.address.raw.toLowerCase()
+  store.profile = { name: 'Retained' }
+  await expect(
+    syncOwnProfileWithRelay({
+      relayBaseUrl: 'https://relay.example',
+      identity,
+    }),
+  ).rejects.toThrow('503')
+  expect(ownProfileCheck.unchecked).toBe(store.owner)
+  expect(store.profile).toEqual({ name: 'Retained' })
+  await syncOwnProfileWithRelay({
+    relayBaseUrl: 'https://relay.example',
+    identity,
+  })
+  expect(publish).toHaveBeenCalledTimes(2)
+  expect(ownProfileCheck.unchecked).toBeNull()
 })

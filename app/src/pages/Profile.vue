@@ -324,10 +324,6 @@ export default defineComponent({
     },
   },
   watch: {
-    'profileUnchecked'(unchecked: boolean) {
-      // The relay answered: show the profile it holds, which is now this device's copy.
-      if (!unchecked) this.loadStoredProfile()
-    },
     // The account's profile changed while the form is open (another device published a newer
     // one and this device adopted it): each field the user has not touched shows the new value.
     'storedRelayData.profile': {

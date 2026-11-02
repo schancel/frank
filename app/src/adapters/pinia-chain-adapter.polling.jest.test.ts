@@ -584,6 +584,29 @@ describe('direct-message polling: cadence, backoff and status', () => {
       polling.stop()
     })
 
+    it('checks registration on the existing foreground event without delaying mailbox reads, and stops with its owner', async () => {
+      const { mailbox, wallet } = setup()
+      const onForeground = jest.fn(() => new Promise<void>(() => undefined))
+      const polling = startDirectMessagePolling({
+        wallet,
+        intervalMs: 7000,
+        onForeground,
+      })
+      await jest.advanceTimersByTimeAsync(100)
+      Object.assign(document, { hidden: true })
+      documentListeners['visibilitychange']?.()
+      expect(onForeground).not.toHaveBeenCalled()
+      Object.assign(document, { hidden: false })
+      const visible = documentListeners['visibilitychange']
+      visible?.()
+      await jest.advanceTimersByTimeAsync(100)
+      expect(onForeground).toHaveBeenCalledTimes(1)
+      expect(mailbox.count).toBe(2)
+      polling.stop()
+      visible?.()
+      expect(onForeground).toHaveBeenCalledTimes(1)
+    })
+
     it('wakes up immediately when document becomes visible', async () => {
       const { mailbox, wallet } = setup()
       // eslint-disable-next-line @typescript-eslint/no-explicit-any

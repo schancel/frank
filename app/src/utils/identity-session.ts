@@ -55,7 +55,11 @@ import {
 } from '../adapters/pinia-chain-adapter'
 import { useProfileStore } from '../stores/my-profile'
 import type { MonadIdentity } from '@frank/wallet/evm-identity'
-import { claimProfileStore, syncOwnProfileWithRelay } from './own-profile'
+import {
+  claimProfileStore,
+  ownProfileCheck,
+  syncOwnProfileWithRelay,
+} from './own-profile'
 import { clearOwnUsername, ownUsername, syncOwnUsername } from './own-username'
 import { errorNotify } from './notifications'
 
@@ -65,6 +69,8 @@ interface Live {
   directory: OpenDirectory
   revision: number
   accountId: string | undefined
+  registrationRefresh?: Promise<void>
+  profileRefresh?: Promise<void>
   uninstall: () => void
   polling: Stoppable
   reconcile: Stoppable
@@ -94,6 +100,8 @@ export interface MessagingDeps {
   install: typeof installCanonicalDirectory
   startPolling: (options: {
     wallet: WalletHandle
+    onAuthRecovery?: () => Promise<void>
+    onForeground?: () => Promise<void>
   }) => Stoppable & { firstRead?: Promise<unknown> }
   startReconcile: (options: { wallet: WalletHandle }) => Stoppable
   /** Makes this device the account's active one whenever its user acts on it, and tells the
@@ -116,12 +124,14 @@ export interface MessagingDeps {
   registerProfile?: (options: {
     relayBaseUrl: string
     wallet: NativeWalletHandle
+    isCancelled?: () => boolean
   }) => Promise<void>
   /** Claims the saved username again once this account's entry is published. */
   claimUsername?: (options: {
     relayBaseUrl: string
     network: string
     wallet: NativeWalletHandle
+    isCancelled?: () => boolean
   }) => Promise<void>
 }
 
@@ -319,7 +329,7 @@ function productionDeps(): MessagingDeps {
     retryDelayMs: attempt => Math.min(5_000 * 2 ** (attempt - 1), 300_000),
     // The account's profile is the relay's to hold: adopt what it has, and publish only what
     // this device's user typed (`./own-profile.ts`).
-    registerProfile: async ({ relayBaseUrl, wallet }) => {
+    registerProfile: async ({ relayBaseUrl, wallet, isCancelled }) => {
       const identity = (wallet as unknown as { identity?: MonadIdentity })
         .identity
       if (!identity) return
@@ -327,6 +337,7 @@ function productionDeps(): MessagingDeps {
         await syncOwnProfileWithRelay({
           relayBaseUrl,
           identity,
+          isCancelled,
           network: loadMonadChainConfigFromEnv().rpcChain,
         })
       } catch (err) {
@@ -336,7 +347,7 @@ function productionDeps(): MessagingDeps {
     // Bring the account's own username in line with the relay: a saved name is claimed again
     // (a no-op when held; what restores it on a relay with a fresh database), and the user is
     // told when the relay will not give it, instead of the app going on showing it.
-    claimUsername: async ({ relayBaseUrl, network, wallet }) => {
+    claimUsername: async ({ relayBaseUrl, network, wallet, isCancelled }) => {
       const identity = (wallet as unknown as { identity?: MonadIdentity })
         .identity
       if (!identity) return
@@ -352,7 +363,9 @@ function productionDeps(): MessagingDeps {
         signer: identity,
         address: identity.address.raw,
         saved,
+        isCancelled,
       })
+      if (isCancelled?.()) return
       // A name the account holds and this device's copy of the profile lacks (the account was
       // restored here) is the account's name.
       if (!saved && ownUsername.held) {
@@ -511,6 +524,78 @@ function reasonOf(error: unknown): MessagingReason {
   }
 }
 
+/** Check the relay again through its existing publication operation, never a local pin alone.
+ * All triggers share the live session's operation; presentation stays in the background. */
+function refreshRegistration(current: Live, d: MessagingDeps): Promise<void> {
+  if (!isCurrent(current, d)) return Promise.resolve()
+  if (current.registrationRefresh) return current.registrationRefresh
+  const run = async () => {
+    try {
+      await current.directory.publish()
+      if (!isCurrent(current, d)) return
+      state.status = 'ready'
+      state.reason = null
+      refreshProfile(current, d)
+    } catch (error) {
+      if (!isCurrent(current, d)) return
+      state.status = 'pending'
+      state.reason = reasonOf(error)
+    }
+  }
+  const task = run().finally(() => {
+    if (current.registrationRefresh === task)
+      current.registrationRefresh = undefined
+  })
+  current.registrationRefresh = task
+  return task
+}
+
+function isCurrent(current: Live, d: MessagingDeps): boolean {
+  return (
+    live === current &&
+    d.session.state.status === 'ready' &&
+    d.session.state.revision === current.revision &&
+    accountIdOf(d.session.state.account) === current.accountId
+  )
+}
+
+function refreshProfile(
+  current: Live,
+  d: MessagingDeps,
+  initial = false,
+): void {
+  if (!isCurrent(current, d) || current.profileRefresh) return
+  if (initial) {
+    const identity = (
+      current.wallet as unknown as { identity?: { address: { raw: string } } }
+    ).identity
+    if (identity) ownProfileCheck.unchecked = identity.address.raw.toLowerCase()
+  }
+  const isCancelled = () => !isCurrent(current, d)
+  const task = (async () => {
+    await d.registerProfile?.({
+      relayBaseUrl: d.relayBaseUrl,
+      wallet: current.wallet,
+      isCancelled,
+    })
+    if (isCancelled()) return
+    await d.claimUsername?.({
+      relayBaseUrl: d.relayBaseUrl,
+      network: networkOf(d.networkTag),
+      wallet: current.wallet,
+      isCancelled,
+    })
+  })()
+    .catch(error => {
+      if (!isCancelled())
+        console.warn('[startMessaging] profile confirmation failed:', error)
+    })
+    .finally(() => {
+      if (current.profileRefresh === task) current.profileRefresh = undefined
+    })
+  current.profileRefresh = task
+}
+
 let publishingTask: Promise<void> | undefined
 
 /**
@@ -667,7 +752,15 @@ async function startMessagingInternal(): Promise<void> {
       const uninstall = d.install(wallet, directory)
       const handle = wallet as unknown as WalletHandle
       const found = directory
-      const polling = d.startPolling({ wallet: handle })
+      const revalidate = () =>
+        live?.directory === found
+          ? refreshRegistration(live, d)
+          : Promise.resolve()
+      const polling = d.startPolling({
+        wallet: handle,
+        onAuthRecovery: revalidate,
+        onForeground: revalidate,
+      })
       live = {
         wallet,
         directory,
@@ -702,18 +795,7 @@ async function startMessagingInternal(): Promise<void> {
       state.status = 'ready'
       state.reason = null
       d.resumeLegacy?.()
-      if (d.registerProfile) {
-        void Promise.resolve(
-          d.registerProfile({ relayBaseUrl: d.relayBaseUrl, wallet }),
-        ).catch(err => {
-          console.warn('[startMessaging] registerProfile failed:', err)
-        })
-      }
-      void d.claimUsername?.({
-        relayBaseUrl: d.relayBaseUrl,
-        network: networkOf(d.networkTag),
-        wallet,
-      })
+      refreshProfile(live, d, true)
       return
     } catch (err) {
       console.error('[startMessaging] install failed:', err)

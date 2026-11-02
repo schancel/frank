@@ -1,5 +1,6 @@
 /** @jest-environment jsdom */
 import { mount } from '@vue/test-utils'
+import { reactive } from 'vue'
 import ProfilePage from './Profile.vue'
 import { readFileSync } from 'fs'
 import { join } from 'path'
@@ -1087,4 +1088,155 @@ describe('profile protocol field admission', () => {
     expect(errorNotify).toHaveBeenCalled()
     wrapper.unmount()
   })
+})
+
+describe('mounted profile during real background synchronization', () => {
+  // jsdom's AbortSignal predates these browser APIs. Keep real abort/deadline semantics in
+  // this fixture only, and retire every timer/listener instead of leaking the test process.
+  const descriptors = new Map<string, PropertyDescriptor | undefined>()
+  const timers: Array<ReturnType<typeof setTimeout>> = []
+  const cleanup: Array<() => void> = []
+  beforeAll(() => {
+    for (const [name, implementation] of Object.entries({
+      timeout: (ms: number) => {
+        const controller = new AbortController()
+        timers.push(
+          setTimeout(
+            () => controller.abort(new DOMException('Timeout', 'TimeoutError')),
+            ms,
+          ),
+        )
+        return controller.signal
+      },
+      any: (signals: AbortSignal[]) => {
+        const controller = new AbortController()
+        for (const signal of signals) {
+          if (signal.aborted) {
+            controller.abort(signal.reason)
+            break
+          }
+          const abort = () => controller.abort(signal.reason)
+          signal.addEventListener('abort', abort, { once: true })
+          cleanup.push(() => signal.removeEventListener('abort', abort))
+        }
+        return controller.signal
+      },
+    })) {
+      descriptors.set(name, Object.getOwnPropertyDescriptor(AbortSignal, name))
+      Object.defineProperty(AbortSignal, name, {
+        configurable: true,
+        value: implementation,
+      })
+    }
+  })
+  afterEach(() => {
+    for (const timer of timers.splice(0)) clearTimeout(timer)
+    for (const dispose of cleanup.splice(0)) dispose()
+  })
+  afterAll(() => {
+    for (const [name, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(AbortSignal, name, descriptor)
+      else Reflect.deleteProperty(AbortSignal, name)
+    }
+  })
+  test.each(['unchanged', 'remote-update', 'error-recovery'] as const)(
+    '%s preserves unsaved fields and merges untouched remote fields',
+    async scenario => {
+      const api = jest.requireMock(
+        '@frank/wallet/evm-identity',
+      ) as typeof import('@frank/wallet/evm-identity')
+      const actual = jest.requireActual(
+        'src/utils/own-profile',
+      ) as typeof import('src/utils/own-profile')
+      const identity = api.MonadIdentity.fromPrivateKeyHex(
+        '0x' + '03'.repeat(32),
+      )
+      const store = reactive({
+        owner: identity.address.raw.toLowerCase(),
+        profile: { name: 'Alice', bio: 'Original bio' },
+        inbox: { acceptancePrice: 100 },
+        unpublished: false,
+        restored: Promise.resolve(),
+        setRelayData: jest.fn(),
+      })
+      const useStore = jest.mocked(useProfileStore)
+      const previous = useStore.getMockImplementation()
+      useStore.mockReturnValue(
+        store as unknown as ReturnType<typeof useProfileStore>,
+      )
+      const read = jest.spyOn(api, 'fetchMonadProfile')
+      const wrapper = mount(ProfilePage, {
+        global: {
+          mocks: {
+            $t: (key: string) => key,
+            $router: { push: jest.fn() },
+            $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+          },
+          stubs: {
+            ...defaultStubs,
+            'q-banner': { template: '<div v-bind="$attrs"><slot /></div>' },
+            'q-icon': true,
+          },
+        },
+      })
+      try {
+        const editor = wrapper.getComponent({ name: 'Profile' })
+        editor.vm.$emit('update:name', 'Alice 2')
+        await wrapper.vm.$nextTick()
+        actual.ownProfileCheck.unchecked = null
+        if (scenario === 'error-recovery') {
+          read.mockRejectedValueOnce(new Error('503'))
+          await actual.syncOwnProfileWithRelay({
+            relayBaseUrl: 'http://relay.test',
+            identity,
+          })
+          await wrapper.vm.$nextTick()
+          expect(
+            wrapper.find('[data-test="own-profile-unchecked"]').exists(),
+          ).toBe(true)
+          await wrapper.get('[data-test="profile-update"]').trigger('click')
+          expect(store.setRelayData).not.toHaveBeenCalled()
+        }
+        let finish!: (
+          profile: Awaited<ReturnType<typeof api.fetchMonadProfile>>,
+        ) => void
+        read.mockImplementationOnce(
+          () =>
+            new Promise(resolve => {
+              finish = resolve
+            }),
+        )
+        const checking = actual.syncOwnProfileWithRelay({
+          relayBaseUrl: 'http://relay.test',
+          identity,
+        })
+        await new Promise(resolve => setTimeout(resolve, 0))
+        await wrapper.vm.$nextTick()
+        // A routine read must not manufacture an unknown-state transition.
+        if (scenario !== 'error-recovery')
+          expect(actual.ownProfileCheck.unchecked).toBeNull()
+        finish({
+          address: identity.address,
+          pubKey: identity.compressedPubKey,
+          name: scenario === 'unchanged' ? 'Alice' : 'Alice on another device',
+          bio: scenario === 'unchanged' ? 'Original bio' : 'Updated remote bio',
+        })
+        await checking
+        await wrapper.vm.$nextTick()
+        expect(editor.props('name')).toBe('Alice 2')
+        expect(editor.props('bio')).toBe(
+          scenario === 'unchanged' ? 'Original bio' : 'Updated remote bio',
+        )
+        expect(actual.ownProfileCheck.unchecked).toBeNull()
+        expect(
+          wrapper.find('[data-test="own-profile-unchecked"]').exists(),
+        ).toBe(false)
+      } finally {
+        wrapper.unmount()
+        read.mockRestore()
+        actual.ownProfileCheck.unchecked = null
+        useStore.mockImplementation(previous!)
+      }
+    },
+  )
 })

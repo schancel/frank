@@ -20,7 +20,7 @@ use cashweb_registry::store::{
         GroupStore, GroupWritePaymentFact,
     },
     kv_store::{KvError, RelayKvStore, Transact},
-    large_values::{LargeValueError, ObjectStore, INLINE_LIMIT},
+    large_values::{LargeValueError, LargeValues, ObjectStore, INLINE_LIMIT},
     s3_objects::S3ObjectStore,
 };
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
@@ -64,17 +64,27 @@ fn content(label: &str, len: usize) -> Vec<u8> {
 }
 
 fn open_kv() -> Arc<FoundationDbKvStore> {
-    let subspace = format!("frank-large-value-lab:{}:", run_id());
+    scoped_kv("")
+}
+
+// Every additional fixture remains below this run's base, so the existing final
+// cleanup clears its FDB rows too. Objects live in this run's disposable bucket.
+fn scoped_kv(scope: &str) -> Arc<FoundationDbKvStore> {
+    let subspace = format!("frank-large-value-lab:{}:{scope}", run_id());
     Arc::new(FoundationDbKvStore::open(&env("FRANK_FDB_CLUSTER_FILE"), subspace).unwrap())
 }
 
 fn s3() -> Arc<S3ObjectStore> {
+    scoped_s3("")
+}
+
+fn scoped_s3(scope: &str) -> Arc<S3ObjectStore> {
     Arc::new(
         S3ObjectStore::new(S3BlobStoreConfig {
             endpoint: env("FRANK_LAB_S3_ENDPOINT"),
             region: "us-east-1".into(),
             bucket: env("FRANK_LAB_S3_BUCKET"),
-            prefix: format!("lab-{}", run_id()),
+            prefix: format!("lab-{}/{scope}", run_id()),
             access_key_id: env("FRANK_S3_ACCESS_KEY_ID"),
             secret_access_key: env("FRANK_S3_SECRET_ACCESS_KEY"),
             force_path_style: true,
@@ -389,6 +399,209 @@ fn an_orphan_is_swept_and_a_referenced_object_never_is() {
              {failed} failed closed, {deleted} objects deleted concurrently",
             appended.len()
         );
+    });
+}
+
+/// The actual GroupStore boundary, with fresh real FDB/S3 clients on reopen.
+#[test]
+#[ignore = "phase of backend/labs/large-values-acceptance.sh"]
+fn group_inline_boundary_round_trips_through_fdb_and_s3() {
+    with_fdb(|| {
+        let (kv, objects) = (scoped_kv("boundary/"), scoped_s3("boundary"));
+        let store = relay(&kv, &objects);
+        store.put_epoch(&group_id(), initial_epoch()).unwrap();
+        for (index, len) in [INLINE_LIMIT - 1, INLINE_LIMIT, INLINE_LIMIT + 1]
+            .into_iter()
+            .enumerate()
+        {
+            let label = format!("boundary-{len}");
+            let receipt = put_message(&store, &group_id(), message(&label, len)).unwrap();
+            assert_eq!(receipt.message.server_seq, index as u64 + 1);
+            let references = store.large_values().references(10).unwrap();
+            assert_eq!(references.len(), usize::from(len > INLINE_LIMIT));
+            if let Some(reference) = references.first() {
+                let bytes = content(&label, len);
+                assert!(reference.matches(&bytes));
+                assert_eq!(
+                    objects
+                        .get(&store.large_values().object_key(reference))
+                        .unwrap(),
+                    Some(bytes)
+                );
+            }
+        }
+        drop(store);
+        drop(objects);
+        drop(kv);
+        let reopened = relay(&scoped_kv("boundary/"), &scoped_s3("boundary"));
+        let messages = reopened.list_messages(&group_id(), 0, 10).unwrap();
+        assert_eq!(messages.len(), 3);
+        for (row, len) in messages
+            .iter()
+            .zip([INLINE_LIMIT - 1, INLINE_LIMIT, INLINE_LIMIT + 1])
+        {
+            assert_eq!(
+                hex::decode(&row.ciphertext).unwrap(),
+                content(&format!("boundary-{len}"), len)
+            );
+        }
+        assert_eq!(reopened.large_values().references(10).unwrap().len(), 1);
+        eprintln!("inline boundary: 65535/65536 inline, 65537 referenced; all reopened byte-exact");
+    });
+}
+
+/// Conditional S3 claims bind the durable FDB index, not an in-memory client.
+#[test]
+#[ignore = "phase of backend/labs/large-values-acceptance.sh"]
+fn namespace_claims_race_and_survive_reopen() {
+    with_fdb(|| {
+        let barrier = std::sync::Barrier::new(2);
+        let results = std::thread::scope(|threads| {
+            let workers: Vec<_> = (0..2)
+                .map(|index| {
+                    let barrier = &barrier;
+                    threads.spawn(move || {
+                        // No fallible operation precedes the barrier: a failed
+                        // client open must not leave another worker waiting forever.
+                        barrier.wait();
+                        let values = LargeValues::new(
+                            scoped_kv(&format!("claim-{index}/")),
+                            scoped_s3("claims"),
+                            b"index/",
+                            "shared",
+                        );
+                        (index, values.claim_namespace())
+                    })
+                })
+                .collect();
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            results.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+        assert_eq!(
+            results
+                .iter()
+                .filter(|(_, result)| matches!(result, Err(LargeValueError::NamespaceClaimed(_))))
+                .count(),
+            1
+        );
+        let winner = results.iter().find(|(_, result)| result.is_ok()).unwrap().0;
+        scoped_kv("claim-result/")
+            .transact(|tx| tx.set(b"winner", &[winner as u8]))
+            .unwrap();
+        assert_namespace_owners(winner);
+        eprintln!("namespace race: one durable winner, one refused; reopened marker unchanged");
+    });
+}
+
+fn assert_namespace_owners(winner: usize) {
+    assert!(winner < 2);
+    let objects = scoped_s3("claims");
+    let marker = objects.get("shared/claim").unwrap().unwrap();
+    assert_eq!(marker.len(), 16);
+    for index in 0..2 {
+        let kv = scoped_kv(&format!("claim-{index}/"));
+        let values = LargeValues::new(kv.clone(), objects.clone(), b"index/", "shared");
+        if index == winner {
+            values.claim_namespace().unwrap();
+            assert_eq!(
+                kv.transact(|tx| tx.get(b"index/claim")).unwrap(),
+                Some(marker.clone())
+            );
+        } else {
+            assert!(matches!(
+                values.claim_namespace(),
+                Err(LargeValueError::NamespaceClaimed(_))
+            ));
+            // A disjoint namespace is independently usable by this index.
+            LargeValues::new(kv, objects.clone(), b"other/", "separate")
+                .claim_namespace()
+                .unwrap();
+        }
+    }
+    assert_eq!(objects.get("shared/claim").unwrap(), Some(marker));
+}
+
+#[test]
+#[ignore = "phase of backend/labs/large-values-acceptance.sh"]
+fn namespace_claims_remain_exclusive_after_service_restart() {
+    with_fdb(|| {
+        let winner = scoped_kv("claim-result/")
+            .transact(|tx| tx.get(b"winner"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(winner.len(), 1);
+        assert_namespace_owners(usize::from(winner[0]));
+    });
+}
+
+/// Stop this process after upload and after commit, without sweeping either intent.
+#[test]
+#[ignore = "phase of backend/labs/large-values-acceptance.sh"]
+fn stage_orphan_and_ambiguous_committed_reference() {
+    with_fdb(|| {
+        let (kv, objects) = (scoped_kv("intents/"), scoped_s3("intents"));
+        let values = LargeValues::new(kv.clone(), objects.clone(), b"index/", "persisted")
+            .with_intent_ttl(Duration::ZERO);
+        let orphan = values
+            .stage(&content("persisted-orphan", INLINE_LIMIT + 1))
+            .unwrap();
+        let kept = values
+            .stage(&content("persisted-kept", INLINE_LIMIT + 1))
+            .unwrap();
+        let orphan_key = values.object_key(&orphan.reference);
+        kv.transact(|tx| {
+            values.commit_reference(tx, &kept, b"test/owner-row")?;
+            tx.set(b"test/owner-row", &kept.reference.digest)?;
+            tx.set(b"test/orphan-key", orphan_key.as_bytes())?;
+            Ok::<_, LargeValueError>(())
+        })
+        .unwrap();
+        // Simulate a writer that lost its response after the transaction committed.
+        values.abandon(&kept);
+        assert!(objects.contains(&orphan_key).unwrap());
+        assert_eq!(values.references(10).unwrap(), vec![kept.reference]);
+    });
+}
+
+#[test]
+#[ignore = "phase of backend/labs/large-values-acceptance.sh"]
+fn reopened_intents_are_collected_without_losing_committed_bytes() {
+    with_fdb(|| {
+        let (kv, objects) = (scoped_kv("intents/"), scoped_s3("intents"));
+        let values = LargeValues::new(kv.clone(), objects.clone(), b"index/", "persisted");
+        let orphan_key = String::from_utf8(
+            kv.transact(|tx| tx.get(b"test/orphan-key"))
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        let references = values.references(10).unwrap();
+        assert_eq!(references.len(), 1);
+        assert_eq!(
+            kv.transact(|tx| tx.get(b"test/owner-row")).unwrap(),
+            Some(references[0].digest.to_vec())
+        );
+        let report = values.sweep([3; 16]).unwrap();
+        assert!(report.held_lease);
+        assert_eq!((report.deleted, report.kept_referenced), (1, 1));
+        assert!(!objects.contains(&orphan_key).unwrap());
+        assert_eq!(
+            values.read(&references[0]).unwrap(),
+            content("persisted-kept", INLINE_LIMIT + 1)
+        );
+        assert_eq!(values.sweep([3; 16]).unwrap().deleted, 0);
+        assert_eq!(values.references(10).unwrap(), references);
+        assert_eq!(
+            values.read(&references[0]).unwrap(),
+            content("persisted-kept", INLINE_LIMIT + 1)
+        );
+        eprintln!("reopened GC: one orphan deleted, ambiguous committed upload retained, repeat deletion zero");
     });
 }
 

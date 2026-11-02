@@ -17,6 +17,7 @@ import {
   renderMarkdown,
 } from './markdown'
 import { bindExternalImages, vExternalImages } from './external-images'
+import { png } from './image-data-uri.fixtures'
 import ForumMessage from 'src/components/forum/ForumMessage.vue'
 import ForumPost from 'src/components/forum/ForumPost.vue'
 import CreatePost from 'src/pages/CreatePost.vue'
@@ -161,6 +162,7 @@ describe('each surface renders a tracking picture as a placeholder', () => {
   })
 
   it('an HTML email still shows its own cid: and data: pictures', () => {
+    const picture = png(32, 24)
     const html = call(
       EmailThreadView,
       'methods',
@@ -172,7 +174,9 @@ describe('each surface renders a tracking picture as a placeholder', () => {
           {
             filename: 'logo.png',
             contentType: 'image/png',
-            content: new Uint8Array([137, 80, 78, 71]),
+            content: new Uint8Array(
+              Buffer.from(picture.split(',')[1], 'base64'),
+            ),
             contentId: '<logo@example.com>',
           },
           {
@@ -188,10 +192,7 @@ describe('each surface renders a tracking picture as a placeholder', () => {
     box.innerHTML = html
     expect(
       Array.from(box.querySelectorAll('img')).map(i => i.getAttribute('src')),
-    ).toEqual([
-      'data:image/png;base64,iVBORw==',
-      'data:image/gif;base64,R0lGODlhAQABAAAAACw=',
-    ])
+    ).toEqual([picture, 'data:image/gif;base64,R0lGODlhAQABAAAAACw='])
   })
 })
 

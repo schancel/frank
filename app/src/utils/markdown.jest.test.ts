@@ -24,6 +24,7 @@ import DOMPurify from 'dompurify'
 import * as markedModule from 'marked'
 import { marked } from 'marked'
 import { addressMentionTokens } from './address-mentions'
+import { gif, jpeg, png, webpX } from './image-data-uri.fixtures'
 import {
   renderMarkdown,
   purify,
@@ -377,10 +378,9 @@ describe('posts and email fetch nothing either', () => {
   })
 
   it('shows a picture a post carries inline', () => {
-    const html = renderMarkdown('![p](data:image/png;base64,AAAA)', false)
-    expect(pictures(html).map(i => i.getAttribute('src'))).toEqual([
-      'data:image/png;base64,AAAA',
-    ])
+    const picture = png(32, 24)
+    const html = renderMarkdown(`![p](${picture})`, false)
+    expect(pictures(html).map(i => i.getAttribute('src'))).toEqual([picture])
   })
 
   it('writes any other Markdown picture as text', () => {
@@ -399,19 +399,49 @@ describe('posts and email fetch nothing either', () => {
   })
 
   it("shows an email's own pictures: cid: parts and data: URIs", () => {
-    const part = 'data:image/png;base64,CCCC'
+    const part = png(32, 24)
+    const banner = jpeg(64, 32)
+    const inline = gif(1, 1)
     const html = purifyEmailHtml(
-      '<img src="cid:logo@example"><img src="cid:%3Cbanner%40example%3E"><img src="data:image/gif;base64,DDDD"><img src="cid:missing@example">',
+      `<img src="cid:logo@example"><img src="cid:%3Cbanner%40example%3E"><img src="${inline}"><img src="cid:missing@example">`,
       new Map([
         ['logo@example', part],
-        ['banner@example', 'data:image/jpeg;base64,EEEE'],
+        ['banner@example', banner],
       ]),
     )
     expect(pictures(html).map(i => i.getAttribute('src'))).toEqual([
       part,
-      'data:image/jpeg;base64,EEEE',
-      'data:image/gif;base64,DDDD',
+      banner,
+      inline,
     ])
+  })
+
+  it.each([
+    ['the pixel budget', png(4096, 4096)],
+    ['the dimension bound', png(4097, 1)],
+    ['an unreadable raster header', 'data:image/png;base64,iVBORw=='],
+    ['malformed base64', 'data:image/png;base64,***'],
+    ['unsupported SVG', 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4='],
+  ])('rejects %s for both CID and literal inline sources', (_reason, uri) => {
+    const safe = png(2, 3)
+    const html = purifyEmailHtml(
+      `<p>Still readable</p><img src="cid:part@example"><img src="${uri}"><img src="${safe}">`,
+      new Map([['part@example', uri]]),
+    )
+    expect(pictures(html).map(i => i.getAttribute('src'))).toEqual([safe])
+    expect(html).toContain('Still readable')
+  })
+
+  it.each([
+    ['the pixel-budget boundary', png(4000, 2000)],
+    ['the dimension boundary', png(4096, 1)],
+    ['a small WebP', webpX(32, 24)],
+  ])('keeps %s for both CID and literal inline sources', (_name, uri) => {
+    const html = purifyEmailHtml(
+      `<img src="cid:part@example"><img src="${uri}">`,
+      new Map([['part@example', uri]]),
+    )
+    expect(pictures(html).map(i => i.getAttribute('src'))).toEqual([uri, uri])
   })
 
   it('keeps email styles but takes out everything in them that loads', () => {

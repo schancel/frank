@@ -1,6 +1,7 @@
 import { marked } from 'marked'
 import DOMPurify from 'dompurify'
 import { addressMentionTokens } from './address-mentions'
+import { DELIVERED_IMAGE_LIMITS, inspectImageDataUri } from './image-data-uri'
 
 import { colors } from 'quasar'
 const { getPaletteColor } = colors
@@ -125,8 +126,8 @@ function cidOf(source: string): string | undefined {
  * `url()` and `@import`). A picture survives only as one of:
  * - a placeholder with no source naming one of the message's own `attachments`, which the caller
  *   fills in from the attachment;
- * - an inline `data:image` picture (not in a direct message), or an email's own `cid:` part
- *   resolved to one;
+ * - a supported raster `data:image` picture within the delivered-image limits (not in a direct
+ *   message), or an email's own `cid:` part resolved to one;
  * - for a web (http/https) address, a click-to-load placeholder carrying the address in
  *   `EXTERNAL_IMAGE_ATTRIBUTE`, never in `src`.
  * Links stay and open in a new tab without telling the target where they came from.
@@ -176,7 +177,10 @@ function sanitize(html: string, options: SanitizeOptions = {}): string {
         : !attachments && DATA_IMAGE.test(source)
         ? source
         : undefined
-    if (inline !== undefined && DATA_IMAGE.test(inline))
+    if (
+      inline !== undefined &&
+      inspectImageDataUri(inline, DELIVERED_IMAGE_LIMITS).ok
+    )
       node.setAttribute('src', inline)
     else node.remove()
   })
@@ -237,8 +241,8 @@ function sanitize(html: string, options: SanitizeOptions = {}): string {
  * space, as Markdown documents (posts, email) expect.
  *
  * Nothing rendered here makes the browser fetch anything (see `sanitize`). A Markdown picture with
- * a web address becomes a click-to-load placeholder; one with a `data:image` source shows as it
- * is, except in a direct message.
+ * a web address becomes a click-to-load placeholder; a supported raster `data:image` source
+ * within the delivered-image limits shows inline, except in a direct message.
  *
  * `attachments` is for a direct message: the IDs of the message's own pictures that may be shown.
  * A reference `![name](attachment:ID)` to one of them becomes an `<img>` placeholder with no

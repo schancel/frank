@@ -133,7 +133,8 @@ function bundleBexEntry(entryFilename) {
 /**
  * Bundles a src-bex entry with its package dependencies. background.ts runs the
  * extension's side of account-sync PIN pairing (src/utils/sync-pairing.ts),
- * which needs @noble/*, so it cannot use the concatenating bundler above.
+ * which needs @noble/*. inpage.ts decodes Solana signatures with a package codec.
+ * Neither entry can use the concatenating bundler above.
  */
 function bundleBexEntryWithDependencies(entryFilename) {
   const result = buildSync({
@@ -668,7 +669,7 @@ export function buildExtensions(argv = process.argv.slice(2)) {
   const version = pkgJson.version || '0.3.0'
   const buildExtensionManifest = loadBuildExtensionManifest()
 
-  const inpageBundle = bundleBexEntry('inpage.ts')
+  const inpageBundle = bundleBexEntryWithDependencies('inpage.ts')
   const contentBundle = bundleBexEntry('content.ts')
   const backgroundBundle = bundleBexEntryWithDependencies('background.ts')
   const approvalBundle = bundleBexEntryWithDependencies('approval.ts')

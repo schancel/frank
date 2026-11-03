@@ -11,6 +11,7 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { encodeEmailMessageItem } from '@frank/codec'
 import type { EmailAttachment } from '@frank/codec'
 import enUS from 'src/i18n/en-us'
+import { png } from 'src/utils/image-data-uri.fixtures'
 
 /** Resolve a key against the real en-us messages, with `{name}` interpolation. */
 function translate(key: string, params: Record<string, unknown> = {}): string {
@@ -699,6 +700,8 @@ describe('EmailThreadView', () => {
 
     describe('Sandboxed HTML Email Rendering', () => {
       it('shows toggle button when email has htmlBody and toggles between plain text and sandboxed iframe', async () => {
+        const picture = png(32, 24)
+        const oversized = png(4096, 4096)
         const emailWithHtml: EmailItem = {
           type: 'email',
           messageId: '<html-msg@example.com>',
@@ -708,13 +711,24 @@ describe('EmailThreadView', () => {
           textBody: 'Plain text version of weekly digest.',
           htmlBody:
             '<h1>Weekly Digest</h1><p>Welcome to <b>Frank</b>!</p><script>alert("evil")</script>' +
-            '<img src="https://tracker.example/open.gif?u=me" width="1" height="1"><img src="cid:logo@example.com">',
+            '<img src="https://tracker.example/open.gif?u=me" width="1" height="1"><img src="cid:logo@example.com">' +
+            `<img src="cid:oversized@example.com"><img src="${png(4097, 1)}">`,
           attachments: [
             {
               filename: 'logo.png',
               contentType: 'image/png',
-              content: new Uint8Array([137, 80, 78, 71]),
+              content: new Uint8Array(
+                Buffer.from(picture.split(',')[1], 'base64'),
+              ),
               contentId: '<logo@example.com>',
+            },
+            {
+              filename: 'oversized.png',
+              contentType: 'image/png',
+              content: new Uint8Array(
+                Buffer.from(oversized.split(',')[1], 'base64'),
+              ),
+              contentId: '<oversized@example.com>',
             },
           ],
         }
@@ -773,7 +787,9 @@ describe('EmailThreadView', () => {
           Array.from(frame.querySelectorAll('img')).map(i =>
             i.getAttribute('src'),
           ),
-        ).toEqual(['data:image/png;base64,iVBORw=='])
+        ).toEqual([picture])
+        // Rejecting inline display leaves the original attachment available on the card.
+        expect(wrapper.text()).toContain('oversized.png')
         expect(
           frame
             .querySelector('[data-external-image]')

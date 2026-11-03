@@ -3188,8 +3188,9 @@ mod tests {
                 "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY",
             )
         };
+        // Axum 0.5 wildcard captures include the leading slash after the bucket.
         let uri = std::iter::once(bucket.as_str())
-            .chain(key.split('/'))
+            .chain(key.trim_start_matches('/').split('/'))
             .map(|part| format!("/{}", uri_encode_segment(part)))
             .collect::<String>();
         let expected = sign_s3_v4_request_with_generation(

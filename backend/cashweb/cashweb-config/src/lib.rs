@@ -601,6 +601,17 @@ pub struct RegistryConf {
     pub large_values: Option<LargeValuesConf>,
 }
 
+/// HTTP dialect of the existing path-style, HMAC-authenticated object transport.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum S3Api {
+    /// S3 conditional creation uses `If-None-Match: *`.
+    #[default]
+    S3,
+    /// Google Cloud Storage XML uses a signed generation-match precondition.
+    GcsXml,
+}
+
 /// Object store for large values (`[registry.large_values]`).
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(tag = "driver", rename_all = "snake_case", deny_unknown_fields)]
@@ -612,6 +623,9 @@ pub enum LargeValuesConf {
     },
     /// An S3-compatible bucket (AWS S3, MinIO, R2), shared by every replica of a cluster.
     S3 {
+        /// HTTP dialect; independent of endpoint hostname.
+        #[serde(default)]
+        api: S3Api,
         /// Endpoint origin, e.g. `http://minio:9000`. Requests use path-style addressing.
         endpoint: url::Url,
         /// SigV4 region, e.g. `us-east-1`.
@@ -3643,6 +3657,25 @@ continuity_file = "/var/lib/frank/continuity"
             LargeValuesConf::S3 { ref bucket, ref prefix, credentials_file: Some(_), .. }
                 if bucket == "frank" && prefix == "signet"
         ));
+        let section = "[large_values]\ndriver = 's3'\nendpoint = 'https://storage.googleapis.com'\nregion = 'us-east-1'\nbucket = 'frank'\n";
+        assert!(matches!(
+            parse(section).unwrap(),
+            LargeValuesConf::S3 { api: S3Api::S3, .. }
+        ));
+        assert!(matches!(
+            parse(&format!("{section}api = 's3'\n")).unwrap(),
+            LargeValuesConf::S3 { api: S3Api::S3, .. }
+        ));
+        assert!(matches!(
+            parse(&format!("{section}api = 'gcs_xml'\n")).unwrap(),
+            LargeValuesConf::S3 {
+                api: S3Api::GcsXml,
+                ..
+            }
+        ));
+        for invalid in ["gcs", "GcsXml", "auto", ""] {
+            assert!(parse(&format!("{section}api = '{invalid}'\n")).is_err());
+        }
         // No driver, an unknown driver, or credentials inline in the relay config are refused.
         assert!(parse("[large_values]\npath = \"/x\"\n").is_err());
         assert!(parse("[large_values]\ndriver = \"gcs\"\n").is_err());
@@ -3911,6 +3944,7 @@ continuity_file = "/var/lib/frank/continuity"
             ..ClusterConf::default()
         });
         conf.large_values = Some(super::LargeValuesConf::S3 {
+            api: super::S3Api::S3,
             endpoint: "http://minio:9000".parse().unwrap(),
             region: "us-east-1".into(),
             bucket: "frank-large-values".into(),

@@ -531,6 +531,16 @@ Phases, in order:
 
 The MinIO credentials in the Compose file are synthetic and local to the lab.
 
+`Dockerfile.large-values` builds both test executables with Cargo dev/test debug
+information disabled and incremental compilation disabled. It keeps the test
+profile and its assertions/checks, and uses the separate BuildKit target cache
+`frank-labs-fdb-target-nodebug-noincremental-v1` so older debug/incremental output
+is not reused. These are lab-only build settings; see Cargo’s
+[profile settings](https://doc.rust-lang.org/cargo/reference/profiles.html) and
+[environment variables](https://doc.rust-lang.org/cargo/reference/environment-variables.html).
+Disk headroom and runtime acceptance still require measurement on the target
+runner; these settings alone do not establish that the lab fits its disk budget.
+
 ## Direct messages across replicas (HA plan step 6)
 
 `packages/bot/demo/regtest/monad-dm-cluster.livecheck.ts` brings up the relays of the cluster

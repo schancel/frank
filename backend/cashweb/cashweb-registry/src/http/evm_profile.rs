@@ -516,7 +516,11 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                assert_eq!(response.status(), expected, "conditional create at {prefix}");
+                assert_eq!(
+                    response.status(),
+                    expected,
+                    "conditional create at {prefix}"
+                );
             }
             assert_eq!(
                 registry.get_evm_profile_raw(address).unwrap(),
@@ -524,7 +528,10 @@ mod tests {
             );
             assert_eq!(registry.stored_public_profile_record_count().unwrap(), 1);
             assert_eq!(
-                registry.search_evm_profiles_by_name("Winner", 10).unwrap().len(),
+                registry
+                    .search_evm_profiles_by_name("Winner", 10)
+                    .unwrap()
+                    .len(),
                 1
             );
             assert!(registry

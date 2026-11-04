@@ -317,7 +317,8 @@ describe('stored chat accounting', () => {
       received({ serverTime: 160, outbound: true, stampValueWei: 7n }),
       received({
         serverTime: 170,
-        destinationAddress: '0xPEER',
+        senderAddress: '0x' + '11'.repeat(20),
+        destinationAddress: '0x' + '11'.repeat(20),
         stampValueWei: 11n,
       }),
       received({ serverTime: 180, status: 'pending', stampValueWei: 1000n }),

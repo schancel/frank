@@ -696,17 +696,20 @@ export function recomputeChatAccounting(
   chat: ChatState,
   activeConversationId: string | null,
 ): void {
-  chat.totalValue = 0
-  chat.totalUnreadMessages = 0
-  chat.totalUnreadValue = 0
+  let totalValue = 0
+  let totalUnreadMessages = 0
+  let totalUnreadValue = 0
   for (const message of chat.messages) {
     const value = accountedMessageValue(message)
-    chat.totalValue += value
+    totalValue += value
     if (isUnreadReceived(chat, message, activeConversationId)) {
-      chat.totalUnreadMessages += 1
-      chat.totalUnreadValue += value
+      totalUnreadMessages += 1
+      totalUnreadValue += value
     }
   }
+  chat.totalValue = totalValue
+  chat.totalUnreadMessages = totalUnreadMessages
+  chat.totalUnreadValue = totalUnreadValue
 }
 
 export function walletOwnsMessage(

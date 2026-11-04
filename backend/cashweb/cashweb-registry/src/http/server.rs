@@ -774,6 +774,7 @@ impl RegistryServer {
                         // `PUT /groups/<id>/epochs`; without it a member removal fails the
                         // preflight and the browser reports only "Network Error".
                         header::IF_MATCH,
+                        header::IF_NONE_MATCH,
                         header::HeaderName::from_static("x-frank-mailbox-epoch"),
                         header::HeaderName::from_static("x-frank-mailbox-nonce"),
                         header::HeaderName::from_static("x-frank-mailbox-expires-at-ms"),
@@ -954,6 +955,7 @@ async fn handle_put_registry(
     // branch: profile registration was never POP-gated to begin with, and this ticket's non-goals
     // explicitly exclude adding it.
     if let Ok(monad_address) = EvmAddress::from_str(&address) {
+        let condition = crate::http::evm_profile::profile_precondition(&header_map)?;
         let is_cbor = header_map
             .get(header::CONTENT_TYPE)
             .and_then(|val| val.to_str().ok())
@@ -962,10 +964,11 @@ async fn handle_put_registry(
             || crate::store::evm_profiles::is_cbor_frame(&body_bytes);
 
         if is_cbor {
-            server.registry.put_evm_profile_cbor(
+            server.registry.put_evm_profile_cbor_conditional(
                 monad_address,
                 server.chains.network().id.as_str(),
                 &body_bytes,
+                condition,
             )?;
         } else {
             let signed_metadata = cashweb_payload::proto::SignedPayload::decode(
@@ -980,7 +983,7 @@ async fn handle_put_registry(
             })?;
             server
                 .registry
-                .put_evm_profile(monad_address, signed_metadata)?;
+                .put_evm_profile_conditional(monad_address, signed_metadata, condition)?;
         }
         return Ok(PutRegistrySuccess {
             body: proto::PutSignedPayloadResponse { txid: vec![] },
@@ -1510,7 +1513,7 @@ mod spa_tests {
     }
 
     #[tokio::test]
-    async fn cors_allows_if_match_and_exposes_retry_after() {
+    async fn cors_allows_profile_conditions_and_exposes_retry_after() {
         let (_db_dir, server) = test_server(None);
         let router = server.into_router();
         let preflight = router
@@ -1521,7 +1524,7 @@ mod spa_tests {
                     .uri("/groups/00/epochs")
                     .header("origin", "https://app.example")
                     .header("access-control-request-method", "PUT")
-                    .header("access-control-request-headers", "content-type,if-match")
+                    .header("access-control-request-headers", "content-type,if-match,if-none-match")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -1535,6 +1538,7 @@ mod spa_tests {
             .unwrap()
             .to_ascii_lowercase();
         assert!(allowed.contains("if-match"), "allowed: {allowed}");
+        assert!(allowed.contains("if-none-match"), "allowed: {allowed}");
 
         let response = router
             .oneshot(

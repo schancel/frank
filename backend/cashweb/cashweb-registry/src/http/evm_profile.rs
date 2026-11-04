@@ -70,6 +70,11 @@ impl axum::extract::FromRequest<axum::body::Body> for BoundedProfileBody {
 /// format entirely, so it doesn't share that enum).
 #[derive(Debug, Error, ErrorMeta, Clone, PartialEq, Eq)]
 pub enum EvmProfileRouteError {
+    /// Only one supported strong profile condition may be supplied.
+    #[invalid_client_input()]
+    #[error("Malformed or contradictory profile publication condition")]
+    InvalidProfilePrecondition,
+
     /// The `:addr` path segment wasn't a valid `0x`-prefixed 20-byte Monad address.
     #[invalid_client_input()]
     #[error("Invalid Monad address: {0}")]
@@ -89,6 +94,31 @@ fn parse_addr(addr: &str) -> Result<Address> {
     Ok(Address::from_str(addr).map_err(InvalidAddress)?)
 }
 
+/// Parse only the strong exact-byte tokens emitted by the profile snapshot reader.
+pub(crate) fn profile_precondition(headers: &HeaderMap) -> Result<crate::store::evm_profiles::ProfilePrecondition> {
+    use axum::http::header::{IF_MATCH, IF_NONE_MATCH};
+    use crate::store::evm_profiles::ProfilePrecondition;
+    let matched = headers.get_all(IF_MATCH).iter().collect::<Vec<_>>();
+    let absent = headers.get_all(IF_NONE_MATCH).iter().collect::<Vec<_>>();
+    match (matched.as_slice(), absent.as_slice()) {
+        ([], []) => Ok(ProfilePrecondition::Unconditional),
+        ([], [value]) if value.to_str().ok().map(str::trim) == Some("*") => Ok(ProfilePrecondition::Absent),
+        ([value], []) => {
+            let token = value.to_str().map_err(|_| InvalidProfilePrecondition)?.trim();
+            if token.len() != 66 || !token.starts_with('"') || !token.ends_with('"') {
+                return Err(InvalidProfilePrecondition.into());
+            }
+            let digest = &token[1..65];
+            if !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+                return Err(InvalidProfilePrecondition.into());
+            }
+            let bytes = hex::decode(digest).map_err(|_| InvalidProfilePrecondition)?;
+            Ok(ProfilePrecondition::Matches(bytes.try_into().map_err(|_| InvalidProfilePrecondition)?))
+        }
+        _ => Err(InvalidProfilePrecondition.into()),
+    }
+}
+
 /// `PUT /metadata/monad/:addr`: verify and store a Monad-native profile registration (see this
 /// module's docs, and `crate::evm_profile_verify`, for the full verification scheme). Reuses
 /// [`proto::PutSignedPayloadResponse`] for its response shape (with an always-empty `txid` list,
@@ -102,6 +132,7 @@ pub async fn handle_put_evm_profile(
     BoundedProfileBody(body_bytes): BoundedProfileBody,
 ) -> std::result::Result<Protobuf<proto::PutSignedPayloadResponse>, HttpRegistryError> {
     let address = parse_addr(&address)?;
+    let condition = profile_precondition(&headers)?;
     let is_cbor = headers
         .get(CONTENT_TYPE)
         .and_then(|val| val.to_str().ok())
@@ -110,10 +141,11 @@ pub async fn handle_put_evm_profile(
         || crate::store::evm_profiles::is_cbor_frame(&body_bytes);
 
     if is_cbor {
-        server.registry.put_evm_profile_cbor(
+        server.registry.put_evm_profile_cbor_conditional(
             address,
             server.chains.network().id.as_str(),
             &body_bytes,
+            condition,
         )?;
     } else {
         let signed_metadata = cashweb_payload::proto::SignedPayload::decode(body_bytes.as_ref())
@@ -124,7 +156,7 @@ pub async fn handle_put_evm_profile(
                     ),
                 ))
             })?;
-        server.registry.put_evm_profile(address, signed_metadata)?;
+        server.registry.put_evm_profile_conditional(address, signed_metadata, condition)?;
     }
     Ok(Protobuf(proto::PutSignedPayloadResponse { txid: vec![] }))
 }
@@ -539,5 +571,36 @@ mod tests {
                 .unwrap()
                 .is_empty());
         }
+    }
+
+    #[test]
+    fn competing_exact_row_writers_replace_only_one_record_and_its_indexes() {
+        use crate::store::evm_profiles::{DbEvmProfilesError, ProfilePrecondition};
+        let (_tempdir, registry) = test_registry("profile-conditional-transaction");
+        let (original, address) = sign_evm_profile(1, &named_profile(100, "Original"));
+        registry.put_evm_profile(address, original.clone()).unwrap();
+        let hash = Sha256::digest(original.encode_to_vec().into());
+        let condition = ProfilePrecondition::Matches(*hash.byte_array());
+        let registry = Arc::new(registry);
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut jobs = Vec::new();
+        for (time, name) in [(200, "First"), (300, "Second")] {
+            let registry = registry.clone();
+            let barrier = barrier.clone();
+            let (signed, _) = sign_evm_profile(1, &named_profile(time, name));
+            jobs.push(std::thread::spawn(move || {
+                barrier.wait();
+                registry.put_evm_profile_conditional(address, signed, condition)
+            }));
+        }
+        barrier.wait();
+        let results = jobs.into_iter().map(|job| job.join().unwrap()).collect::<Vec<_>>();
+        assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
+        let failure = results.into_iter().find_map(Result::err).unwrap();
+        assert!(matches!(failure.downcast_ref::<DbEvmProfilesError>(), Some(DbEvmProfilesError::ProfilePreconditionFailed)));
+        assert_eq!(registry.stored_public_profile_record_count().unwrap(), 1);
+        assert!(registry.search_evm_profiles_by_name("Original", 10).unwrap().is_empty());
+        assert_eq!(registry.search_evm_profiles_by_name("First", 10).unwrap().len()
+            + registry.search_evm_profiles_by_name("Second", 10).unwrap().len(), 1);
     }
 }

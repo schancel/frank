@@ -260,7 +260,7 @@ test.each([401, 403, 500, 503, 'offline'])(
   'profile uncertainty %s preserves the retained copy and remains visible until the relay confirms',
   async status => {
     const fetch = jest
-      .spyOn(identityApi, 'fetchMonadProfile')
+      .spyOn(identityApi, 'fetchEvmProfileSnapshot')
       .mockRejectedValue(Object.assign(new Error('unknown'), { status }))
     const publish = jest
       .spyOn(identityApi, 'registerMonadIdentityCbor')
@@ -278,7 +278,7 @@ test.each([401, 403, 500, 503, 'offline'])(
     expect(store.profile).toEqual({ name: 'Retained' })
     expect(publish).not.toHaveBeenCalled()
     expect(ownProfileCheck.unchecked).toBe(store.owner)
-    fetch.mockResolvedValue(undefined)
+    fetch.mockResolvedValue({ profile: undefined, precondition: { kind: 'absent' } })
     expect(
       await syncOwnProfileWithRelay({
         relayBaseUrl: 'https://relay.example',
@@ -291,7 +291,7 @@ test.each([401, 403, 500, 503, 'offline'])(
 )
 
 test('a refused publication is not confirmed or cleared and the same saved profile can retry', async () => {
-  jest.spyOn(identityApi, 'fetchMonadProfile').mockResolvedValue(undefined)
+  jest.spyOn(identityApi, 'fetchEvmProfileSnapshot').mockResolvedValue({ profile: undefined, precondition: { kind: 'absent' } })
   const publish = jest
     .spyOn(identityApi, 'registerMonadIdentityCbor')
     .mockRejectedValueOnce(new Error('503'))

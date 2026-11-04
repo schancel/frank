@@ -31,6 +31,12 @@ impl From<RegistryServerError> for HttpRegistryError {
 
 impl IntoResponse for HttpRegistryError {
     fn into_response(self) -> Response {
+        if matches!(
+            self.0.downcast_ref::<DbEvmProfilesError>(),
+            Some(DbEvmProfilesError::ProfilePreconditionFailed)
+        ) {
+            return axum::http::StatusCode::PRECONDITION_FAILED.into_response();
+        }
         let details = report_to_details(&self.0, self::report_to_error_meta);
         details_to_status_proto(details).into_response()
     }

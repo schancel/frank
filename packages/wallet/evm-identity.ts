@@ -826,9 +826,35 @@ export function buildSignedDirectoryStatement(
   return type2Frame
 }
 
+/** Exact row observed by own-profile sync;404 alone means absent. */
+export type EvmProfilePrecondition =
+  | { kind: 'absent' }
+  | { kind: 'matches'; digest: string }
+
+export interface EvmProfileSnapshot {
+  profile: ProfileInfo | undefined
+  precondition: EvmProfilePrecondition
+}
+
+export function isProfilePreconditionFailed(error: unknown): boolean {
+  return axios.isAxiosError(error) && error.response?.status === 412
+}
+
+function profileConditionalHeaders(
+  condition: EvmProfilePrecondition | undefined,
+): Record<string, string> {
+  if (condition === undefined) return {}
+  if (condition.kind === 'absent') return { 'If-None-Match': '*' }
+  if (condition.kind === 'matches' && /^[0-9a-f]{64}$/.test(condition.digest))
+    return { 'If-Match': `"${condition.digest}"` }
+  throw new Error('Invalid observed profile condition')
+}
+
 /** `PUT /metadata/:addr` with `Content-Type: application/cbor` (ticket #605).
  * Sends a canonical Type-2 directory attestation signed by the identity key. */
 export async function registerMonadIdentityCbor(params: {
+  /** Omit only for an intentional publication without an observed snapshot. */
+  precondition?: EvmProfilePrecondition
   relayBaseUrl: string
   signal?: AbortSignal
   identity: MonadIdentity
@@ -843,6 +869,7 @@ export async function registerMonadIdentityCbor(params: {
     ed25519?: Uint8Array
   }
 }): Promise<void> {
+  const conditionalHeaders = profileConditionalHeaders(params.precondition)
   // A display name that cannot be signed is refused before the relay is asked anything.
   const name = params.profile?.name
   if (name !== undefined && validateProfileDisplayName(name).normalized)
@@ -873,6 +900,7 @@ export async function registerMonadIdentityCbor(params: {
     data: Buffer.from(body),
     headers: {
       'Content-Type': 'application/cbor',
+      ...conditionalHeaders,
       ...relayOriginHeader('http://frank.local'),
     },
   })
@@ -1282,6 +1310,16 @@ export async function fetchMonadProfile(params: {
   address: ChainAddress
   expectedNetwork?: string
 }): Promise<ProfileInfo | undefined> {
+  return (await fetchEvmProfileSnapshot(params)).profile
+}
+
+/** Read exact stored bytes even when their decoded profile has expired. */
+export async function fetchEvmProfileSnapshot(params: {
+  relayBaseUrl: string
+  signal?: AbortSignal
+  address: ChainAddress
+  expectedNetwork?: string
+}): Promise<EvmProfileSnapshot> {
   try {
     const response = await axios({
       method: 'get',
@@ -1292,12 +1330,16 @@ export async function fetchMonadProfile(params: {
       responseType: 'arraybuffer',
     })
     const raw = new Uint8Array(response.data)
+    const precondition: EvmProfilePrecondition = {
+      kind: 'matches',
+      digest: Buffer.from(monadProfilePayloadDigest(raw)).toString('hex'),
+    }
     const decoded = decodeProfileBytes(raw, {
       expectedAddress: params.address.raw,
       expectedNetwork: params.expectedNetwork,
     })
     if (decoded.expiresAtMs !== undefined && decoded.expiresAtMs <= Date.now())
-      return undefined
+      return { profile: undefined, precondition }
     const result: ProfileInfo = {
       address: params.address,
       pubKey: decoded.pubKey,
@@ -1316,10 +1358,10 @@ export async function fetchMonadProfile(params: {
     if (decoded.botRole !== undefined) result.botRole = decoded.botRole
     if (decoded.spendKeys !== undefined) result.spendKeys = decoded.spendKeys
     if (decoded.curveKeys !== undefined) result.curveKeys = decoded.curveKeys
-    return result
+    return { profile: result, precondition }
   } catch (err) {
     if (axios.isAxiosError(err) && err.response?.status === 404) {
-      return undefined
+      return { profile: undefined, precondition: { kind: 'absent' } }
     }
     throw err
   }

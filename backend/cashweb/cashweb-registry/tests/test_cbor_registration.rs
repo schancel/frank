@@ -988,3 +988,83 @@ async fn test_oversized_payload_rejection_sec1() {
     let resp = router.clone().oneshot(req).await.unwrap();
     assert_eq!(resp.status(), StatusCode::PAYLOAD_TOO_LARGE);
 }
+
+#[tokio::test]
+async fn conditional_metadata_matches_exact_raw_rows_in_both_routes_and_representations() {
+    for prefix in ["/metadata/", "/metadata/monad/"] {
+        for cbor in [false, true] {
+            let tempdir = tempdir::TempDir::new("profile-conditional-http").unwrap();
+            let key = seckey(19);
+            let encoded = |revision, time, name| {
+                if cbor {
+                    build_cbor_attestation(&key, "monad-testnet", revision, time, 1, Some(name), None, 1)
+                } else {
+                    build_legacy_signed_payload(&key, time, Some(name))
+                }
+            };
+            let (original, address, _) = encoded(1, 1_000, "Original");
+            let (winner, _, _) = encoded(2, 2_000, "Winner");
+            let (loser, _, _) = encoded(3, 3_000, "Loser");
+            let token = |bytes: &[u8]| format!("\"{}\"", hex::encode(Sha256::digest(bytes.to_vec().into()).as_slice()));
+            let old_token = token(&original);
+            let server = make_server(open_registry(tempdir.path(), Net::Regtest));
+            let registry = server.registry.clone();
+            let router = server.into_router();
+            let uri = format!("{prefix}{}", address.to_hex());
+            let media = if cbor { CONTENT_TYPE_CBOR } else { "application/x-protobuf" };
+            // Existing expired rows are present for conditions: only HTTP404 means absent.
+            for (body, header, condition, expected) in [
+                (&original, "if-match", old_token.as_str(), StatusCode::PRECONDITION_FAILED),
+                (&original, "if-none-match", "*", StatusCode::OK),
+                (&loser, "if-none-match", "*", StatusCode::PRECONDITION_FAILED),
+                (&winner, "if-match", old_token.as_str(), StatusCode::OK),
+                (&loser, "if-match", old_token.as_str(), StatusCode::PRECONDITION_FAILED),
+            ] {
+                let response = router.clone().oneshot(Request::builder()
+                    .method("PUT").uri(&uri).header(CONTENT_TYPE, media)
+                    .header(header, condition).body(Body::from(body.clone())).unwrap()).await.unwrap();
+                assert_eq!(response.status(), expected);
+            }
+            for get_prefix in ["/metadata/", "/metadata/monad/"] {
+                let response = router.clone().oneshot(Request::builder()
+                    .uri(format!("{get_prefix}{}", address.to_hex())).body(Body::empty()).unwrap()).await.unwrap();
+                assert_eq!(response.status(), StatusCode::OK);
+                let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+                assert_eq!(bytes.as_ref(), winner.as_slice());
+            }
+            for (matched, absent) in [
+                (Some("*"), None),
+                (Some("unquoted"), None),
+                (Some("W/\"weak\""), None),
+                (Some("\"short\""), None),
+                (None, Some("\"unsupported\"")),
+                (Some(old_token.as_str()), Some("*")),
+            ] {
+                let mut request = Request::builder().method("PUT").uri(&uri).header(CONTENT_TYPE, media);
+                if let Some(value) = matched { request = request.header("if-match", value); }
+                if let Some(value) = absent { request = request.header("if-none-match", value); }
+                let response = router.clone().oneshot(request.body(Body::from(loser.clone())).unwrap()).await.unwrap();
+                assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+            }
+            let mut invalid_signature = loser.clone();
+            *invalid_signature.last_mut().unwrap() ^= 1;
+            let invalid = router.clone().oneshot(Request::builder().method("PUT")
+                .uri(&uri).header(CONTENT_TYPE, media).header("if-match", token(&winner))
+                .body(Body::from(invalid_signature)).unwrap()).await.unwrap();
+            assert_eq!(invalid.status(), StatusCode::BAD_REQUEST);
+            let duplicate = router.clone().oneshot(Request::builder().method("PUT")
+                .uri(&uri).header(CONTENT_TYPE, media).header("if-none-match", "*")
+                .header("if-none-match", "*").body(Body::from(loser.clone())).unwrap()).await.unwrap();
+            assert_eq!(duplicate.status(), StatusCode::BAD_REQUEST);
+            assert_eq!(registry.get_evm_profile_raw(address).unwrap(), Some(winner.clone()));
+            assert_eq!(registry.stored_public_profile_record_count().unwrap(), 1);
+            for (name, count) in [("Original", 0), ("Winner", 1), ("Loser", 0)] {
+                let response = router.clone().oneshot(Request::builder()
+                    .uri(format!("/metadata/monad/search?prefix={name}")).body(Body::empty()).unwrap()).await.unwrap();
+                let bytes = hyper::body::to_bytes(response.into_body()).await.unwrap();
+                let rows = proto::ListMonadProfilesResponse::decode(bytes).unwrap();
+                assert_eq!(rows.entries.len(), count);
+            }
+        }
+    }
+}

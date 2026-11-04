@@ -452,13 +452,14 @@ it('a stalled old account read does not block claiming and refreshing the new ac
   one.store.profile = { name: 'Old account' }
   let finishOld!: (value: ProfileInfo) => void
   const read = jest
-    .spyOn(api, 'fetchMonadProfile')
+    .spyOn(api, 'fetchEvmProfileSnapshot')
     .mockImplementation(async ({ address }) => {
       if (address.raw === oldIdentity.address.raw)
-        return new Promise(resolve => {
+        return new Promise<ProfileInfo>(resolve => {
           finishOld = resolve
-        })
-      return { name: 'New account', accountType: 0 } as ProfileInfo
+        }).then(profile => ({ profile, precondition: { kind: 'matches' as const, digest: '0'.repeat(64) } }))
+      return { profile: { name: 'New account', accountType: 0 } as ProfileInfo,
+        precondition: { kind: 'matches' as const, digest: '0'.repeat(64) } }
     })
   const publish = jest
     .spyOn(api, 'registerMonadIdentityCbor')
@@ -501,7 +502,7 @@ it('stopping an in-flight own-profile GET aborts the request and does not adopt 
   const controller = new AbortController()
   let requestSignal: AbortSignal | undefined
   const read = jest
-    .spyOn(api, 'fetchMonadProfile')
+    .spyOn(api, 'fetchEvmProfileSnapshot')
     .mockImplementation(({ signal }) => {
       requestSignal = signal
       return new Promise((_resolve, reject) =>

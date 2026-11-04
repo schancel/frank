@@ -23,3 +23,6 @@ pub mod topics;
 pub mod foundationdb_driver;
 #[cfg(all(test, feature = "foundationdb"))]
 mod registry_fdb_tests;
+
+#[cfg(all(test, feature = "foundationdb"))]
+mod matched_restore_support;

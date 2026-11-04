@@ -4109,4 +4109,99 @@ mod tests {
         assert_eq!(object_count(objects.root()), 1);
         assert_eq!(home.list_messages(&id, 0, 10).unwrap(), synced);
     }
+
+    #[cfg(feature = "foundationdb")]
+    mod matched_restore {
+        use super::*;
+        use crate::store::matched_restore_support as matched;
+
+        fn open(read_only: bool) -> GroupStore {
+            let (kv, objects) = matched::open("groups-v1", read_only);
+            GroupStore::new(kv, objects)
+        }
+
+        fn payment(n: u8) -> GroupWritePaymentFact {
+            GroupWritePaymentFact {
+                network: "monad-testnet".into(),
+                tx_hash: [n; 32], payer: [1; 20], payee: [2; 20],
+                value_wei: 1_000, nonce: n as u64,
+            }
+        }
+
+        fn message(n: u8) -> GroupMessageEnvelope {
+            let id = root_frame(3, 0, &"00".repeat(32)).group_id;
+            large_message(&id, n, if n == 1 { 64 } else { INLINE_LIMIT + 1 }, &keypair(42).0)
+        }
+
+        #[test]
+        #[ignore = "matched native backup/restore seed phase"]
+        fn seed() {
+            matched::run(|| {
+                let store = open(false);
+                let epoch = root_frame(3, 0, &"00".repeat(32)).normalized().unwrap();
+                let id = epoch.group_id.clone();
+                store.put_epoch(&id, epoch).unwrap();
+                store.put_write_price(&id, price_record(3, 1, 1_000), "monad-testnet", 1).unwrap();
+                for n in [1u8, 2] {
+                    let appended = store.put_paid_message(&id, message(n), &payment(n), 1).unwrap();
+                    assert!(appended.appended);
+                    assert_eq!(appended.message.server_seq, n as u64);
+                }
+                assert_eq!(store.large_values().references(10).unwrap().len(), 1);
+            });
+        }
+
+        #[test]
+        #[ignore = "matched restored read-only phase before replay or GC"]
+        fn restored_read_only() {
+            matched::run(|| {
+                let store = open(true);
+                let epoch = root_frame(3, 0, &"00".repeat(32)).normalized().unwrap();
+                let id = epoch.group_id.clone();
+                assert_eq!(store.get_current_epoch(&id).unwrap(), Some(epoch.clone()));
+                assert_eq!(store.get_epoch(&id, 0).unwrap(), Some(epoch));
+                assert_eq!(store.get_write_price(&id).unwrap(), Some(price_record(3, 1, 1_000)));
+                let rows = store.list_messages(&id, 0, 10).unwrap();
+                assert_eq!(rows.len(), 2);
+                for n in [1u8, 2] {
+                    let row = &rows[(n - 1) as usize];
+                    assert_eq!(row.server_seq, n as u64);
+                    assert_eq!(row.ciphertext, message(n).ciphertext);
+                    assert_eq!(row.write_sig, message(n).write_sig);
+                    assert_eq!(store.accepted_receipt(&id, message(n)).unwrap(), Some(row.clone()));
+                    let paid = store.payment_record(&payment(n).tx_hash).unwrap().unwrap();
+                    assert_eq!((paid.group_id, paid.server_seq, paid.value_wei), (id.clone(), n as u64, "1000".into()));
+                }
+                assert_eq!(store.list_messages(&id, 1, 10).unwrap(), vec![rows[1].clone()]);
+                assert_eq!(store.large_values().references(10).unwrap().len(), 1);
+            });
+        }
+
+        #[test]
+        #[ignore = "matched restored replay and GC phase after all read-only phases"]
+        fn replay_and_gc() {
+            matched::run(|| {
+                let store = open(false);
+                let id = root_frame(3, 0, &"00".repeat(32)).group_id;
+                let before = store.list_messages(&id, 0, 10).unwrap();
+                let retry = store.put_paid_message(&id, message(2), &payment(9), 1).unwrap();
+                assert!(!retry.appended);
+                assert_eq!(retry.message, before[1]);
+                assert_eq!(store.payment_record(&payment(9).tx_hash).unwrap(), None);
+                assert_eq!(store.put_paid_message(&id, message(3), &payment(2), 1), Err(GroupError::PaymentAlreadyUsed));
+                let same_nonce = GroupWritePaymentFact { nonce: 2, ..payment(9) };
+                assert_eq!(store.put_paid_message(&id, message(3), &same_nonce, 1), Err(GroupError::PaymentNonceUsed));
+                assert_eq!(store.list_messages(&id, 0, 10).unwrap(), before);
+                let next = store.put_paid_message(&id, message(3), &payment(3), 1).unwrap();
+                assert_eq!(next.message.server_seq, 3);
+                let values = store.large_values();
+                assert_eq!(values.references(10).unwrap().len(), 2);
+                // Refused writes abandon their uploads. The first sweep collects only those.
+                assert!(store.sweep_large_values([2; 16]).unwrap().deleted > 0);
+                assert_eq!(store.sweep_large_values([2; 16]).unwrap().deleted, 0);
+                assert_eq!(store.list_messages(&id, 0, 10).unwrap().len(), 3);
+                assert_eq!(values.references(10).unwrap().len(), 2);
+            });
+        }
+    }
 }

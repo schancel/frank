@@ -481,4 +481,47 @@ mod tests {
         assert_eq!(body.entries[0].address, address.to_hex());
         assert_eq!(body.entries[0].signed_payload, signed.encode_to_vec());
     }
+
+    #[tokio::test]
+    async fn conditional_create_preserves_a_profile_published_after_observed_absence() {
+        for prefix in ["/metadata/", "/metadata/monad/"] {
+            let (_tempdir, registry) = test_registry("profile-create-race");
+            let (winner, address) = sign_evm_profile(1, &named_profile(100, "Winner"));
+            let (stale, _) = sign_evm_profile(1, &named_profile(200, "Stale"));
+            let server = test_server(registry);
+            let registry = server.registry.clone();
+            let router = server.into_router();
+            let uri = format!("{prefix}{}", address.to_hex());
+            let missing = router
+                .clone()
+                .oneshot(Request::builder().uri(&uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+            // B publishes after A observed404. A's stale full copy signs a later revision.
+            for (signed, expected) in [
+                (&winner, StatusCode::OK),
+                (&stale, StatusCode::PRECONDITION_FAILED),
+            ] {
+                let response = router
+                    .clone()
+                    .oneshot(
+                        Request::builder()
+                            .method("PUT")
+                            .uri(&uri)
+                            .header("content-type", "application/x-protobuf")
+                            .header("if-none-match", "*")
+                            .body(Body::from(signed.encode_to_vec()))
+                            .unwrap(),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(response.status(), expected, "conditional create at {prefix}");
+            }
+            assert_eq!(registry.get_evm_profile_raw(address).unwrap(), Some(winner.encode_to_vec()));
+            assert_eq!(registry.stored_public_profile_record_count().unwrap(), 1);
+            assert_eq!(registry.search_evm_profiles_by_name("Winner", 10).unwrap().len(), 1);
+            assert!(registry.search_evm_profiles_by_name("Stale", 10).unwrap().is_empty());
+        }
+    }
 }

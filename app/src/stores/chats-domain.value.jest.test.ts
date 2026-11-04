@@ -6,6 +6,7 @@ import {
   amountsInAvu,
   receivedMessageAmounts,
   receivedValueAvu,
+  recomputeChatAccounting,
   sortConversationsByReceivedValue,
   unreadValueAvu,
   type ChainAmount,
@@ -291,4 +292,109 @@ describe('inbox received-value ordering', () => {
       'b',
     ])
   })
+})
+
+describe('stored chat accounting', () => {
+  function conversation(messages: ChatMessage[]): Conversation {
+    return {
+      ...chat(messages),
+      kind: 'direct',
+      address: '0xPEER',
+      participants: [],
+      lastReceived: 200,
+      lastRead: 100,
+      totalValue: -1,
+      totalUnreadMessages: -1,
+      totalUnreadValue: -1,
+    }
+  }
+
+  it('preserves stamp accounting and unread rules across reading and activation', () => {
+    const row = conversation([
+      received({ serverTime: 50, stampValueWei: 2n }),
+      received({ serverTime: 100, stampValueWei: 3n }),
+      received({ serverTime: 150, stampValueWei: 5n }),
+      received({ serverTime: 160, outbound: true, stampValueWei: 7n }),
+      received({
+        serverTime: 170,
+        senderAddress: '0x' + '11'.repeat(20),
+        destinationAddress: '0x' + '11'.repeat(20),
+        stampValueWei: 11n,
+      }),
+      received({ serverTime: 180, status: 'pending', stampValueWei: 1000n }),
+      received({ serverTime: 190 }), // A claimed payment without a verified stamp.
+    ])
+    const messages = row.messages.slice()
+    const totals = () => [
+      row.totalValue,
+      row.totalUnreadMessages,
+      row.totalUnreadValue,
+    ]
+
+    recomputeChatAccounting(row, 'another-conversation')
+    // Stored total includes confirmed outgoing/self stamps; unread excludes them.
+    // Pending and unstamped incoming messages are unread, but add no value.
+    expect(totals()).toEqual([28, 3, 5])
+    recomputeChatAccounting(row, row.id)
+    expect(totals()).toEqual([28, 0, 0])
+    recomputeChatAccounting(row, null)
+    expect(totals()).toEqual([28, 3, 5])
+    row.lastRead = 200
+    recomputeChatAccounting(row, null)
+    expect(totals()).toEqual([28, 0, 0])
+    expect(row.messages).toEqual(messages)
+  })
+
+  it.each([0, 1, 120])(
+    'publishes each total once after scanning %i messages without reading prior totals',
+    size => {
+      const scanned = new Set<number>()
+      const row = conversation(
+        Array.from({ length: size }, (_, index) => {
+          const message = received({ serverTime: 150, stampValueWei: 5n })
+          Object.defineProperty(message, 'status', {
+            get() {
+              scanned.add(index)
+              return 'confirmed'
+            },
+          })
+          return message
+        }),
+      )
+      const totalKeys = [
+        'totalValue',
+        'totalUnreadMessages',
+        'totalUnreadValue',
+      ]
+      const reads = jest.fn()
+      const writes = jest.fn()
+      // Observe the exported function's property accesses, including redundant assignments
+      // that a reactive observer might suppress when the value has not changed.
+      const observed = new Proxy(row, {
+        get(target, key, receiver) {
+          if (totalKeys.includes(String(key))) reads(key)
+          return Reflect.get(target, key, receiver)
+        },
+        set(target, key, value, receiver) {
+          if (totalKeys.includes(String(key))) {
+            writes(key, value)
+            expect(scanned.size).toBe(size)
+          }
+          return Reflect.set(target, key, value, receiver)
+        },
+      })
+
+      recomputeChatAccounting(observed, null)
+
+      expect(reads).not.toHaveBeenCalled()
+      expect(writes.mock.calls).toEqual([
+        ['totalValue', size * 5],
+        ['totalUnreadMessages', size],
+        ['totalUnreadValue', size * 5],
+      ])
+      expect(row.totalValue).toBe(size * 5)
+      expect(row.totalUnreadMessages).toBe(size)
+      expect(row.totalUnreadValue).toBe(size * 5)
+    },
+  )
 })

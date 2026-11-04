@@ -23,20 +23,26 @@ pub(super) fn open(suffix: &str, read_only: bool) -> (Arc<dyn RelayKvStore>, Arc
     assert!(["directory-v1", "groups-v1", "forum-v1", "messages-v4"].contains(&suffix));
     let run = env("FRANK_LAB_RUN_ID");
     assert!(run.len() == 36 && run.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-'));
-    let kv = Arc::new(FoundationDbKvStore::open(
-        &env("FRANK_FDB_CLUSTER_FILE"),
-        format!("frank-large-value-lab:{run}:{suffix}/"),
-    ).unwrap());
-    let objects = Arc::new(S3ObjectStore::new(S3BlobStoreConfig {
-        api: cashweb_config::S3Api::S3,
-        endpoint: env("FRANK_LAB_S3_ENDPOINT"),
-        region: "us-east-1".into(),
-        bucket: env("FRANK_LAB_S3_BUCKET"),
-        prefix: format!("lab-{run}/typed-owners"),
-        access_key_id: env("FRANK_S3_ACCESS_KEY_ID"),
-        secret_access_key: env("FRANK_S3_SECRET_ACCESS_KEY"),
-        force_path_style: true,
-    }).unwrap());
+    let kv = Arc::new(
+        FoundationDbKvStore::open(
+            &env("FRANK_FDB_CLUSTER_FILE"),
+            format!("frank-large-value-lab:{run}:{suffix}/"),
+        )
+        .unwrap(),
+    );
+    let objects = Arc::new(
+        S3ObjectStore::new(S3BlobStoreConfig {
+            api: cashweb_config::S3Api::S3,
+            endpoint: env("FRANK_LAB_S3_ENDPOINT"),
+            region: "us-east-1".into(),
+            bucket: env("FRANK_LAB_S3_BUCKET"),
+            prefix: format!("lab-{run}/typed-owners"),
+            access_key_id: env("FRANK_S3_ACCESS_KEY_ID"),
+            secret_access_key: env("FRANK_S3_SECRET_ACCESS_KEY"),
+            force_path_style: true,
+        })
+        .unwrap(),
+    );
     if read_only {
         (Arc::new(ReadOnlyKv(kv)), Arc::new(ReadOnlyObjects(objects)))
     } else {
@@ -62,10 +68,20 @@ impl KvTransaction for ReadOnlyTx<'_> {
     fn get(&mut self, key: &[u8]) -> Result<Option<Vec<u8>>, KvError> {
         self.0.get(key)
     }
-    fn get_range(&mut self, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+    fn get_range(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
         self.0.get_range(start, end, limit)
     }
-    fn get_range_reverse(&mut self, start: &[u8], end: &[u8], limit: usize) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
+    fn get_range_reverse(
+        &mut self,
+        start: &[u8],
+        end: &[u8],
+        limit: usize,
+    ) -> Result<Vec<(Vec<u8>, Vec<u8>)>, KvError> {
         self.0.get_range_reverse(start, end, limit)
     }
     fn set(&mut self, _key: &[u8], _value: &[u8]) -> Result<(), KvError> {
@@ -86,7 +102,12 @@ impl ObjectStore for ReadOnlyObjects {
     fn put(&self, _key: &str, _bytes: &[u8], _sha256: &[u8; 32]) -> Result<(), ObjectStoreError> {
         panic!("restored read-only phase attempted object put")
     }
-    fn put_if_absent(&self, _key: &str, _bytes: &[u8], _sha256: &[u8; 32]) -> Result<bool, ObjectStoreError> {
+    fn put_if_absent(
+        &self,
+        _key: &str,
+        _bytes: &[u8],
+        _sha256: &[u8; 32],
+    ) -> Result<bool, ObjectStoreError> {
         panic!("restored read-only phase attempted object claim")
     }
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, ObjectStoreError> {
@@ -105,9 +126,16 @@ fn read_only_guards_refuse_every_mutation_before_the_driver() {
     use super::{kv_store::RocksDbKvStore, large_values::LocalFsObjectStore};
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
-    for operation in 0..3 {
+    for (operation, expected) in [
+        "restored read-only phase attempted set",
+        "restored read-only phase attempted clear",
+        "restored read-only phase attempted atomic add",
+    ]
+    .iter()
+    .enumerate()
+    {
         let kv = ReadOnlyKv(Arc::new(RocksDbKvStore::open_temporary().unwrap()));
-        assert!(catch_unwind(AssertUnwindSafe(|| {
+        let failure = catch_unwind(AssertUnwindSafe(|| {
             kv.run_transaction(&mut |tx| {
                 match operation {
                     0 => tx.set(b"key", b"value").unwrap(),
@@ -115,18 +143,30 @@ fn read_only_guards_refuse_every_mutation_before_the_driver() {
                     _ => tx.atomic_add(b"key", 1).unwrap(),
                 }
                 Outcome::Commit
-            }).unwrap();
-        })).is_err());
+            })
+            .unwrap();
+        }))
+        .expect_err("read-only KV mutation was admitted");
+        assert_eq!(failure.downcast_ref::<&str>(), Some(expected));
     }
     let objects = ReadOnlyObjects(Arc::new(LocalFsObjectStore::temporary()));
-    for operation in 0..3 {
-        assert!(catch_unwind(AssertUnwindSafe(|| {
-            match operation {
-                0 => objects.put("key", b"value", &[0; 32]).unwrap(),
-                1 => { objects.put_if_absent("key", b"value", &[0; 32]).unwrap(); }
-                _ => objects.delete("key").unwrap(),
+    for (operation, expected) in [
+        "restored read-only phase attempted object put",
+        "restored read-only phase attempted object claim",
+        "restored read-only phase attempted object delete",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let failure = catch_unwind(AssertUnwindSafe(|| match operation {
+            0 => objects.put("key", b"value", &[0; 32]).unwrap(),
+            1 => {
+                objects.put_if_absent("key", b"value", &[0; 32]).unwrap();
             }
-        })).is_err());
+            _ => objects.delete("key").unwrap(),
+        }))
+        .expect_err("read-only object mutation was admitted");
+        assert_eq!(failure.downcast_ref::<&str>(), Some(expected));
     }
     assert_eq!(objects.get("key").unwrap(), None);
 }

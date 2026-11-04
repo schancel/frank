@@ -1392,7 +1392,10 @@ mod persistence_tests {
         paid_input_with_nonce(envelope, 0)
     }
 
-    pub(super) fn paid_input_with_nonce(envelope: Option<usize>, nonce: u64) -> (CanonicalPaymentInput, [u8; 32]) {
+    pub(super) fn paid_input_with_nonce(
+        envelope: Option<usize>,
+        nonce: u64,
+    ) -> (CanonicalPaymentInput, [u8; 32]) {
         use frank_cbor::{FramePayload, TypedPayload, ValidationResult};
         let source: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../docs/protocol/cbor/vectors/dm-runtime.json"
@@ -1989,11 +1992,13 @@ mod large_request_tests {
         assert_eq!(reopened.get(&hash).unwrap().unwrap().request.body(), body);
     }
 
-
     #[cfg(feature = "foundationdb")]
     mod matched_restore {
         use super::*;
-        use crate::store::{matched_restore_support as matched, evm_direct_messages::persistence_tests::paid_input_with_nonce};
+        use crate::store::{
+            evm_direct_messages::persistence_tests::paid_input_with_nonce,
+            matched_restore_support as matched,
+        };
 
         fn open(read_only: bool) -> Owner {
             let (kv, objects) = matched::open("messages-v4", read_only);
@@ -2001,7 +2006,10 @@ mod large_request_tests {
         }
 
         fn input(large: bool) -> (CanonicalPaymentInput, [u8; 32]) {
-            paid_input_with_nonce(if large { Some(200_000) } else { None }, if large { 2 } else { 1 })
+            paid_input_with_nonce(
+                if large { Some(200_000) } else { None },
+                if large { 2 } else { 1 },
+            )
         }
 
         #[test]
@@ -2012,7 +2020,12 @@ mod large_request_tests {
                 for large in [false, true] {
                     let (input, _) = input(large);
                     assert_eq!(input.request.body().len() > INLINE_LIMIT, large);
-                    assert!(owner.claim(input, if large { 1235 } else { 1234 }).unwrap().new);
+                    assert!(
+                        owner
+                            .claim(input, if large { 1235 } else { 1234 })
+                            .unwrap()
+                            .new
+                    );
                 }
             });
         }
@@ -2028,10 +2041,15 @@ mod large_request_tests {
                     let hash = input.policy.payload_hash;
                     let restored = owner.get(&hash).unwrap().unwrap();
                     assert_eq!(restored.request.body(), input.request.body());
-                    assert_eq!(restored.request.content_type(), input.request.content_type());
+                    assert_eq!(
+                        restored.request.content_type(),
+                        input.request.content_type()
+                    );
                     assert_eq!(restored.delivered_at, if large { 1235 } else { 1234 });
                     assert!(owner.find_request(&input.request).unwrap().is_some());
-                    assert!(owner.payment_is_committed_to(Hash32(payment), hash).unwrap());
+                    assert!(owner
+                        .payment_is_committed_to(Hash32(payment), hash)
+                        .unwrap());
                     positions.push((restored.delivered_at, hash));
                 }
                 let (first, _) = input(false);
@@ -2039,8 +2057,19 @@ mod large_request_tests {
                 let sender = first.policy.sender().unwrap();
                 let rows = owner.inbox(recipient, 0, None, 10).unwrap();
                 assert_eq!(rows.len(), 2);
-                assert_eq!(rows.iter().map(|row| (row.delivered_at, row.policy.payload_hash)).collect::<Vec<_>>(), positions);
-                assert_eq!(owner.inbox(recipient, 0, Some(positions[0]), 10).unwrap().len(), 1);
+                assert_eq!(
+                    rows.iter()
+                        .map(|row| (row.delivered_at, row.policy.payload_hash))
+                        .collect::<Vec<_>>(),
+                    positions
+                );
+                assert_eq!(
+                    owner
+                        .inbox(recipient, 0, Some(positions[0]), 10)
+                        .unwrap()
+                        .len(),
+                    1
+                );
                 assert_eq!(owner.mailbox(sender, 0, None, 10).unwrap().len(), 2);
                 assert_eq!(owner.mailbox(recipient, 0, None, 10).unwrap().len(), 2);
                 let store = owner.storage.open(false).unwrap().unwrap();
@@ -2061,7 +2090,10 @@ mod large_request_tests {
                 assert!(!retry.new);
                 assert_eq!(retry.claim.delivered_at, 1235);
                 let (conflict, _) = paid_input_with_nonce(Some(200_001), 2);
-                assert_eq!(owner.claim(conflict, 9999).unwrap_err(), CanonicalError::Conflict);
+                assert_eq!(
+                    owner.claim(conflict, 9999).unwrap_err(),
+                    CanonicalError::Conflict
+                );
                 assert_eq!(owner.inbox(recipient, 0, None, 10).unwrap().len(), 2);
                 let (next, _) = paid_input_with_nonce(Some(200_002), 3);
                 let appended = owner.claim(next, 1).unwrap();
@@ -2074,7 +2106,15 @@ mod large_request_tests {
                 assert_eq!(rows.len(), 3);
                 for large in [false, true] {
                     let (input, _) = input(large);
-                    assert_eq!(owner.get(&input.policy.payload_hash).unwrap().unwrap().request.body(), input.request.body());
+                    assert_eq!(
+                        owner
+                            .get(&input.policy.payload_hash)
+                            .unwrap()
+                            .unwrap()
+                            .request
+                            .body(),
+                        input.request.body()
+                    );
                 }
             });
         }

@@ -4123,14 +4123,22 @@ mod tests {
         fn payment(n: u8) -> GroupWritePaymentFact {
             GroupWritePaymentFact {
                 network: "monad-testnet".into(),
-                tx_hash: [n; 32], payer: [1; 20], payee: [2; 20],
-                value_wei: 1_000, nonce: n as u64,
+                tx_hash: [n; 32],
+                payer: [1; 20],
+                payee: [2; 20],
+                value_wei: 1_000,
+                nonce: n as u64,
             }
         }
 
         fn message(n: u8) -> GroupMessageEnvelope {
             let id = root_frame(3, 0, &"00".repeat(32)).group_id;
-            large_message(&id, n, if n == 1 { 64 } else { INLINE_LIMIT + 1 }, &keypair(42).0)
+            large_message(
+                &id,
+                n,
+                if n == 1 { 64 } else { INLINE_LIMIT + 1 },
+                &keypair(42).0,
+            )
         }
 
         #[test]
@@ -4141,9 +4149,13 @@ mod tests {
                 let epoch = root_frame(3, 0, &"00".repeat(32)).normalized().unwrap();
                 let id = epoch.group_id.clone();
                 store.put_epoch(&id, epoch).unwrap();
-                store.put_write_price(&id, price_record(3, 1, 1_000), "monad-testnet", 1).unwrap();
+                store
+                    .put_write_price(&id, price_record(3, 1, 1_000), "monad-testnet", 1)
+                    .unwrap();
                 for n in [1u8, 2] {
-                    let appended = store.put_paid_message(&id, message(n), &payment(n), 1).unwrap();
+                    let appended = store
+                        .put_paid_message(&id, message(n), &payment(n), 1)
+                        .unwrap();
                     assert!(appended.appended);
                     assert_eq!(appended.message.server_seq, n as u64);
                 }
@@ -4160,7 +4172,10 @@ mod tests {
                 let id = epoch.group_id.clone();
                 assert_eq!(store.get_current_epoch(&id).unwrap(), Some(epoch.clone()));
                 assert_eq!(store.get_epoch(&id, 0).unwrap(), Some(epoch));
-                assert_eq!(store.get_write_price(&id).unwrap(), Some(price_record(3, 1, 1_000)));
+                assert_eq!(
+                    store.get_write_price(&id).unwrap(),
+                    Some(price_record(3, 1, 1_000))
+                );
                 let rows = store.list_messages(&id, 0, 10).unwrap();
                 assert_eq!(rows.len(), 2);
                 for n in [1u8, 2] {
@@ -4168,11 +4183,20 @@ mod tests {
                     assert_eq!(row.server_seq, n as u64);
                     assert_eq!(row.ciphertext, message(n).ciphertext);
                     assert_eq!(row.write_sig, message(n).write_sig);
-                    assert_eq!(store.accepted_receipt(&id, message(n)).unwrap(), Some(row.clone()));
+                    assert_eq!(
+                        store.accepted_receipt(&id, message(n)).unwrap(),
+                        Some(row.clone())
+                    );
                     let paid = store.payment_record(&payment(n).tx_hash).unwrap().unwrap();
-                    assert_eq!((paid.group_id, paid.server_seq, paid.value_wei), (id.clone(), n as u64, "1000".into()));
+                    assert_eq!(
+                        (paid.group_id, paid.server_seq, paid.value_wei),
+                        (id.clone(), n as u64, "1000".into())
+                    );
                 }
-                assert_eq!(store.list_messages(&id, 1, 10).unwrap(), vec![rows[1].clone()]);
+                assert_eq!(
+                    store.list_messages(&id, 1, 10).unwrap(),
+                    vec![rows[1].clone()]
+                );
                 assert_eq!(store.large_values().references(10).unwrap().len(), 1);
             });
         }
@@ -4184,15 +4208,28 @@ mod tests {
                 let store = open(false);
                 let id = root_frame(3, 0, &"00".repeat(32)).group_id;
                 let before = store.list_messages(&id, 0, 10).unwrap();
-                let retry = store.put_paid_message(&id, message(2), &payment(9), 1).unwrap();
+                let retry = store
+                    .put_paid_message(&id, message(2), &payment(9), 1)
+                    .unwrap();
                 assert!(!retry.appended);
                 assert_eq!(retry.message, before[1]);
                 assert_eq!(store.payment_record(&payment(9).tx_hash).unwrap(), None);
-                assert_eq!(store.put_paid_message(&id, message(3), &payment(2), 1), Err(GroupError::PaymentAlreadyUsed));
-                let same_nonce = GroupWritePaymentFact { nonce: 2, ..payment(9) };
-                assert_eq!(store.put_paid_message(&id, message(3), &same_nonce, 1), Err(GroupError::PaymentNonceUsed));
+                assert_eq!(
+                    store.put_paid_message(&id, message(3), &payment(2), 1),
+                    Err(GroupError::PaymentAlreadyUsed)
+                );
+                let same_nonce = GroupWritePaymentFact {
+                    nonce: 2,
+                    ..payment(9)
+                };
+                assert_eq!(
+                    store.put_paid_message(&id, message(3), &same_nonce, 1),
+                    Err(GroupError::PaymentNonceUsed)
+                );
                 assert_eq!(store.list_messages(&id, 0, 10).unwrap(), before);
-                let next = store.put_paid_message(&id, message(3), &payment(3), 1).unwrap();
+                let next = store
+                    .put_paid_message(&id, message(3), &payment(3), 1)
+                    .unwrap();
                 assert_eq!(next.message.server_seq, 3);
                 let values = store.large_values();
                 assert_eq!(values.references(10).unwrap().len(), 2);

@@ -463,6 +463,8 @@ export async function syncOwnProfileWithRelay(options: {
           return observed.profile
         },
         publish: async profile => {
+          // Date this chosen copy before asynchronous work can outlive a newer saved edit.
+          const timestampMs = Date.now()
           // The relay refuses an avatar over its size limit: a smaller one, or none, is sent.
           let avatar = profile.avatar
           if (avatar && isAvatarTooLarge(avatar)) {
@@ -484,6 +486,7 @@ export async function syncOwnProfileWithRelay(options: {
             throw new Error('Profile publication cancelled')
           if (!observed) throw new Error('Profile snapshot missing')
           await registerMonadIdentityCbor({
+            timestampMs,
             precondition: observed.precondition,
             relayBaseUrl,
             signal,

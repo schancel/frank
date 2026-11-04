@@ -127,7 +127,7 @@ it('a later saved edit survives an older in-flight publication and its queued re
     const decoded = identityApi.decodeProfileBytes(bytes)
     expect(decoded.derivedAddress.toLowerCase()).toBe(store.owner)
     expect(decoded.network).toBe(network)
-    expect(decoded.pubKey).toEqual(identity.compressedPubKey)
+    expect(Buffer.from(decoded.pubKey)).toEqual(identity.compressedPubKey)
     writes.push(bytes)
     remote = bytes
     return response({})

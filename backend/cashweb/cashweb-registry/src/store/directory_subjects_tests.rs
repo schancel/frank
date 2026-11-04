@@ -714,6 +714,8 @@ mod matched_restore {
                 .unwrap();
             rows.put_forward(&[8; 32], &forward_row(), Some(&vec![7; INLINE_LIMIT + 1]))
                 .unwrap();
+            rows.put_forward(&[6; 32], &forward_row(), Some(&vec![6; INLINE_LIMIT + 1]))
+                .unwrap();
             assert!(matches!(
                 rows.claim_forward(&[8; 32], &[0xa; 16], 0).unwrap(),
                 ForwardClaimed::Claimed(_)
@@ -723,7 +725,7 @@ mod matched_restore {
             done.status = 202;
             done.response = "accepted".into();
             rows.put_forward(&[7; 32], &done, None).unwrap();
-            assert_eq!(rows.store.large().references(10).unwrap().len(), 1);
+            assert_eq!(rows.store.large().references(10).unwrap().len(), 2);
         });
     }
 
@@ -765,6 +767,11 @@ mod matched_restore {
                 rows.forward_body(&[8; 32]).unwrap(),
                 Some(vec![7; INLINE_LIMIT + 1])
             );
+            assert_eq!(
+                rows.forward_body(&[6; 32]).unwrap(),
+                Some(vec![6; INLINE_LIMIT + 1])
+            );
+            assert_eq!(rows.forward(&[6; 32]).unwrap(), Some(forward_row()));
             let claimed = rows.forward(&[8; 32]).unwrap().unwrap();
             assert_eq!(claimed.content_type, "application/cbor");
             assert_eq!(claimed.claim.unwrap().holder, [0xa; 16]);
@@ -777,8 +784,8 @@ mod matched_restore {
                 (done.done, done.status, done.response.as_str()),
                 (true, 202, "accepted")
             );
-            assert_eq!(rows.forwards().unwrap().len(), 3);
-            assert_eq!(rows.store.large().references(10).unwrap().len(), 1);
+            assert_eq!(rows.forwards().unwrap().len(), 4);
+            assert_eq!(rows.store.large().references(10).unwrap().len(), 2);
         });
     }
 
@@ -787,6 +794,23 @@ mod matched_restore {
     fn replay_and_gc() {
         matched::run(|| {
             let rows = open(false);
+            let values = rows.store.large();
+            let references = values.references(10).unwrap();
+            assert_eq!(references.len(), 2);
+            let released_body = vec![7; INLINE_LIMIT + 1];
+            let released = *references
+                .iter()
+                .find(|r| r.matches(&released_body))
+                .unwrap();
+            let live_body = vec![6; INLINE_LIMIT + 1];
+            let live = *references.iter().find(|r| r.matches(&live_body)).unwrap();
+            assert_ne!(released, live);
+            let released_key = values.object_key(&released);
+            let live_key = values.object_key(&live);
+            assert_eq!(
+                rows.forward_body(&[6; 32]).unwrap(),
+                Some(live_body.clone())
+            );
             let ForwardClaimed::Claimed(mut attempt) =
                 rows.claim_forward(&[8; 32], &[0xb; 16], 60_000).unwrap()
             else {
@@ -814,8 +838,34 @@ mod matched_restore {
             commit(&rows, NETWORK, &[1; 33], None, false, checkpoint(2, 2)).unwrap();
             assert_eq!(rows.counts().unwrap(), (1, 1));
             assert_eq!(rows.forward_body(&[8; 32]).unwrap(), None);
+            assert_eq!(values.references(10).unwrap(), vec![live]);
+            assert_eq!(
+                values.objects().get(&released_key).unwrap(),
+                Some(released_body)
+            );
+            assert_eq!(
+                rows.forward_body(&[6; 32]).unwrap(),
+                Some(live_body.clone())
+            );
             assert_eq!(rows.store.sweep_large_values([1; 16]).unwrap().deleted, 1);
+            assert_eq!(values.objects().get(&released_key).unwrap(), None);
+            assert_eq!(
+                values.objects().get(&live_key).unwrap(),
+                Some(live_body.clone())
+            );
+            assert_eq!(values.references(10).unwrap(), vec![live]);
+            assert_eq!(
+                rows.forward_body(&[6; 32]).unwrap(),
+                Some(live_body.clone())
+            );
             assert_eq!(rows.store.sweep_large_values([1; 16]).unwrap().deleted, 0);
+            assert_eq!(values.objects().get(&released_key).unwrap(), None);
+            assert_eq!(
+                values.objects().get(&live_key).unwrap(),
+                Some(live_body.clone())
+            );
+            assert_eq!(values.references(10).unwrap(), vec![live]);
+            assert_eq!(rows.forward_body(&[6; 32]).unwrap(), Some(live_body));
             assert_eq!(
                 rows.forward_body(&[9; 32]).unwrap(),
                 Some(b"\0inline\xff".to_vec())

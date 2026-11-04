@@ -42,24 +42,29 @@ Assertions:
 - Directory: typed enrollment continuity/address/first-accepted indexes and local/
   replicated counters; inline/large forward bytes, content type, echo and queue
   facts; persisted expired claim takeover, refusal of stale/wrong holder,
-  completed-answer replay and one-time released-body GC. Continuity uses the
-  recorder's real first=false authority, not an invented idempotent first commit.
+  completed-answer replay and one-time released-body GC. A distinct live large
+  forward retains its exact bytes and original reference before completion and
+  after both sweeps while only the completed forward's object disappears.
+  Continuity uses the recorder's real first=false authority, not an invented idempotent first commit.
 - Groups: signed epoch/history and versioned write price, inline/large ciphertext,
   original signed receipt/sequence and consumed payment record; exact replay,
   payment and payer-nonce double-use refusal, next sequence and referenced-object
   retention while only abandoned uploads are swept.
 - Forum: exact signed inline/large submitted frames, confirmed/pending observations
   and block/index facts, reservations/aggregate, pending bytes/count, revision,
-  topic/discovery indexes and visible-post count; repeated admission/confirmation,
-  reused-burn refusal and one-time pending settlement. Referenced frames survive GC.
+  topic/discovery indexes and visible-post count; repeated admission/confirmation
+  at changed999 returns and stores the original frame/state and confirmed visibility
+  for both post and vote, reused-burn refusal and one-time pending settlement.
+  Referenced frames survive GC.
 - DM: inline and large enclosing requests and exact multipart content type,
-  recipient/sender mailbox indexes/cursors, delivery time, consumed-payment binding,
-  exact retry, conflicting use refusal and monotonic next delivery. The
+  recipient/sender mailbox indexes/cursors with explicit ordered time/hash/direction
+  tuples and exact first-cursor suffixes for both parties, delivery time,
+  consumed-payment binding, exact retry, conflicting use refusal and monotonic next delivery. The
   messages_stored_total process metric resets on reopen; it is not a durable
   counter. Abandoned repeat/refusal uploads are collected once; committed bytes stay.
 
-The added corpus uses64KiB+1 group/directory bytes, a200KiB forum frame and roughly
-200KiB DM request. The previous8MiB DM/generic-intent/unindexed-object tests remain
+The added corpus uses64KiB+1 group bytes, two distinct64KiB+1 directory bodies,
+a200KiB forum frame and roughly200KiB DM request. The previous8MiB DM/generic-intent/unindexed-object tests remain
 required. Group ciphertext and forum frames do not invent a MIME attachment model;
 Directory and DM preserve the content types their actual models own. Synthetic
 canonical monad-testnet/10143 facts use existing signed test builders: no real

@@ -2070,8 +2070,40 @@ mod large_request_tests {
                         .len(),
                     1
                 );
-                assert_eq!(owner.mailbox(sender, 0, None, 10).unwrap().len(), 2);
-                assert_eq!(owner.mailbox(recipient, 0, None, 10).unwrap().len(), 2);
+                let small_hash = input(false).0.policy.payload_hash;
+                let large_hash = input(true).0.policy.payload_hash;
+                assert_ne!(sender, recipient);
+                for (party, direction) in [
+                    (sender, MailboxDirection::Out),
+                    (recipient, MailboxDirection::In),
+                ] {
+                    let mailbox = owner.mailbox(party, 0, None, 10).unwrap();
+                    assert_eq!(
+                        mailbox
+                            .into_iter()
+                            .map(|(row, actual_direction)| (
+                                row.delivered_at,
+                                row.policy.payload_hash,
+                                actual_direction
+                            ))
+                            .collect::<Vec<_>>(),
+                        vec![(1234, small_hash, direction), (1235, large_hash, direction)]
+                    );
+                    let suffix = owner
+                        .mailbox(party, 0, Some((1234, small_hash)), 10)
+                        .unwrap();
+                    assert_eq!(
+                        suffix
+                            .into_iter()
+                            .map(|(row, actual_direction)| (
+                                row.delivered_at,
+                                row.policy.payload_hash,
+                                actual_direction
+                            ))
+                            .collect::<Vec<_>>(),
+                        vec![(1235, large_hash, direction)]
+                    );
+                }
                 let store = owner.storage.open(false).unwrap().unwrap();
                 assert_eq!(owner.large(&store).references(10).unwrap().len(), 1);
                 // This is a process metric, deliberately not a restored durable counter.

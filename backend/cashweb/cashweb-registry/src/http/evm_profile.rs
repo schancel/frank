@@ -594,7 +594,7 @@ mod tests {
         let (original, address) = sign_evm_profile(1, &named_profile(100, "Original"));
         registry.put_evm_profile(address, original.clone()).unwrap();
         let hash = Sha256::digest(original.encode_to_vec().into());
-        let condition = ProfilePrecondition::Matches(*hash.byte_array());
+        let condition = ProfilePrecondition::Matches(hash.byte_array().array());
         let registry = Arc::new(registry);
         let barrier = Arc::new(std::sync::Barrier::new(3));
         let mut jobs = Vec::new();

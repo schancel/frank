@@ -294,7 +294,6 @@ describe('inbox received-value ordering', () => {
   })
 })
 
-
 describe('stored chat accounting', () => {
   function conversation(messages: ChatMessage[]): Conversation {
     return {

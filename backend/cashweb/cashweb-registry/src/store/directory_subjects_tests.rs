@@ -798,13 +798,19 @@ mod matched_restore {
             let references = values.references(10).unwrap();
             assert_eq!(references.len(), 2);
             let released_body = vec![7; INLINE_LIMIT + 1];
-            let released = *references.iter().find(|r| r.matches(&released_body)).unwrap();
+            let released = *references
+                .iter()
+                .find(|r| r.matches(&released_body))
+                .unwrap();
             let live_body = vec![6; INLINE_LIMIT + 1];
             let live = *references.iter().find(|r| r.matches(&live_body)).unwrap();
             assert_ne!(released, live);
             let released_key = values.object_key(&released);
             let live_key = values.object_key(&live);
-            assert_eq!(rows.forward_body(&[6; 32]).unwrap(), Some(live_body.clone()));
+            assert_eq!(
+                rows.forward_body(&[6; 32]).unwrap(),
+                Some(live_body.clone())
+            );
             let ForwardClaimed::Claimed(mut attempt) =
                 rows.claim_forward(&[8; 32], &[0xb; 16], 60_000).unwrap()
             else {
@@ -833,16 +839,31 @@ mod matched_restore {
             assert_eq!(rows.counts().unwrap(), (1, 1));
             assert_eq!(rows.forward_body(&[8; 32]).unwrap(), None);
             assert_eq!(values.references(10).unwrap(), vec![live]);
-            assert_eq!(values.objects().get(&released_key).unwrap(), Some(released_body));
-            assert_eq!(rows.forward_body(&[6; 32]).unwrap(), Some(live_body.clone()));
+            assert_eq!(
+                values.objects().get(&released_key).unwrap(),
+                Some(released_body)
+            );
+            assert_eq!(
+                rows.forward_body(&[6; 32]).unwrap(),
+                Some(live_body.clone())
+            );
             assert_eq!(rows.store.sweep_large_values([1; 16]).unwrap().deleted, 1);
             assert_eq!(values.objects().get(&released_key).unwrap(), None);
-            assert_eq!(values.objects().get(&live_key).unwrap(), Some(live_body.clone()));
+            assert_eq!(
+                values.objects().get(&live_key).unwrap(),
+                Some(live_body.clone())
+            );
             assert_eq!(values.references(10).unwrap(), vec![live]);
-            assert_eq!(rows.forward_body(&[6; 32]).unwrap(), Some(live_body.clone()));
+            assert_eq!(
+                rows.forward_body(&[6; 32]).unwrap(),
+                Some(live_body.clone())
+            );
             assert_eq!(rows.store.sweep_large_values([1; 16]).unwrap().deleted, 0);
             assert_eq!(values.objects().get(&released_key).unwrap(), None);
-            assert_eq!(values.objects().get(&live_key).unwrap(), Some(live_body.clone()));
+            assert_eq!(
+                values.objects().get(&live_key).unwrap(),
+                Some(live_body.clone())
+            );
             assert_eq!(values.references(10).unwrap(), vec![live]);
             assert_eq!(rows.forward_body(&[6; 32]).unwrap(), Some(live_body));
             assert_eq!(

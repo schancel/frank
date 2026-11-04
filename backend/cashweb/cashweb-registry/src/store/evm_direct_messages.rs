@@ -2079,16 +2079,28 @@ mod large_request_tests {
                 ] {
                     let mailbox = owner.mailbox(party, 0, None, 10).unwrap();
                     assert_eq!(
-                        mailbox.into_iter().map(|(row, actual_direction)|
-                            (row.delivered_at, row.policy.payload_hash, actual_direction)
-                        ).collect::<Vec<_>>(),
+                        mailbox
+                            .into_iter()
+                            .map(|(row, actual_direction)| (
+                                row.delivered_at,
+                                row.policy.payload_hash,
+                                actual_direction
+                            ))
+                            .collect::<Vec<_>>(),
                         vec![(1234, small_hash, direction), (1235, large_hash, direction)]
                     );
-                    let suffix = owner.mailbox(party, 0, Some((1234, small_hash)), 10).unwrap();
+                    let suffix = owner
+                        .mailbox(party, 0, Some((1234, small_hash)), 10)
+                        .unwrap();
                     assert_eq!(
-                        suffix.into_iter().map(|(row, actual_direction)|
-                            (row.delivered_at, row.policy.payload_hash, actual_direction)
-                        ).collect::<Vec<_>>(),
+                        suffix
+                            .into_iter()
+                            .map(|(row, actual_direction)| (
+                                row.delivered_at,
+                                row.policy.payload_hash,
+                                actual_direction
+                            ))
+                            .collect::<Vec<_>>(),
                         vec![(1235, large_hash, direction)]
                     );
                 }

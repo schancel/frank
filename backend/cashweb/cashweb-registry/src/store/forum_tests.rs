@@ -1144,15 +1144,24 @@ mod matched_restore {
                 assert_eq!(stored.state_value(), original.state_value());
             };
             let mut original_post = large.clone();
-            original_post.phase = Phase::Confirmed { block: 11, index: 0, visible: at(201) };
+            original_post.phase = Phase::Confirmed {
+                block: 11,
+                index: 0,
+                visible: at(201),
+            };
             let mut repeated_post = large.clone();
             repeated_post.first_seen = at(999);
             assert_retained(store.admit(repeated_post).unwrap(), &original_post);
             assert_retained(
-                store.confirm(&large, &facts(&large, 11, 0), at(999)).unwrap(),
+                store
+                    .confirm(&large, &facts(&large, 11, 0), at(999))
+                    .unwrap(),
                 &original_post,
             );
-            assert_eq!(post_of(&store, large.event.target_hash()).unwrap().visible, Some(at(201)));
+            assert_eq!(
+                post_of(&store, large.event.target_hash()).unwrap().visible,
+                Some(at(201))
+            );
             assert_eq!(store.read(|tx| Store::revision(tx)).unwrap(), before);
             let reused = observation_of(&event_frame(
                 &[(6, 0, 1), (3, 103, 7)],
@@ -1163,7 +1172,11 @@ mod matched_restore {
             ));
             assert!(matches!(store.admit(reused), Err(ForumError::Conflict)));
             let mut original_vote = vote.clone();
-            original_vote.phase = Phase::Confirmed { block: 12, index: 0, visible: at(202) };
+            original_vote.phase = Phase::Confirmed {
+                block: 12,
+                index: 0,
+                visible: at(202),
+            };
             let confirmed = store.confirm(&vote, &facts(&vote, 12, 0), at(202)).unwrap();
             assert_retained(confirmed, &original_vote);
             let mut repeated_vote = vote.clone();
@@ -1173,7 +1186,10 @@ mod matched_restore {
                 store.confirm(&vote, &facts(&vote, 12, 0), at(999)).unwrap(),
                 &original_vote,
             );
-            assert_eq!(post_of(&store, large.event.target_hash()).unwrap().visible, Some(at(201)));
+            assert_eq!(
+                post_of(&store, large.event.target_hash()).unwrap().visible,
+                Some(at(201))
+            );
             store.drop_event(&pending).unwrap();
             store.drop_event(&pending).unwrap();
             assert_eq!(store.pending_accounting().unwrap(), (0, 0));

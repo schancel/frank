@@ -1389,6 +1389,13 @@ mod persistence_tests {
     /// [`paid_input`] with its sealed crypto-box envelope replaced by `envelope` bytes when
     /// given, so the request is about that much larger. The relay never opens the envelope.
     pub(super) fn paid_input_sealing(envelope: Option<usize>) -> (CanonicalPaymentInput, [u8; 32]) {
+        paid_input_with_nonce(envelope, 0)
+    }
+
+    pub(super) fn paid_input_with_nonce(
+        envelope: Option<usize>,
+        nonce: u64,
+    ) -> (CanonicalPaymentInput, [u8; 32]) {
         use frank_cbor::{FramePayload, TypedPayload, ValidationResult};
         let source: serde_json::Value = serde_json::from_str(include_str!(
             "../../../../../docs/protocol/cbor/vectors/dm-runtime.json"
@@ -1494,7 +1501,7 @@ mod persistence_tests {
         let transaction = crate::evm_transaction::test_support::signed_eip1559_tx(
             &secret,
             10143,
-            0,
+            nonce,
             Address(address),
             1,
             &[],
@@ -1983,6 +1990,134 @@ mod large_request_tests {
         assert_eq!(objects(&registry), vec![key]);
         assert_eq!(reopened.sweep_large_values([1; 16]).unwrap().deleted, 0);
         assert_eq!(reopened.get(&hash).unwrap().unwrap().request.body(), body);
+    }
+
+    #[cfg(feature = "foundationdb")]
+    mod matched_restore {
+        use super::*;
+        use crate::store::{
+            evm_direct_messages::persistence_tests::paid_input_with_nonce,
+            matched_restore_support as matched,
+        };
+
+        fn open(read_only: bool) -> Owner {
+            let (kv, objects) = matched::open("messages-v4", read_only);
+            Owner::with_store(kv, objects)
+        }
+
+        fn input(large: bool) -> (CanonicalPaymentInput, [u8; 32]) {
+            paid_input_with_nonce(
+                if large { Some(200_000) } else { None },
+                if large { 2 } else { 1 },
+            )
+        }
+
+        #[test]
+        #[ignore = "matched native backup/restore seed phase"]
+        fn seed() {
+            matched::run(|| {
+                let owner = open(false);
+                for large in [false, true] {
+                    let (input, _) = input(large);
+                    assert_eq!(input.request.body().len() > INLINE_LIMIT, large);
+                    assert!(
+                        owner
+                            .claim(input, if large { 1235 } else { 1234 })
+                            .unwrap()
+                            .new
+                    );
+                }
+            });
+        }
+
+        #[test]
+        #[ignore = "matched restored read-only phase before replay or GC"]
+        fn restored_read_only() {
+            matched::run(|| {
+                let owner = open(true);
+                let mut positions = Vec::new();
+                for large in [false, true] {
+                    let (input, payment) = input(large);
+                    let hash = input.policy.payload_hash;
+                    let restored = owner.get(&hash).unwrap().unwrap();
+                    assert_eq!(restored.request.body(), input.request.body());
+                    assert_eq!(
+                        restored.request.content_type(),
+                        input.request.content_type()
+                    );
+                    assert_eq!(restored.delivered_at, if large { 1235 } else { 1234 });
+                    assert!(owner.find_request(&input.request).unwrap().is_some());
+                    assert!(owner
+                        .payment_is_committed_to(Hash32(payment), hash)
+                        .unwrap());
+                    positions.push((restored.delivered_at, hash));
+                }
+                let (first, _) = input(false);
+                let recipient = first.policy.recipient().unwrap();
+                let sender = first.policy.sender().unwrap();
+                let rows = owner.inbox(recipient, 0, None, 10).unwrap();
+                assert_eq!(rows.len(), 2);
+                assert_eq!(
+                    rows.iter()
+                        .map(|row| (row.delivered_at, row.policy.payload_hash))
+                        .collect::<Vec<_>>(),
+                    positions
+                );
+                assert_eq!(
+                    owner
+                        .inbox(recipient, 0, Some(positions[0]), 10)
+                        .unwrap()
+                        .len(),
+                    1
+                );
+                assert_eq!(owner.mailbox(sender, 0, None, 10).unwrap().len(), 2);
+                assert_eq!(owner.mailbox(recipient, 0, None, 10).unwrap().len(), 2);
+                let store = owner.storage.open(false).unwrap().unwrap();
+                assert_eq!(owner.large(&store).references(10).unwrap().len(), 1);
+                // This is a process metric, deliberately not a restored durable counter.
+                assert_eq!(owner.messages_stored_total(), 0);
+            });
+        }
+
+        #[test]
+        #[ignore = "matched restored replay and GC phase after all read-only phases"]
+        fn replay_and_gc() {
+            matched::run(|| {
+                let owner = open(false);
+                let (original, _) = input(true);
+                let recipient = original.policy.recipient().unwrap();
+                let retry = owner.claim(original, 9999).unwrap();
+                assert!(!retry.new);
+                assert_eq!(retry.claim.delivered_at, 1235);
+                let (conflict, _) = paid_input_with_nonce(Some(200_001), 2);
+                assert_eq!(
+                    owner.claim(conflict, 9999).unwrap_err(),
+                    CanonicalError::Conflict
+                );
+                assert_eq!(owner.inbox(recipient, 0, None, 10).unwrap().len(), 2);
+                let (next, _) = paid_input_with_nonce(Some(200_002), 3);
+                let appended = owner.claim(next, 1).unwrap();
+                assert!(appended.new);
+                assert!(appended.claim.delivered_at > 1235);
+                assert_eq!(owner.messages_stored_total(), 1);
+                assert_eq!(owner.sweep_large_values([4; 16]).unwrap().deleted, 2);
+                assert_eq!(owner.sweep_large_values([4; 16]).unwrap().deleted, 0);
+                let rows = owner.inbox(recipient, 0, None, 10).unwrap();
+                assert_eq!(rows.len(), 3);
+                for large in [false, true] {
+                    let (input, _) = input(large);
+                    assert_eq!(
+                        owner
+                            .get(&input.policy.payload_hash)
+                            .unwrap()
+                            .unwrap()
+                            .request
+                            .body(),
+                        input.request.body()
+                    );
+                }
+            });
+        }
     }
 
     // These phases exercise the private owner without exporting it for a lab.

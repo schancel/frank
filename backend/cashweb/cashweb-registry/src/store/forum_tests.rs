@@ -1019,3 +1019,152 @@ fn a_dropped_author_passes_the_post_to_another_counted_burn_or_hides_it() {
     assert_eq!(topics(&store), vec![("test.topic".into(), 1, at(500))]);
     assert_eq!(store.stored_post_count().unwrap(), 1);
 }
+
+#[cfg(feature = "foundationdb")]
+mod matched_restore {
+    use super::*;
+    use crate::store::matched_restore_support as matched;
+
+    fn open(read_only: bool) -> Store {
+        let (kv, objects) = matched::open("forum-v1", read_only);
+        Store::open(
+            kv,
+            objects,
+            NETWORK,
+            policy(),
+            !read_only,
+            "fixture format mismatch",
+        )
+        .unwrap()
+        .unwrap()
+    }
+
+    fn corpus() -> [Observation; 4] {
+        let small = distinct_post(101, "matched.small");
+        let large = sized_post(102, "matched.large", 200_000);
+        let vote = observation_fields(
+            103,
+            Some(*large.event.target_hash()),
+            false,
+            7,
+            "matched.large",
+            "title",
+        );
+        let pending = distinct_post(104, "matched.pending");
+        [small, large, vote, pending]
+    }
+
+    #[test]
+    #[ignore = "matched native backup/restore seed phase"]
+    fn seed() {
+        matched::run(|| {
+            let store = open(false);
+            let [small, large, vote, pending] = corpus();
+            assert!(small.frame().len() <= INLINE_LIMIT);
+            assert!(large.frame().len() > INLINE_LIMIT);
+            publish(&store, &small, 10, at(200));
+            publish(&store, &large, 11, at(201));
+            store.admit(vote).unwrap();
+            store.admit(pending).unwrap();
+            assert_eq!(store.large.references(10).unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    #[ignore = "matched restored read-only phase before replay or GC"]
+    fn restored_read_only() {
+        matched::run(|| {
+            let store = open(true);
+            let [small, large, vote, pending] = corpus();
+            assert_eq!(store.stored_post_count().unwrap(), 2);
+            assert_eq!(
+                store.pending_accounting().unwrap(),
+                (2, vote.charge() + pending.charge())
+            );
+            assert_eq!(store.read(|tx| Store::revision(tx)).unwrap(), 6);
+            for (op, block) in [(&small, 10), (&large, 11)] {
+                let restored = store.load(&op.hash()).unwrap().unwrap();
+                assert_eq!(restored.frame(), op.frame());
+                assert_eq!(restored.phase.position(), Some((block, 0)));
+                let row = store
+                    .read(|tx| Store::stored_row(tx, op.event.target_hash()))
+                    .unwrap()
+                    .unwrap();
+                let resolved = store.resolve_row(row).unwrap();
+                assert_eq!(resolved.author.frame(), op.frame());
+                assert_eq!(resolved.post.aggregate.magnitude, Magnitude::from_u64(7));
+            }
+            for op in [&vote, &pending] {
+                let restored = store.load(&op.hash()).unwrap().unwrap();
+                assert_eq!(restored.frame(), op.frame());
+                assert_eq!(restored.phase, Phase::Pending);
+            }
+            let mut unsettled = vec![vote.hash(), pending.hash()];
+            unsettled.sort();
+            assert_eq!(store.unsettled(None, 10).unwrap(), unsettled);
+            let post = store
+                .read(|tx| Store::post(tx, large.event.target_hash()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(post.reserved_up, Magnitude::from_u64(7));
+            assert_eq!(post.reserved_down, Magnitude::default());
+            for (topic, when, op) in [
+                ("matched.small", at(200), &small),
+                ("matched.large", at(201), &large),
+            ] {
+                assert_eq!(
+                    store.read(|tx| Store::discovery_entry(tx, topic)).unwrap(),
+                    Some((1, when))
+                );
+                let rows = store
+                    .read(|tx| Ok(tx.scan_prefix(&Store::topic_index_prefix(topic), None, 10)?))
+                    .unwrap();
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0].1, op.event.target_hash().to_vec());
+            }
+            assert_eq!(store.large.references(10).unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    #[ignore = "matched restored replay and GC phase after all read-only phases"]
+    fn replay_and_gc() {
+        matched::run(|| {
+            let store = open(false);
+            let [small, large, vote, pending] = corpus();
+            let before = store.read(|tx| Store::revision(tx)).unwrap();
+            store.admit(large.clone()).unwrap();
+            store
+                .confirm(&large, &facts(&large, 11, 0), at(999))
+                .unwrap();
+            assert_eq!(store.read(|tx| Store::revision(tx)).unwrap(), before);
+            let reused = observation_of(&event_frame(
+                &[(6, 0, 1), (3, 103, 7)],
+                Some(*large.event.target_hash()),
+                false,
+                "matched.large",
+                "title",
+            ));
+            assert!(matches!(store.admit(reused), Err(ForumError::Conflict)));
+            let confirmed = store.confirm(&vote, &facts(&vote, 12, 0), at(202)).unwrap();
+            assert_eq!(confirmed.phase.position(), Some((12, 0)));
+            store.confirm(&vote, &facts(&vote, 12, 0), at(999)).unwrap();
+            store.drop_event(&pending).unwrap();
+            store.drop_event(&pending).unwrap();
+            assert_eq!(store.pending_accounting().unwrap(), (0, 0));
+            assert_eq!(store.stored_post_count().unwrap(), 2);
+            assert_eq!(store.read(|tx| Store::revision(tx)).unwrap(), before + 2);
+            let post = store
+                .read(|tx| Store::post(tx, large.event.target_hash()))
+                .unwrap()
+                .unwrap();
+            assert_eq!(post.aggregate.magnitude, Magnitude::from_u64(14));
+            assert_eq!(post.reserved_up, Magnitude::default());
+            assert_eq!(store.sweep_large_values([3; 16]).unwrap().deleted, 0);
+            assert_eq!(store.sweep_large_values([3; 16]).unwrap().deleted, 0);
+            for op in [small, large] {
+                assert_eq!(store.load(&op.hash()).unwrap().unwrap().frame(), op.frame());
+            }
+        });
+    }
+}

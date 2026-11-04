@@ -681,3 +681,145 @@ fn the_typed_facade_has_no_native_storage_access() {
     assert!(db.contains("directory: super::directory_store::Owner"));
     assert!(!db.contains("directory_preview_owner"));
 }
+
+// Each ignored phase is a separate process; the private restore producer orders them.
+#[cfg(feature = "foundationdb")]
+mod matched_restore {
+    use super::*;
+    use crate::store::matched_restore_support as matched;
+
+    fn open(read_only: bool) -> DbDirectorySubjects {
+        let (kv, objects) = matched::open("directory-v1", read_only);
+        let owner = Owner::new(DirectoryBackend::Shared(kv), objects);
+        DbDirectorySubjects::new(owner.open(!read_only).unwrap())
+    }
+
+    #[test]
+    #[ignore = "matched native backup/restore seed phase"]
+    fn seed() {
+        matched::run(|| {
+            let rows = open(false);
+            for (subject, local) in [(1u8, true), (2, false)] {
+                commit(
+                    &rows,
+                    NETWORK,
+                    &[subject; 33],
+                    Some(&enrollment([subject; 20], 200, local, 10)),
+                    true,
+                    checkpoint(1, 1),
+                )
+                .unwrap();
+            }
+            rows.put_forward(&[9; 32], &forward_row(), Some(b"\0inline\xff"))
+                .unwrap();
+            rows.put_forward(&[8; 32], &forward_row(), Some(&vec![7; INLINE_LIMIT + 1]))
+                .unwrap();
+            assert!(matches!(
+                rows.claim_forward(&[8; 32], &[0xa; 16], 0).unwrap(),
+                ForwardClaimed::Claimed(_)
+            ));
+            let mut done = forward_row();
+            done.done = true;
+            done.status = 202;
+            done.response = "accepted".into();
+            rows.put_forward(&[7; 32], &done, None).unwrap();
+            assert_eq!(rows.store.large().references(10).unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    #[ignore = "matched restored read-only phase before replay or GC"]
+    fn restored_read_only() {
+        matched::run(|| {
+            let rows = open(true);
+            assert_eq!(rows.counts().unwrap(), (1, 1));
+            for (subject, local) in [(1u8, true), (2, false)] {
+                assert_eq!(
+                    rows.get(NETWORK, &[subject; 33]).unwrap(),
+                    Some(subject_row(checkpoint(1, 1), local))
+                );
+                assert_eq!(
+                    rows.subject_for_address(NETWORK, &[subject; 20]).unwrap(),
+                    Some(vec![subject; 33])
+                );
+            }
+            let first = rows.list(NETWORK, None, 1).unwrap();
+            assert_eq!(
+                first,
+                vec![(vec![1; 33], subject_row(checkpoint(1, 1), true))]
+            );
+            assert_eq!(rows.list(NETWORK, Some(&[1; 33]), 10).unwrap().len(), 1);
+            assert_eq!(
+                rows.first_accepted(NETWORK, &[0; 28], 10).unwrap(),
+                vec![
+                    (persisted_position(200, &[1; 20]), 200, [1; 20]),
+                    (persisted_position(200, &[2; 20]), 200, [2; 20])
+                ]
+            );
+            assert_eq!(
+                rows.forward_body(&[9; 32]).unwrap(),
+                Some(b"\0inline\xff".to_vec())
+            );
+            assert_eq!(rows.forward(&[9; 32]).unwrap(), Some(forward_row()));
+            assert_eq!(
+                rows.forward_body(&[8; 32]).unwrap(),
+                Some(vec![7; INLINE_LIMIT + 1])
+            );
+            let claimed = rows.forward(&[8; 32]).unwrap().unwrap();
+            assert_eq!(claimed.content_type, "application/cbor");
+            assert_eq!(claimed.claim.unwrap().holder, [0xa; 16]);
+            assert_eq!(
+                (claimed.attempts, claimed.next_ms, claimed.echo),
+                (0, 2, forward_row().echo)
+            );
+            let done = rows.forward(&[7; 32]).unwrap().unwrap();
+            assert_eq!(
+                (done.done, done.status, done.response.as_str()),
+                (true, 202, "accepted")
+            );
+            assert_eq!(rows.forwards().unwrap().len(), 3);
+            assert_eq!(rows.store.large().references(10).unwrap().len(), 1);
+        });
+    }
+
+    #[test]
+    #[ignore = "matched restored replay and GC phase after all read-only phases"]
+    fn replay_and_gc() {
+        matched::run(|| {
+            let rows = open(false);
+            let ForwardClaimed::Claimed(mut attempt) =
+                rows.claim_forward(&[8; 32], &[0xb; 16], 60_000).unwrap()
+            else {
+                panic!("expired claim must be taken over")
+            };
+            assert!(matches!(
+                rows.claim_forward(&[8; 32], &[0xc; 16], 60_000).unwrap(),
+                ForwardClaimed::Held(_)
+            ));
+            assert!(!rows.finish_forward(&[8; 32], &[0xa; 16], &attempt).unwrap());
+            attempt.done = true;
+            attempt.attempts += 1;
+            attempt.status = 200;
+            attempt.response = "delivered".into();
+            assert!(rows.finish_forward(&[8; 32], &[0xb; 16], &attempt).unwrap());
+            let ForwardClaimed::Done(done) =
+                rows.claim_forward(&[8; 32], &[0xc; 16], 60_000).unwrap()
+            else {
+                panic!("finished answer must repeat")
+            };
+            assert_eq!(
+                (done.attempts, done.status, done.response.as_str()),
+                (1, 200, "delivered")
+            );
+            commit(&rows, NETWORK, &[1; 33], None, false, checkpoint(2, 2)).unwrap();
+            assert_eq!(rows.counts().unwrap(), (1, 1));
+            assert_eq!(rows.forward_body(&[8; 32]).unwrap(), None);
+            assert_eq!(rows.store.sweep_large_values([1; 16]).unwrap().deleted, 1);
+            assert_eq!(rows.store.sweep_large_values([1; 16]).unwrap().deleted, 0);
+            assert_eq!(
+                rows.forward_body(&[9; 32]).unwrap(),
+                Some(b"\0inline\xff".to_vec())
+            );
+        });
+    }
+}

@@ -1164,7 +1164,7 @@ describe('mounted profile during real background synchronization', () => {
       useStore.mockReturnValue(
         store as unknown as ReturnType<typeof useProfileStore>,
       )
-      const read = jest.spyOn(api, 'fetchMonadProfile')
+      const read = jest.spyOn(api, 'fetchEvmProfileSnapshot')
       const wrapper = mount(ProfilePage, {
         global: {
           mocks: {
@@ -1198,7 +1198,7 @@ describe('mounted profile during real background synchronization', () => {
           expect(store.setRelayData).not.toHaveBeenCalled()
         }
         let finish!: (
-          profile: Awaited<ReturnType<typeof api.fetchMonadProfile>>,
+          profile: Awaited<ReturnType<typeof api.fetchEvmProfileSnapshot>>,
         ) => void
         read.mockImplementationOnce(
           () =>
@@ -1216,10 +1216,15 @@ describe('mounted profile during real background synchronization', () => {
         if (scenario !== 'error-recovery')
           expect(actual.ownProfileCheck.unchecked).toBeNull()
         finish({
-          address: identity.address,
-          pubKey: identity.compressedPubKey,
-          name: scenario === 'unchanged' ? 'Alice' : 'Alice on another device',
-          bio: scenario === 'unchanged' ? 'Original bio' : 'Updated remote bio',
+          profile: {
+            address: identity.address,
+            pubKey: identity.compressedPubKey,
+            name:
+              scenario === 'unchanged' ? 'Alice' : 'Alice on another device',
+            bio:
+              scenario === 'unchanged' ? 'Original bio' : 'Updated remote bio',
+          },
+          precondition: { kind: 'matches', digest: 'ab'.repeat(32) },
         })
         await checking
         await wrapper.vm.$nextTick()

@@ -82,6 +82,34 @@ pub struct DbEvmProfiles<'a> {
     db: &'a Db,
 }
 
+/// A publication may replace only the exact profile row its reader observed.
+#[derive(Debug, Clone, Copy)]
+pub enum ProfilePrecondition {
+    /// Explicit publication without a preceding snapshot read.
+    Unconditional,
+    /// The reader observed HTTP404, not an expired but present record.
+    Absent,
+    /// SHA256 of the exact stored response bytes, independent of representation or expiry.
+    Matches([u8; 32]),
+}
+
+impl ProfilePrecondition {
+    pub(crate) fn check(&self, existing: Option<&[u8]>) -> Result<()> {
+        use sha2::{Digest, Sha256};
+        let matches = match self {
+            Self::Unconditional => true,
+            Self::Absent => existing.is_none(),
+            Self::Matches(expected) => existing
+                .map(|raw| Sha256::digest(raw).as_slice() == expected)
+                .unwrap_or(false),
+        };
+        if !matches {
+            return Err(DbEvmProfilesError::ProfilePreconditionFailed.into());
+        }
+        Ok(())
+    }
+}
+
 /// The record a profile replace writes, with the index facts derived from it.
 #[derive(Debug, Clone)]
 pub struct ProfileRow {
@@ -109,6 +137,11 @@ impl ProfileRow {
 /// Errors indicating some Monad-profile store error.
 #[derive(Debug, Error, ErrorMeta, PartialEq, Eq)]
 pub enum DbEvmProfilesError {
+    /// A competing publication changed the exact row observed by this writer.
+    #[invalid_client_input()]
+    #[error("Profile publication precondition failed")]
+    ProfilePreconditionFailed,
+
     /// Database contains an invalid protobuf `SignedPayload`.
     #[critical()]
     #[error("Inconsistent db: Cannot decode SignedPayload: {0}")]

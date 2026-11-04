@@ -735,11 +735,26 @@ impl Registry {
         address: Address,
         signed_profile: cashweb_payload::proto::SignedPayload,
     ) -> Result<()> {
+        self.put_evm_profile_conditional(
+            address,
+            signed_profile,
+            crate::store::evm_profiles::ProfilePrecondition::Unconditional,
+        )
+    }
+
+    /// Conditional profile replacement; the condition is checked in the index transaction.
+    pub fn put_evm_profile_conditional(
+        &self,
+        address: Address,
+        signed_profile: cashweb_payload::proto::SignedPayload,
+        condition: crate::store::evm_profiles::ProfilePrecondition,
+    ) -> Result<()> {
         let verified = verify_evm_profile(&self.ecc, address, &signed_profile)?;
         let row = crate::store::evm_profiles::ProfileRow::protobuf(&signed_profile)?;
         // The monotonic check runs in the replacing transaction, against the stored record it
         // replaces, so concurrent writes on any replica cannot both pass it.
         self.db.evm_profiles().replace(&address, |existing| {
+            condition.check(existing)?;
             let previous = existing.and_then(|existing| {
                 if crate::store::evm_profiles::is_cbor_frame(existing) {
                     crate::store::evm_profiles::cbor_statement_info(existing)
@@ -770,7 +785,24 @@ impl Registry {
         network: &str,
         frame_bytes: &[u8],
     ) -> Result<()> {
+        self.put_evm_profile_cbor_conditional(
+            address,
+            network,
+            frame_bytes,
+            crate::store::evm_profiles::ProfilePrecondition::Unconditional,
+        )
+    }
+
+    /// CBOR equivalent of the exact observed-row conditional replacement.
+    pub fn put_evm_profile_cbor_conditional(
+        &self,
+        address: Address,
+        network: &str,
+        frame_bytes: &[u8],
+        condition: crate::store::evm_profiles::ProfilePrecondition,
+    ) -> Result<()> {
         self.db.evm_profiles().replace(&address, |existing| {
+            condition.check(existing)?;
             let info = existing.and_then(crate::store::evm_profiles::cbor_statement_info);
             let prior_statement = match &info {
                 Some(info) => frank_cbor::PriorStatement::Frame(info.type_4_frame.clone()),

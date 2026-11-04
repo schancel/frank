@@ -13,6 +13,8 @@
  *   not reached the relay yet (the form marks it `unpublished`), or, when the relay holds no
  *   profile for the account at all, the first one (a new account's name, typed at setup; also
  *   what restores the profile on a relay with a fresh database).
+ * - Each sync publication is conditional on the exact metadata bytes just read (or404).
+ *   A412 triggers a bounded reread through these same adoption/edit rules.
  * - If the relay cannot be asked, nothing is published. A device that does not know what the
  *   account's profile is must not replace it.
  * - The profile is presentation, not required restoration: an account opens whether or not the
@@ -30,7 +32,10 @@ import { reactive } from 'vue'
 import type { ProfileInfo } from '@frank/wallet/chain'
 import {
   fetchMonadProfile,
+  fetchEvmProfileSnapshot,
+  isProfilePreconditionFailed,
   registerMonadIdentityCbor,
+  type EvmProfileSnapshot,
   type MonadIdentity,
   type MonadProfileFields,
 } from '@frank/wallet/evm-identity'
@@ -173,13 +178,34 @@ export function claimProfileStore(
  * header for the rule. `fetchPublished` resolves to `undefined` when the relay holds no entry
  * for the account and rejects when it could not be asked.
  */
-export async function syncOwnProfile(options: {
+type ProfileSyncOptions = {
   store: OwnProfileStore
   address: string
   fetchPublished: () => Promise<ProfileInfo | undefined>
   publish: (profile: StoredProfile) => Promise<void>
   isCancelled?: () => boolean
-}): Promise<OwnProfileOutcome> {
+}
+
+export async function syncOwnProfile(
+  options: ProfileSyncOptions,
+): Promise<OwnProfileOutcome> {
+  // All attempts share the caller's deadline/cancellation; a conflict requires another read.
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await syncOwnProfileAttempt(options)
+    } catch (error) {
+      const conflict = isProfilePreconditionFailed(error)
+      // A late refusal belongs to the old account; retry must not reclaim its former store.
+      if (conflict && !sameAddress(options.store.owner, options.address))
+        return 'unreachable'
+      if (!conflict || attempt === 2 || options.isCancelled?.()) throw error
+    }
+  }
+}
+
+async function syncOwnProfileAttempt(
+  options: ProfileSyncOptions,
+): Promise<OwnProfileOutcome> {
   const { store, address } = options
   if (options.isCancelled?.()) return 'unreachable'
   claimProfileStore(store, address)
@@ -422,17 +448,20 @@ export async function syncOwnProfileWithRelay(options: {
     const signal = options.signal
       ? AbortSignal.any([options.signal, deadline])
       : deadline
+    let observed: EvmProfileSnapshot | undefined
     try {
       const outcome = await syncOwnProfile({
         store,
         isCancelled: () => options.isCancelled?.() === true || signal.aborted,
         address: identity.address.raw,
-        fetchPublished: () =>
-          fetchMonadProfile({
+        fetchPublished: async () => {
+          observed = await fetchEvmProfileSnapshot({
             relayBaseUrl,
             address: identity.address,
             signal,
-          }),
+          })
+          return observed.profile
+        },
         publish: async profile => {
           // The relay refuses an avatar over its size limit: a smaller one, or none, is sent.
           let avatar = profile.avatar
@@ -453,7 +482,9 @@ export async function syncOwnProfileWithRelay(options: {
             store.owner !== owner
           )
             throw new Error('Profile publication cancelled')
+          if (!observed) throw new Error('Profile snapshot missing')
           await registerMonadIdentityCbor({
+            precondition: observed.precondition,
             relayBaseUrl,
             signal,
             identity,

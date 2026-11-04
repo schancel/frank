@@ -360,7 +360,11 @@ describe('stored chat accounting', () => {
           return message
         }),
       )
-      const totalKeys = ['totalValue', 'totalUnreadMessages', 'totalUnreadValue']
+      const totalKeys = [
+        'totalValue',
+        'totalUnreadMessages',
+        'totalUnreadValue',
+      ]
       const reads = jest.fn()
       const writes = jest.fn()
       // Observe the exported function's property accesses, including redundant assignments

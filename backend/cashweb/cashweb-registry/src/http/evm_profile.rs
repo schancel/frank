@@ -95,25 +95,37 @@ fn parse_addr(addr: &str) -> Result<Address> {
 }
 
 /// Parse only the strong exact-byte tokens emitted by the profile snapshot reader.
-pub(crate) fn profile_precondition(headers: &HeaderMap) -> Result<crate::store::evm_profiles::ProfilePrecondition> {
-    use axum::http::header::{IF_MATCH, IF_NONE_MATCH};
+pub(crate) fn profile_precondition(
+    headers: &HeaderMap,
+) -> Result<crate::store::evm_profiles::ProfilePrecondition> {
     use crate::store::evm_profiles::ProfilePrecondition;
+    use axum::http::header::{IF_MATCH, IF_NONE_MATCH};
     let matched = headers.get_all(IF_MATCH).iter().collect::<Vec<_>>();
     let absent = headers.get_all(IF_NONE_MATCH).iter().collect::<Vec<_>>();
     match (matched.as_slice(), absent.as_slice()) {
         ([], []) => Ok(ProfilePrecondition::Unconditional),
-        ([], [value]) if value.to_str().ok().map(str::trim) == Some("*") => Ok(ProfilePrecondition::Absent),
+        ([], [value]) if value.to_str().ok().map(str::trim) == Some("*") => {
+            Ok(ProfilePrecondition::Absent)
+        }
         ([value], []) => {
-            let token = value.to_str().map_err(|_| InvalidProfilePrecondition)?.trim();
+            let token = value
+                .to_str()
+                .map_err(|_| InvalidProfilePrecondition)?
+                .trim();
             if token.len() != 66 || !token.starts_with('"') || !token.ends_with('"') {
                 return Err(InvalidProfilePrecondition.into());
             }
             let digest = &token[1..65];
-            if !digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)) {
+            if !digest
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            {
                 return Err(InvalidProfilePrecondition.into());
             }
             let bytes = hex::decode(digest).map_err(|_| InvalidProfilePrecondition)?;
-            Ok(ProfilePrecondition::Matches(bytes.try_into().map_err(|_| InvalidProfilePrecondition)?))
+            Ok(ProfilePrecondition::Matches(
+                bytes.try_into().map_err(|_| InvalidProfilePrecondition)?,
+            ))
         }
         _ => Err(InvalidProfilePrecondition.into()),
     }
@@ -156,7 +168,9 @@ pub async fn handle_put_evm_profile(
                     ),
                 ))
             })?;
-        server.registry.put_evm_profile_conditional(address, signed_metadata, condition)?;
+        server
+            .registry
+            .put_evm_profile_conditional(address, signed_metadata, condition)?;
     }
     Ok(Protobuf(proto::PutSignedPayloadResponse { txid: vec![] }))
 }
@@ -594,13 +608,31 @@ mod tests {
             }));
         }
         barrier.wait();
-        let results = jobs.into_iter().map(|job| job.join().unwrap()).collect::<Vec<_>>();
+        let results = jobs
+            .into_iter()
+            .map(|job| job.join().unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(results.iter().filter(|result| result.is_ok()).count(), 1);
         let failure = results.into_iter().find_map(Result::err).unwrap();
-        assert!(matches!(failure.downcast_ref::<DbEvmProfilesError>(), Some(DbEvmProfilesError::ProfilePreconditionFailed)));
+        assert!(matches!(
+            failure.downcast_ref::<DbEvmProfilesError>(),
+            Some(DbEvmProfilesError::ProfilePreconditionFailed)
+        ));
         assert_eq!(registry.stored_public_profile_record_count().unwrap(), 1);
-        assert!(registry.search_evm_profiles_by_name("Original", 10).unwrap().is_empty());
-        assert_eq!(registry.search_evm_profiles_by_name("First", 10).unwrap().len()
-            + registry.search_evm_profiles_by_name("Second", 10).unwrap().len(), 1);
+        assert!(registry
+            .search_evm_profiles_by_name("Original", 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            registry
+                .search_evm_profiles_by_name("First", 10)
+                .unwrap()
+                .len()
+                + registry
+                    .search_evm_profiles_by_name("Second", 10)
+                    .unwrap()
+                    .len(),
+            1
+        );
     }
 }

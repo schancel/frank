@@ -981,9 +981,11 @@ async fn handle_put_registry(
                     ),
                 ))
             })?;
-            server
-                .registry
-                .put_evm_profile_conditional(monad_address, signed_metadata, condition)?;
+            server.registry.put_evm_profile_conditional(
+                monad_address,
+                signed_metadata,
+                condition,
+            )?;
         }
         return Ok(PutRegistrySuccess {
             body: proto::PutSignedPayloadResponse { txid: vec![] },
@@ -1524,7 +1526,10 @@ mod spa_tests {
                     .uri("/groups/00/epochs")
                     .header("origin", "https://app.example")
                     .header("access-control-request-method", "PUT")
-                    .header("access-control-request-headers", "content-type,if-match,if-none-match")
+                    .header(
+                        "access-control-request-headers",
+                        "content-type,if-match,if-none-match",
+                    )
                     .body(Body::empty())
                     .unwrap(),
             )

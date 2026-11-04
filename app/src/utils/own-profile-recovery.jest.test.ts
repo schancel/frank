@@ -278,7 +278,10 @@ test.each([401, 403, 500, 503, 'offline'])(
     expect(store.profile).toEqual({ name: 'Retained' })
     expect(publish).not.toHaveBeenCalled()
     expect(ownProfileCheck.unchecked).toBe(store.owner)
-    fetch.mockResolvedValue({ profile: undefined, precondition: { kind: 'absent' } })
+    fetch.mockResolvedValue({
+      profile: undefined,
+      precondition: { kind: 'absent' },
+    })
     expect(
       await syncOwnProfileWithRelay({
         relayBaseUrl: 'https://relay.example',
@@ -291,7 +294,9 @@ test.each([401, 403, 500, 503, 'offline'])(
 )
 
 test('a refused publication is not confirmed or cleared and the same saved profile can retry', async () => {
-  jest.spyOn(identityApi, 'fetchEvmProfileSnapshot').mockResolvedValue({ profile: undefined, precondition: { kind: 'absent' } })
+  jest
+    .spyOn(identityApi, 'fetchEvmProfileSnapshot')
+    .mockResolvedValue({ profile: undefined, precondition: { kind: 'absent' } })
   const publish = jest
     .spyOn(identityApi, 'registerMonadIdentityCbor')
     .mockRejectedValueOnce(new Error('503'))

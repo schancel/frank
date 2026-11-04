@@ -457,9 +457,14 @@ it('a stalled old account read does not block claiming and refreshing the new ac
       if (address.raw === oldIdentity.address.raw)
         return new Promise<ProfileInfo>(resolve => {
           finishOld = resolve
-        }).then(profile => ({ profile, precondition: { kind: 'matches' as const, digest: '0'.repeat(64) } }))
-      return { profile: { name: 'New account', accountType: 0 } as ProfileInfo,
-        precondition: { kind: 'matches' as const, digest: '0'.repeat(64) } }
+        }).then(profile => ({
+          profile,
+          precondition: { kind: 'matches' as const, digest: '0'.repeat(64) },
+        }))
+      return {
+        profile: { name: 'New account', accountType: 0 } as ProfileInfo,
+        precondition: { kind: 'matches' as const, digest: '0'.repeat(64) },
+      }
     })
   const publish = jest
     .spyOn(api, 'registerMonadIdentityCbor')

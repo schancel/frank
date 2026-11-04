@@ -76,6 +76,102 @@ function retained() {
   return store
 }
 
+it('a later saved edit survives an older in-flight publication and its queued read', async () => {
+  const store = retained()
+  const firstFields = { ...store.profile }
+  const laterFields = { name: 'Later saved name', bio: 'Later saved bio' }
+  const startedAt = 1_800_000_000_000
+  let now = startedAt
+  jest.spyOn(Date, 'now').mockImplementation(() => now)
+  let announceBinding!: () => void
+  let releaseBinding!: () => void
+  const bindingStarted = new Promise<void>(resolve => {
+    announceBinding = resolve
+  })
+  const bindingReleased = new Promise<void>(resolve => {
+    releaseBinding = resolve
+  })
+  let remote: Uint8Array | undefined
+  const writes: Uint8Array[] = []
+  let reads = 0
+  let bindings = 0
+  request.mockImplementation(async call => {
+    if (metadataGet(call)) {
+      reads++
+      if (!remote) throw httpError(404)
+      if (reads === 2) {
+        // The older publication completed, but only its sent copy is published.
+        expect(store.profile).toEqual(laterFields)
+        expect(store.unpublished).toBe(true)
+        expect(store.editedAt).toBe(startedAt + 1_000)
+      }
+      return response(remote)
+    }
+    if (call.method === 'get') {
+      if (++bindings === 1) {
+        announceBinding()
+        await bindingReleased
+      }
+      return response(info)
+    }
+    if (!remote) {
+      expect(call.headers['If-None-Match']).toBe('*')
+      expect(call.headers['If-Match']).toBeUndefined()
+      expect(store.profile).toEqual(laterFields)
+      expect(store.unpublished).toBe(true)
+    } else {
+      expect(call.headers['If-Match']).toBe(`"${digest(remote)}"`)
+      expect(call.headers['If-None-Match']).toBeUndefined()
+    }
+    const bytes = new Uint8Array(call.data)
+    const decoded = identityApi.decodeProfileBytes(bytes)
+    expect(decoded.derivedAddress.toLowerCase()).toBe(store.owner)
+    expect(decoded.network).toBe(network)
+    expect(decoded.pubKey).toEqual(identity.compressedPubKey)
+    writes.push(bytes)
+    remote = bytes
+    return response({})
+  })
+
+  const earlier = syncOwnProfileWithRelay({ relayBaseUrl, identity, network })
+  await bindingStarted
+  expect(ownProfileCheck.unchecked).toBeNull()
+  now = startedAt + 1_000
+  store.setRelayData({ profile: laterFields, inbox: store.inbox })
+  expect(store.base).toEqual(firstFields)
+  expect(store.editedAt).toBe(now)
+  const queued = syncOwnProfileWithRelay({ relayBaseUrl, identity, network })
+  now = startedAt + 2_000
+  releaseBinding()
+  const outcomes = await Promise.all([earlier, queued])
+
+  // This is the visible lost-edit regression, before timestamp assertions.
+  expect(store.profile).toEqual(laterFields)
+  const published = identityApi.decodeProfileBytes(remote!)
+  expect([published.name, published.bio]).toEqual([
+    laterFields.name,
+    laterFields.bio,
+  ])
+  expect(outcomes).toEqual(['published', 'published'])
+  expect(store.unpublished).toBe(false)
+  expect(store.editedAt).toBeUndefined()
+  expect(store.base).toEqual(laterFields)
+  expect(writes).toHaveLength(2)
+  const first = identityApi.decodeProfileBytes(writes[0])
+  expect([first.name, first.bio]).toEqual([firstFields.name, firstFields.bio])
+  expect(first.timestampMs).toBe(startedAt)
+  expect(published.timestampMs).toBe(startedAt + 2_000)
+  now = startedAt + 3_000
+  expect(
+    await syncOwnProfileWithRelay({ relayBaseUrl, identity, network }),
+  ).toBe('unchanged')
+  expect(store.profile).toEqual(laterFields)
+  expect(identityApi.decodeProfileBytes(remote!).name).toBe(laterFields.name)
+  expect(store.unpublished).toBe(false)
+  expect(ownProfileCheck.unchecked).toBeNull()
+  expect([reads, writes.length, bindings]).toEqual([3, 2, 2])
+})
+
 it('404 then a concurrent winner then412 rereads and adopts without overwriting or unconditional fallback', async () => {
   const store = retained()
   const winner = raw({ name: 'Winner', bio: 'Winner bio' })

@@ -13,11 +13,7 @@ export function rasterKindFromHeader(b: Uint8Array): string | undefined {
   if (b.length >= 4 && u32be(b, 0) === 0x89504e47) return 'png'
   if (b.length >= 4 && ascii(b, 0, 4) === 'GIF8') return 'gif'
   if (b.length >= 2 && b[0] === 0xff && b[1] === 0xd8) return 'jpeg'
-  if (
-    b.length >= 12 &&
-    ascii(b, 0, 4) === 'RIFF' &&
-    ascii(b, 8, 4) === 'WEBP'
-  )
+  if (b.length >= 12 && ascii(b, 0, 4) === 'RIFF' && ascii(b, 8, 4) === 'WEBP')
     return 'webp'
   return
 }

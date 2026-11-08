@@ -531,6 +531,36 @@ Phases, in order:
 
 The MinIO credentials in the Compose file are synthetic and local to the lab.
 
+### Selecting the test process's object-store configuration
+
+The existing contract fixture accepts `FRANK_LAB_S3_API=s3|gcs_xml`; absence keeps
+`s3`. An empty, unknown or non-Unicode value is an error, and the endpoint's
+hostname never selects a dialect. `FRANK_LAB_S3_PREFIX` optionally replaces the
+base `lab-${FRANK_LAB_RUN_ID}`. The fixture appends the same `/scope` as before,
+including a trailing slash for an empty scope. Empty or slash-only override bases
+are rejected, and prefix/endpoint validation uses the existing production
+`S3BlobStoreConfig` rules. Region remains `us-east-1`, with path-style requests.
+
+Run ID, endpoint, bucket and the existing access-key/secret-key inputs remain
+required; the FDB cluster-file input is still required by live phases. Set any
+overrides in the **test process's** environment: exporting them in the host shell
+does not automatically forward new variables through the unchanged Compose
+model. A separately reviewed Compose override can supply process inputs through
+`FRANK_LAB_COMPOSE_OVERRIDE`.
+
+Ordinary `fixture_config_*` tests use the same configuration constructor as the
+live fixture with fake environment readers. Existing backend CI compiles and
+runs these pure cases with `foundationdb` enabled, without opening a store or
+booting FDB. The existing live phases remain ignored during ordinary CI.
+
+These inputs enable later provider qualification; they do not qualify GCS.
+Do not point the MinIO stop/restart orchestrator at GCS or interpret an OAuth
+storage canary as HMAC adapter proof. A live GCS probe still needs independently
+approved credentials, a bound disposable prefix and matching CRUD permissions,
+explicit `gcs_xml`, selected portable contract phases, and actual signed-request,
+readback, recovery and cleanup evidence. Valid prefix syntax alone does not prove
+ownership or access isolation.
+
 `Dockerfile.large-values` builds both test executables with Cargo dev/test debug
 information disabled and incremental compilation disabled. It keeps the test
 profile and its assertions/checks, and uses the separate BuildKit target cache

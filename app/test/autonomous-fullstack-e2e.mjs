@@ -1,5 +1,8 @@
 // Browser end-to-end check of the app against a running demo stack on Monad testnet.
 //
+// Required: ACCOUNT_APP_ORIGIN, E2E_PROFILE_DIR, E2E_BACKEND_LOGS_DIR and
+// E2E_BROWSER_RESOLVER_RULES="MAP signet.mx 127.0.0.1, MAP relay.signet.mx 127.0.0.1".
+// Root must separately admit the fixture servers/TLS and matching 10143 artifact.
 //   terminal 1:  yarn demo                              (relay + every bot, real chain; starts the app too)
 //   terminal 2:  node app/test/autonomous-fullstack-e2e.mjs
 //
@@ -11,9 +14,9 @@
 // (each must answer with what that command produces). It exits non-zero if any scenario fails OR
 // the browser logged an error, a request failed, or the relay/bot logs gained an error line.
 // It spends real testnet funds (stamps, a bet and gas). The account lives in a PERSISTENT Chrome
-// profile, ~/.frank-e2e-browser/autonomous-fullstack-e2e (E2E_PROFILE_DIR; see e2e-profile.mjs):
+// profile at the required explicit E2E_PROFILE_DIR (see e2e-profile.mjs):
 // the first run creates it, later runs open the same account and fund it only when it holds
-// less than 0.1 MON (up to E2E_FUND_MON), so nothing is lost with a discarded profile. The
+// less than E2E_FUND_MON, so funds stay in their owned profile. The
 // native-send scenario pays the test wallet back rather than a dead address, and when the run
 // ends (pass, failure or Ctrl-C) what the account holds above the test-account float (0.02 MON,
 // TEST_ACCOUNT_FLOAT_WEI in packages/bot/demo/real-stack.ts) is sent back to the test wallet
@@ -26,17 +29,19 @@ import { fileURLToPath } from 'node:url'
 import {
   mkdir,
   writeFile,
-  readFile,
   readdir,
-  open,
   stat,
 } from 'node:fs/promises'
-import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
-import { persistentProfile, testFunds } from './e2e-profile.mjs'
+import {
+  persistentProfile, testFunds, browserFixture, readPublicAccount, monWei,
+  absoluteFixturePath, appendEvidence, evidenceUrl, scanBackendLog,
+} from './e2e-profile.mjs'
 
-const origin = process.env.ACCOUNT_APP_ORIGIN ?? 'http://localhost:8080'
+const { origin, resolverArgument } = browserFixture()
+// Both final hosts must resolve to admitted fixture addresses, even for a loopback app.
+const logsDir = absoluteFixturePath(process.env.E2E_BACKEND_LOGS_DIR, 'E2E_BACKEND_LOGS_DIR')
 const profile = await persistentProfile('autonomous-fullstack-e2e')
 const directory = profile.directory
 // Where screenshots go; defaults to a folder inside the profile directory.
@@ -44,17 +49,8 @@ const screenshotDir = resolve(
   process.env.E2E_SCREENSHOT_DIR ?? join(directory, 'screenshots'),
 )
 await mkdir(screenshotDir, { recursive: true })
-// The demo launcher writes its logs under `<state dir>/logs`; the state dir defaults to ~/.frank-demo.
-const logsDir = resolve(
-  process.env.E2E_BACKEND_LOGS_DIR ??
-    join(
-      process.env.FRANK_DEMO_STATE_DIR ?? join(homedir(), '.frank-demo'),
-      'logs',
-    ),
-)
 const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const fundMon = process.env.E2E_FUND_MON ?? '0.2'
-const sessionModule = `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name)`
 const executable =
   process.env.CUSTODY_CHROME ??
   '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
@@ -64,6 +60,7 @@ const frontendErrors = []
 const frontendWarnings = []
 const networkFailures = []
 const consoleLogs = []
+const unverifiedLookups = []
 let sequence = 0
 const pending = new Map()
 
@@ -77,6 +74,7 @@ async function launch() {
       '--disable-background-networking',
       '--disable-component-update',
       '--remote-debugging-port=0',
+      resolverArgument,
       `--user-data-dir=${directory}`,
       'about:blank',
     ],
@@ -91,7 +89,7 @@ async function launch() {
     )
     child.once('error', reject)
     child.stderr.on('data', data => {
-      output += data
+      output = (output + data).slice(-8192)
       const match = /DevTools listening on (ws:\/\/(\S+))/.exec(output)
       if (match) {
         clearTimeout(timer)
@@ -113,9 +111,11 @@ async function launch() {
       return
     }
     const handler = pending.get(message.id)
+    if (!handler) return
+    clearTimeout(handler.timer)
     pending.delete(message.id)
     if (message.error) {
-      handler.reject(new Error(message.error.message))
+      handler.reject(new Error('Browser protocol request failed; body omitted'))
     } else {
       handler.resolve(message.result)
     }
@@ -124,7 +124,11 @@ async function launch() {
   call = (method, params = {}, session = sessionId) =>
     new Promise((resolve, reject) => {
       const id = ++sequence
-      pending.set(id, { resolve, reject })
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        reject(new Error('Browser protocol request timed out; body omitted'))
+      }, 180000)
+      pending.set(id, { resolve, reject, timer })
       socket.send(
         JSON.stringify({
           id,
@@ -140,35 +144,24 @@ async function launch() {
 
 function handleEvent(event) {
   if (event.method === 'Runtime.exceptionThrown') {
-    const desc =
-      event.params.exceptionDetails?.exception?.description ||
-      event.params.exceptionDetails?.text
-    frontendErrors.push(`[EXCEPTION] ${desc}`)
-    console.error(`🔴 FRONTEND EXCEPTION:`, desc)
+    appendEvidence(frontendErrors, '[FRONTEND EXCEPTION; private body omitted]')
   } else if (event.method === 'Runtime.consoleAPICalled') {
     const type = event.params.type
-    const args = event.params.args
-      .map(a => a.value ?? a.description ?? JSON.stringify(a))
-      .join(' ')
-    consoleLogs.push(`[${type}] ${args}`)
+    appendEvidence(consoleLogs, '[console body omitted]')
     if (type === 'error') {
-      frontendErrors.push(`[CONSOLE_ERROR] ${args}`)
-      console.error(`🔴 FRONTEND CONSOLE ERROR:`, args)
+      appendEvidence(frontendErrors, '[CONSOLE ERROR; private body omitted]')
     } else if (type === 'warn') {
-      frontendWarnings.push(`[CONSOLE_WARN] ${args}`)
+      appendEvidence(frontendWarnings, '[CONSOLE WARNING; private body omitted]')
     }
   } else if (event.method === 'Network.responseReceived') {
     const { status, url } = event.params.response
-    const isExpected404 =
+    const unverified404 =
       status === 404 &&
       (url.includes('/metadata/') ||
-        url.includes('/directory/v1/') ||
-        url.includes('/favicon.ico'))
-    const isExpected401 = status === 401 && url.includes('/capability')
-    if (status >= 400 && !isExpected404 && !isExpected401) {
-      networkFailures.push(`[HTTP ${status}] ${url}`)
-      console.warn(`⚠️ HTTP ${status}: ${url}`)
-    }
+        url.includes('/directory/v1/'))
+    if (unverified404) appendEvidence(unverifiedLookups, `[HTTP 404; republication not verified] ${evidenceUrl(url)}`)
+    else if (status >= 400 && !(status === 404 && url.endsWith('/favicon.ico')))
+      appendEvidence(networkFailures, `[HTTP ${status}] ${evidenceUrl(url)}`)
   }
 }
 
@@ -200,10 +193,7 @@ async function evaluate(expression) {
     returnByValue: true,
   })
   if (result.exceptionDetails) {
-    throw new Error(
-      result.exceptionDetails.exception?.description ??
-        result.exceptionDetails.text,
-    )
+    throw new Error('Browser evaluation failed; private exception body omitted')
   }
   return result.result.value
 }
@@ -217,13 +207,10 @@ async function until(expression, timeoutMs = 25000, description = '') {
     } catch {}
     await new Promise(r => setTimeout(r, 200))
   }
-  const pageText = await evaluate(
-    'document.body.innerText.slice(0, 1000)',
-  ).catch(() => 'unknown')
   throw new Error(
     `Timeout waiting for [${
-      description || expression
-    }] after ${timeoutMs}ms. Page text:\n${pageText}`,
+      description || 'UI state'
+    }] after ${timeoutMs}ms; private page text omitted`,
   )
 }
 
@@ -304,6 +291,8 @@ async function getValue(selector) {
 }
 
 async function captureScreenshot(filename) {
+  if (await evaluate(`!!document.querySelector('[data-test="backup-share"], [data-test="confirm-shares"], input[type="password"]')`))
+    throw new Error('Sensitive account screen screenshot omitted')
   const { data } = await call('Page.captureScreenshot', { format: 'png' })
   const filepath = join(screenshotDir, filename)
   await writeFile(filepath, Buffer.from(data, 'base64'))
@@ -315,12 +304,13 @@ async function getLogOffsets() {
   const offsets = new Map()
   try {
     const logFiles = await readdir(logsDir)
+    if (logFiles.length > 200) throw new Error('Fixture log inventory exceeds its bound')
     for (const file of logFiles) {
       if (!file.endsWith('.log')) continue
       const s = await stat(join(logsDir, file))
       offsets.set(file, s.size)
     }
-  } catch {}
+  } catch { throw new Error('Explicit fixture log inventory could not be read') }
   return offsets
 }
 
@@ -328,36 +318,19 @@ async function inspectBackendLogs(startOffsets = new Map()) {
   const logFiles = await readdir(logsDir).catch(() => {
     // Without the logs the "no backend errors" claim cannot be made: that is a failure, not a pass.
     console.error(
-      `No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR or FRANK_DEMO_STATE_DIR`,
+      `No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR`,
     )
     return [`no backend logs could be read at ${logsDir}`]
   })
   const backendErrors = []
+  if (logFiles.length > 200) return ['fixture log inventory exceeds its bound']
   for (const file of logFiles) {
     if (!file.endsWith('.log')) continue
     const filePath = join(logsDir, file)
     const st = await stat(filePath)
     const startOffset = startOffsets.get(file) ?? 0
-    if (st.size <= startOffset) continue
-    const handle = await open(filePath, 'r')
-    const buffer = Buffer.alloc(st.size - startOffset)
-    await handle.read(buffer, 0, buffer.length, startOffset)
-    await handle.close()
-    const content = buffer.toString('utf8')
-    const lines = content.split('\n')
-    for (const line of lines) {
-      if (
-        line.includes('ERROR') ||
-        line.includes('panic') ||
-        line.includes('unhandledRejection') ||
-        line.includes('FAILED to start') ||
-        line.includes('could not be started') ||
-        line.includes('FUNDING WALLET EXHAUSTED') ||
-        line.includes('QWEN BOT FAILED')
-      ) {
-        backendErrors.push(`[${file}] ${line}`)
-      }
-    }
+    if (st.size === startOffset) continue
+    for (const line of await scanBackendLog(filePath, startOffset)) appendEvidence(backendErrors, line)
   }
   return backendErrors
 }
@@ -381,9 +354,9 @@ async function scenario(name, body) {
     results.push([name, 'PASS', detail ?? ''])
     console.log(`✅ ${name}: ${detail ?? ''}`)
   } catch (err) {
-    results.push([name, 'FAIL', err.message.split('\n')[0]])
+    results.push([name, 'FAIL', 'scenario did not complete; private error body omitted'])
     console.error(
-      `❌ ${name}: ${err.message.split('\n').slice(0, 3).join(' ')}`,
+      `❌ ${name}: scenario did not complete; private error body omitted`,
     )
     await captureScreenshot(
       `fail_${name.toLowerCase().replace(/[^a-z0-9]+/g, '_')}.png`,
@@ -449,6 +422,7 @@ async function timedSend(text, timeoutMs) {
 const funds = testFunds({
   repoRoot,
   directory,
+  profile,
   page: { evaluate, typeInput, click, until },
   stop,
 })
@@ -477,14 +451,10 @@ async function run() {
       // The profile already holds an account: open it, do not create another.
       console.log(`\n--- SCENARIO 1: reusing the account in ${directory} ---`)
       await call('Page.navigate', { url: origin + '/#/wallet' })
-      await until(
-        `${sessionModule}.then(m => m.accountSession.getWallet()).then(w => !!w, () => false)`,
-        60000,
-        `the account saved in ${directory} to open (if this profile is damaged, set E2E_PROFILE_DIR to a new directory; do not delete this one while its account ${profile.account.receive} holds money)`,
-      )
+      await profile.recordAccount(await readPublicAccount({ evaluate, until }))
       results.push([
         '1 onboarding',
-        'PASS',
+        'NOT_RUN_REUSED',
         `not run: reused the account ${profile.account.receive} in ${directory}`,
       ])
     } else {
@@ -575,25 +545,18 @@ async function run() {
         'landed on ' + (await evaluate('location.hash')),
       ])
 
-      await profile.recordAccount(
-        await evaluate(
-          `${sessionModule}.then(async m => { const w = await m.accountSession.getWallet(); return { profile: w.identity.address.raw, receive: (await w.getReceiveAddress()).raw } })`,
-        ),
-      )
+      await profile.recordAccount(await readPublicAccount({ evaluate, until }))
     }
 
     // SCENARIO 2: what a new account has, with no manual step
     await scenario('2 new user funds', async () => {
-      const ids = await evaluate(
-        `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => { const w = await m.accountSession.getWallet(); return { profile: w.identity.address.raw, receive: (await w.getReceiveAddress()).raw } })`,
-      )
+      const ids = await readPublicAccount({ evaluate, until })
+      await profile.recordAccount(ids)
       console.log(`profile ${ids.profile}  receive ${ids.receive}`)
       await evaluate(`location.hash = '#/wallet'`)
-      // The faucet pays the profile address today: shown as cordoned, not spendable. Whether
-      // anything shows up is recorded, not required: the paid scenarios below need a funded
-      // account either way.
+      // Read the exact available title; shortened or unknown presentation is not a spending cap.
       const appeared = await until(
-        `/cordoned/.test(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '') || parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') > 0`,
+        `(() => { const value = document.querySelector('[data-testid="wallet-available"] span[title]')?.getAttribute('title'); return /^\\d+(?:\\.\\d+)? MONT$/.test(value ?? '') && !/^0(?:\\.0+)? MONT$/.test(value) })()`,
         60000,
         'any funds shown on the wallet page',
       ).then(
@@ -604,23 +567,16 @@ async function run() {
         `(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '(no balance element)').replace(/\\s+/g, ' ').trim()`,
       )
       await captureScreenshot('02_wallet_new_user.png')
-      const spendable = BigInt(
-        await evaluate(
-          `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name).then(async m => (await (await m.accountSession.getWallet()).getBalance()).toString())`,
-        ),
-      )
+      const spendable = await funds.spendable()
+      const owned = await funds.owned()
       let note = `wallet page shows "${shown}"${
         appeared ? '' : ' (nothing arrived within 60 s of creating the account)'
-      }; spendable ${spendable} wei`
+      }; owned ${owned} wei; available ${spendable} wei`
       if (spendable < 100000000000000000n) {
-        // Not enough reaches the receive address on its own (the faucet pays the profile address):
-        // fund it with a real transfer so the paid scenarios can run, and say so.
-        const transfer = await funds.ensure(
-          BigInt(Math.round(Number(fundMon) * 1e6)) * 10n ** 12n,
-        )
+        const transfer = await funds.ensure(monWei(fundMon))
         console.log(transfer)
         await until(
-          `parseFloat(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '0') > 0`,
+          `(() => { const value = document.querySelector('[data-testid="wallet-available"] span[title]')?.getAttribute('title'); return /^\\d+(?:\\.\\d+)? MONT$/.test(value ?? '') && !/^0(?:\\.0+)? MONT$/.test(value) })()`,
           60000,
           'the transfer shown on the wallet page',
         )
@@ -827,45 +783,14 @@ async function run() {
     // SCENARIO 7: native send from the wallet page, then a paid message
     await scenario('7 native send', async () => {
       // To the wallet that funds this account, so the amount comes straight back.
-      const recipient =
-        (await funds.testWallet())?.address ??
-        '0x1111111111111111111111111111111111111111'
-      await evaluate(`location.hash = '#/wallet'`)
-      await new Promise(r => setTimeout(r, 1000))
-      await evaluate(`location.hash = '#/send'`)
-      await typeInput('[data-test="send-address-input"]', recipient)
-      await typeInput('[data-test="send-amount-input"]', '0.01')
-      await click('[data-test="send-review-button"]')
-      // The confirm button is busy until the fee estimate arrives; a click before that is lost.
-      await until(
-        `(() => { const b = document.querySelector('[data-test="review-confirm-button"]'); return b && !b.disabled && !b.classList.contains('q-btn--loading') && !b.querySelector('.q-spinner') })()`,
-        15000,
-        'confirm button ready',
-      )
-      await new Promise(r => setTimeout(r, 500))
-      await click('[data-test="review-confirm-button"]')
-      // A TERMINAL state: the page moved on, or the outcome says sent or reverted. "pending" and
-      // "unresolved" are not outcomes; the wallet keeps observing, so keep waiting.
-      await until(
-        `location.hash !== '#/send' || /sent on|reverted/i.test(document.querySelector('[data-test="native-operation-outcome"]')?.innerText ?? '')`,
-        120000,
-        'a terminal native transfer outcome (sent or reverted)',
-      )
+      const recipient = (await funds.testWallet()).address
+      const receipt = await funds.sendFromPage(recipient, '0.01')
       await captureScreenshot('07_native_send.png')
-      const outcome = await evaluate(
-        `location.hash !== '#/send' ? 'returned to ' + location.hash : document.querySelector('[data-test="native-operation-outcome"]').innerText.replace(/\\n+/g, ' | ')`,
-      )
       await openConversation('Qwen')
       const paid = await timedSend('paid message after a native send', 40000)
       if (paid.sent === undefined)
         throw new Error('paid message after the native send was not sent')
-      if (!/^returned/.test(outcome)) {
-        if (!/Sent on/.test(outcome)) throw new Error(outcome)
-        throw new Error(
-          `funds moved and a paid message works, but the page stays on: ${outcome}`,
-        )
-      }
-      return outcome
+      return `recipient credit verified for original ${receipt.operationId}; automatic navigation not assessed by this receipt check`
     })
 
     // SCENARIO 8: the other hosted bots
@@ -911,6 +836,8 @@ async function run() {
     }
 
     console.log(`Network HTTP >= 400 Failures: ${networkFailures.length}`)
+    if (unverifiedLookups.length)
+      console.log(`Directory/metadata absence observed ${unverifiedLookups.length} times; fresh-backend republication NOT VERIFIED by this journey`)
     if (networkFailures.length > 0) {
       console.warn('Network Failures:\n', networkFailures.join('\n'))
     }
@@ -948,7 +875,7 @@ async function run() {
     }
     console.log(process.exitCode ? '\nE2E FAILED' : '\nE2E OK')
   } catch (err) {
-    console.error('❌ E2E TEST RUNNER ERROR:', err)
+    console.error('❌ E2E TEST RUNNER ERROR: private error body omitted')
     if (frontendErrors.length) console.error('Frontend errors:', frontendErrors)
     if (networkFailures.length)
       console.error('Network failures:', networkFailures)

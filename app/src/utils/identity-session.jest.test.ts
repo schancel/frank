@@ -487,13 +487,17 @@ test('an old metadata answer cannot clear the new offline identity uncertainty',
     relay.down = true
     await configureMessagingForTest(current.deps)
     await startMessaging()
-    expect(ownProfileCheck.unchecked).toBe(bob.identity.address.raw.toLowerCase())
+    expect(ownProfileCheck.unchecked).toBe(
+      bob.identity.address.raw.toLowerCase(),
+    )
     answer({
       profile: { name: 'Late Alice' } as ProfileInfo,
       precondition: { kind: 'matches', digest: '0'.repeat(64) },
     })
     await oldRead
-    expect(ownProfileCheck.unchecked).toBe(bob.identity.address.raw.toLowerCase())
+    expect(ownProfileCheck.unchecked).toBe(
+      bob.identity.address.raw.toLowerCase(),
+    )
     expect(store.profile).toEqual({ name: 'Alice' })
   } finally {
     answer?.({ profile: undefined, precondition: { kind: 'absent' } })

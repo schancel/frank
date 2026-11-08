@@ -317,10 +317,7 @@ async function getLogOffsets() {
 async function inspectBackendLogs(startOffsets = new Map()) {
   const logFiles = await readdir(logsDir).catch(() => {
     // Without the logs the "no backend errors" claim cannot be made: that is a failure, not a pass.
-    console.error(
-      `No backend logs at ${logsDir}; set E2E_BACKEND_LOGS_DIR`,
-    )
-    return [`no backend logs could be read at ${logsDir}`]
+    throw new Error('Explicit fixture log inventory unavailable; backend errors not verified')
   })
   const backendErrors = []
   if (logFiles.length > 200) return ['fixture log inventory exceeds its bound']

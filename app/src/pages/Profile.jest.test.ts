@@ -1174,7 +1174,7 @@ describe('mounted profile during real background synchronization', () => {
       useStore.mockReturnValue(
         store as unknown as ReturnType<typeof useProfileStore>,
       )
-      const previousWallet = jest.mocked(useActiveWallet).getMockImplementation()
+      const walletImpl = jest.mocked(useActiveWallet).getMockImplementation()
       const wallet = {
         identity,
         relayBaseUrl: 'https://127.0.0.1:18443',
@@ -1283,7 +1283,7 @@ describe('mounted profile during real background synchronization', () => {
         read.mockReset()
         salt.mockRestore()
         useStore.mockImplementation(previousStore!)
-        jest.mocked(useActiveWallet).mockImplementation(previousWallet!)
+        jest.mocked(useActiveWallet).mockImplementation(walletImpl!)
       }
     },
   )

@@ -25,8 +25,13 @@ import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import {
-  persistentProfile, testFunds, browserFixture, readPublicAccount, monWei,
-  appendEvidence, evidenceUrl,
+  persistentProfile,
+  testFunds,
+  browserFixture,
+  readPublicAccount,
+  monWei,
+  appendEvidence,
+  evidenceUrl,
 } from './e2e-profile.mjs'
 
 const { origin, resolverArgument } = browserFixture()
@@ -138,15 +143,21 @@ function handleEvent(event) {
     if (type === 'error') {
       appendEvidence(frontendErrors, '[CONSOLE ERROR; private body omitted]')
     } else if (type === 'warn') {
-      appendEvidence(frontendWarnings, '[CONSOLE WARNING; private body omitted]')
+      appendEvidence(
+        frontendWarnings,
+        '[CONSOLE WARNING; private body omitted]',
+      )
     }
   } else if (event.method === 'Network.responseReceived') {
     const { status, url } = event.params.response
     const unverified404 =
       status === 404 &&
-      (url.includes('/metadata/') ||
-        url.includes('/directory/v1/'))
-    if (unverified404) appendEvidence(unverifiedLookups, `[HTTP 404; republication not verified] ${evidenceUrl(url)}`)
+      (url.includes('/metadata/') || url.includes('/directory/v1/'))
+    if (unverified404)
+      appendEvidence(
+        unverifiedLookups,
+        `[HTTP 404; republication not verified] ${evidenceUrl(url)}`,
+      )
     else if (status >= 400 && !(status === 404 && url.endsWith('/favicon.ico')))
       appendEvidence(networkFailures, `[HTTP ${status}] ${evidenceUrl(url)}`)
   }
@@ -278,7 +289,11 @@ async function getValue(selector) {
 }
 
 async function captureScreenshot(filename) {
-  if (await evaluate(`!!document.querySelector('[data-test="backup-share"], [data-test="confirm-shares"], input[type="password"]')`))
+  if (
+    await evaluate(
+      `!!document.querySelector('[data-test="backup-share"], [data-test="confirm-shares"], input[type="password"]')`,
+    )
+  )
     throw new Error('Sensitive account screen screenshot omitted')
   const { data } = await call('Page.captureScreenshot', { format: 'png' })
   const filepath = join(screenshotDir, filename)
@@ -381,7 +396,9 @@ async function run() {
 
   const identity = await readPublicAccount({ evaluate, until })
   await profile.recordAccount(identity)
-  console.log(`MAIN ACCOUNT ${identity.receive}  (${profile.fresh ? 'new' : 'reused'})`)
+  console.log(
+    `MAIN ACCOUNT ${identity.receive}  (${profile.fresh ? 'new' : 'reused'})`,
+  )
   // The swap amount plus gas for the moves and the swap; funded only when it holds less.
   const needWei = monWei(amount) + monWei('0.06')
   const funded = await funds.ensure(needWei)
@@ -466,9 +483,11 @@ async function run() {
   console.log('result:', await t('swap-result'))
   console.log(
     'explorer:',
-    evidenceUrl(await evaluate(
-      `document.querySelector('[data-testid="swap-result-explorer"]')?.href ?? null`,
-    )),
+    evidenceUrl(
+      await evaluate(
+        `document.querySelector('[data-testid="swap-result-explorer"]')?.href ?? null`,
+      ),
+    ),
   )
   await captureScreenshot('swap_05_result.png')
 
@@ -482,13 +501,17 @@ async function run() {
   await captureScreenshot('swap_06_wallet.png')
   console.log('frontend errors:', JSON.stringify(frontendErrors.slice(0, 10)))
   if (unverifiedLookups.length)
-    console.log(`Directory/metadata absence observed ${unverifiedLookups.length} times; fresh-backend republication NOT VERIFIED by this journey`)
+    console.log(
+      `Directory/metadata absence observed ${unverifiedLookups.length} times; fresh-backend republication NOT VERIFIED by this journey`,
+    )
   if (frontendErrors.length || networkFailures.length) process.exitCode = 1
 }
 
 run()
   .catch(async error => {
-    console.error('FAILED: browser journey did not complete; private error body omitted')
+    console.error(
+      'FAILED: browser journey did not complete; private error body omitted',
+    )
     await captureScreenshot('swap_failed.png').catch(() => undefined)
     console.log('frontend errors:', JSON.stringify(frontendErrors.slice(0, 10)))
     process.exitCode = 1

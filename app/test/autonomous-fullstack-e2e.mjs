@@ -26,22 +26,27 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import {
-  mkdir,
-  writeFile,
-  readdir,
-  stat,
-} from 'node:fs/promises'
+import { mkdir, writeFile, readdir, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
 import {
-  persistentProfile, testFunds, browserFixture, readPublicAccount, monWei,
-  absoluteFixturePath, appendEvidence, evidenceUrl, scanBackendLog,
+  persistentProfile,
+  testFunds,
+  browserFixture,
+  readPublicAccount,
+  monWei,
+  absoluteFixturePath,
+  appendEvidence,
+  evidenceUrl,
+  scanBackendLog,
 } from './e2e-profile.mjs'
 
 const { origin, resolverArgument } = browserFixture()
 // Both final hosts must resolve to admitted fixture addresses, even for a loopback app.
-const logsDir = absoluteFixturePath(process.env.E2E_BACKEND_LOGS_DIR, 'E2E_BACKEND_LOGS_DIR')
+const logsDir = absoluteFixturePath(
+  process.env.E2E_BACKEND_LOGS_DIR,
+  'E2E_BACKEND_LOGS_DIR',
+)
 const profile = await persistentProfile('autonomous-fullstack-e2e')
 const directory = profile.directory
 // Where screenshots go; defaults to a folder inside the profile directory.
@@ -151,15 +156,21 @@ function handleEvent(event) {
     if (type === 'error') {
       appendEvidence(frontendErrors, '[CONSOLE ERROR; private body omitted]')
     } else if (type === 'warn') {
-      appendEvidence(frontendWarnings, '[CONSOLE WARNING; private body omitted]')
+      appendEvidence(
+        frontendWarnings,
+        '[CONSOLE WARNING; private body omitted]',
+      )
     }
   } else if (event.method === 'Network.responseReceived') {
     const { status, url } = event.params.response
     const unverified404 =
       status === 404 &&
-      (url.includes('/metadata/') ||
-        url.includes('/directory/v1/'))
-    if (unverified404) appendEvidence(unverifiedLookups, `[HTTP 404; republication not verified] ${evidenceUrl(url)}`)
+      (url.includes('/metadata/') || url.includes('/directory/v1/'))
+    if (unverified404)
+      appendEvidence(
+        unverifiedLookups,
+        `[HTTP 404; republication not verified] ${evidenceUrl(url)}`,
+      )
     else if (status >= 400 && !(status === 404 && url.endsWith('/favicon.ico')))
       appendEvidence(networkFailures, `[HTTP ${status}] ${evidenceUrl(url)}`)
   }
@@ -291,7 +302,11 @@ async function getValue(selector) {
 }
 
 async function captureScreenshot(filename) {
-  if (await evaluate(`!!document.querySelector('[data-test="backup-share"], [data-test="confirm-shares"], input[type="password"]')`))
+  if (
+    await evaluate(
+      `!!document.querySelector('[data-test="backup-share"], [data-test="confirm-shares"], input[type="password"]')`,
+    )
+  )
     throw new Error('Sensitive account screen screenshot omitted')
   const { data } = await call('Page.captureScreenshot', { format: 'png' })
   const filepath = join(screenshotDir, filename)
@@ -304,20 +319,25 @@ async function getLogOffsets() {
   const offsets = new Map()
   try {
     const logFiles = await readdir(logsDir)
-    if (logFiles.length > 200) throw new Error('Fixture log inventory exceeds its bound')
+    if (logFiles.length > 200)
+      throw new Error('Fixture log inventory exceeds its bound')
     for (const file of logFiles) {
       if (!file.endsWith('.log')) continue
       const s = await stat(join(logsDir, file))
       offsets.set(file, s.size)
     }
-  } catch { throw new Error('Explicit fixture log inventory could not be read') }
+  } catch {
+    throw new Error('Explicit fixture log inventory could not be read')
+  }
   return offsets
 }
 
 async function inspectBackendLogs(startOffsets = new Map()) {
   const logFiles = await readdir(logsDir).catch(() => {
     // Without the logs the "no backend errors" claim cannot be made: that is a failure, not a pass.
-    throw new Error('Explicit fixture log inventory unavailable; backend errors not verified')
+    throw new Error(
+      'Explicit fixture log inventory unavailable; backend errors not verified',
+    )
   })
   const backendErrors = []
   if (logFiles.length > 200) return ['fixture log inventory exceeds its bound']
@@ -327,7 +347,8 @@ async function inspectBackendLogs(startOffsets = new Map()) {
     const st = await stat(filePath)
     const startOffset = startOffsets.get(file) ?? 0
     if (st.size === startOffset) continue
-    for (const line of await scanBackendLog(filePath, startOffset)) appendEvidence(backendErrors, line)
+    for (const line of await scanBackendLog(filePath, startOffset))
+      appendEvidence(backendErrors, line)
   }
   return backendErrors
 }
@@ -351,7 +372,11 @@ async function scenario(name, body) {
     results.push([name, 'PASS', detail ?? ''])
     console.log(`✅ ${name}: ${detail ?? ''}`)
   } catch (err) {
-    results.push([name, 'FAIL', 'scenario did not complete; private error body omitted'])
+    results.push([
+      name,
+      'FAIL',
+      'scenario did not complete; private error body omitted',
+    ])
     console.error(
       `❌ ${name}: scenario did not complete; private error body omitted`,
     )
@@ -834,7 +859,9 @@ async function run() {
 
     console.log(`Network HTTP >= 400 Failures: ${networkFailures.length}`)
     if (unverifiedLookups.length)
-      console.log(`Directory/metadata absence observed ${unverifiedLookups.length} times; fresh-backend republication NOT VERIFIED by this journey`)
+      console.log(
+        `Directory/metadata absence observed ${unverifiedLookups.length} times; fresh-backend republication NOT VERIFIED by this journey`,
+      )
     if (networkFailures.length > 0) {
       console.warn('Network Failures:\n', networkFailures.join('\n'))
     }

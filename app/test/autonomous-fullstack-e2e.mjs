@@ -4,7 +4,9 @@
 // E2E_BROWSER_RESOLVER_RULES="MAP signet.mx 127.0.0.1, MAP relay.signet.mx 127.0.0.1".
 // Root must separately admit the fixture servers/TLS and matching 10143 artifact.
 //   terminal 1:  yarn demo                              (relay + every bot, real chain; starts the app too)
-//   terminal 2:  node app/test/autonomous-fullstack-e2e.mjs
+//   terminal 2:  node app/test/autonomous-fullstack-e2e.mjs --scenario=nonfinancial
+// Omit the selector or use --scenario=full ONLY for the separately admitted funded bot/game suite.
+// Nonfinancial never constructs the funding helper, reads funding keys, sends or returns funds.
 //
 // It drives a real headless Chrome through account creation, funds the new account with a real
 // transfer from FRANK_TEST_WALLET_JSON, a second funded testnet wallet (E2E_FUND_MON, default
@@ -25,7 +27,7 @@
 // E2E_PROFILE_DIR to a fresh directory to run it again.
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { mkdir, writeFile, readdir, stat } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
@@ -34,6 +36,8 @@ import {
   testFunds,
   browserFixture,
   readPublicAccount,
+  readWalletState,
+  mon,
   monWei,
   absoluteFixturePath,
   appendEvidence,
@@ -41,24 +45,69 @@ import {
   scanBackendLog,
 } from './e2e-profile.mjs'
 
-const { origin, resolverArgument } = browserFixture()
-// Both final hosts must resolve to admitted fixture addresses, even for a loopback app.
-const logsDir = absoluteFixturePath(
-  process.env.E2E_BACKEND_LOGS_DIR,
-  'E2E_BACKEND_LOGS_DIR',
-)
-const profile = await persistentProfile('autonomous-fullstack-e2e')
-const directory = profile.directory
-// Where screenshots go; defaults to a folder inside the profile directory.
-const screenshotDir = resolve(
-  process.env.E2E_SCREENSHOT_DIR ?? join(directory, 'screenshots'),
-)
-await mkdir(screenshotDir, { recursive: true })
-const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
-const fundMon = process.env.E2E_FUND_MON ?? '0.2'
-const executable =
-  process.env.CUSTODY_CHROME ??
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+let origin, resolverArgument, profile, directory, screenshotDir, logsDir
+let repoRoot, fundMon, executable, selectedScenario, funds
+
+export function selectScenario(args = []) {
+  if (args.length === 0) return 'full'
+  if (
+    args.length !== 1 ||
+    !['--scenario=full', '--scenario=nonfinancial'].includes(args[0])
+  )
+    throw new Error(
+      'Supported scenarios: full or nonfinancial; supply at most one --scenario argument',
+    )
+  return args[0].slice('--scenario='.length)
+}
+
+// The nonfinancial branch never acquires even the financial constructor/cleanup capabilities.
+export async function executeSelectedScenario(selection, operations) {
+  selectScenario(['--scenario=' + selection])
+  if (selection === 'nonfinancial') {
+    await operations.start()
+    await operations.onboard()
+    return operations.inspect()
+  }
+  const funds = operations.createFunds()
+  await operations.start()
+  await operations.onboard()
+  return operations.financial(funds)
+}
+
+export async function finishSelectedScenario(selection, finishFinancial) {
+  if (selection === 'full') await finishFinancial()
+}
+
+export async function main(args = process.argv.slice(2)) {
+  selectedScenario = selectScenario(args) // Reject configuration before profile writes or browser work.
+  ;({ origin, resolverArgument } = browserFixture())
+  logsDir = absoluteFixturePath(
+    process.env.E2E_BACKEND_LOGS_DIR,
+    'E2E_BACKEND_LOGS_DIR',
+  )
+  if (selectedScenario === 'full') {
+    fundMon = process.env.E2E_FUND_MON ?? '0.2'
+    if (monWei(fundMon) === 0n)
+      throw new Error('Full scenario requires a positive exact funding target')
+  }
+  profile = await persistentProfile('autonomous-fullstack-e2e')
+  directory = profile.directory
+  screenshotDir = resolve(
+    process.env.E2E_SCREENSHOT_DIR ?? join(directory, 'screenshots'),
+  )
+  await mkdir(screenshotDir, { recursive: true })
+  repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
+  executable =
+    process.env.CUSTODY_CHROME ??
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+  if (selectedScenario === 'nonfinancial') {
+    for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'])
+      process.once(signal, () => {
+        void stop().finally(() => process.exit(signal === 'SIGINT' ? 130 : 143))
+      })
+  }
+  await run()
+}
 
 let child, socket, call, sessionId
 const frontendErrors = []
@@ -190,10 +239,10 @@ async function openTab() {
   await call('DOM.enable')
   await call('Network.enable')
   await call('Emulation.setDeviceMetricsOverride', {
-    width: 1440,
-    height: 900,
+    width: selectedScenario === 'nonfinancial' ? 390 : 1440,
+    height: selectedScenario === 'nonfinancial' ? 844 : 900,
     deviceScaleFactor: 1,
-    mobile: false,
+    mobile: selectedScenario === 'nonfinancial',
   })
 }
 
@@ -439,21 +488,607 @@ async function timedSend(text, timeoutMs) {
   return { sent, reply }
 }
 
-// Funding from the test wallet when the account is low, and sending what is left above the
-// float back when the run ends, on pass, failure and Ctrl-C (e2e-profile.mjs).
-const funds = testFunds({
-  repoRoot,
-  directory,
-  profile,
-  page: { evaluate, typeInput, click, until },
-  stop,
-})
-
 /** Text of the newest message received in the open conversation. */
 function lastReceivedText() {
   return evaluate(
     `(() => { const all = [...document.querySelectorAll('.chat-message-list .q-message-received')]; return all.length ? all[all.length - 1].innerText.replace(/\\s+/g, ' ').trim() : '' })()`,
   )
+}
+
+// A CDP command acknowledgement is not a document commit. Do not navigate hashes
+// or accept the old DOM while a reload/new-origin navigation is still pending.
+export async function committedNavigation(page, method, params = {}) {
+  assert(
+    ['Page.reload', 'Page.navigate'].includes(method),
+    'Unexpected navigation command',
+  )
+  const before = (await page.call('Page.getFrameTree'))?.frameTree?.frame
+  assert(
+    before &&
+      typeof before.id === 'string' &&
+      before.id &&
+      typeof before.loaderId === 'string' &&
+      !before.parentId,
+    'Main document identity unavailable',
+  )
+  const deadline = Date.now() + 20000
+  await page.call(method, params)
+  while (Date.now() < deadline) {
+    const after = (await page.call('Page.getFrameTree'))?.frameTree?.frame
+    assert(
+      after?.id === before.id && !after.parentId,
+      'Unexpected main frame changed',
+    )
+    if (Date.now() >= deadline) break
+    if (
+      typeof after.loaderId === 'string' &&
+      after.loaderId &&
+      after.loaderId !== before.loaderId
+    )
+      return
+    await new Promise(resolveWait => setTimeout(resolveWait, 100))
+  }
+  throw new Error(
+    'New main document not observed after navigation; old DOM is not restoration proof',
+  )
+}
+
+export async function runNonfinancialJourney({
+  page,
+  profile,
+  results,
+  captureScreenshot,
+  restart,
+  origin,
+}) {
+  const original = await readPublicAccount(page)
+  await profile.recordAccount(original)
+  const unchanged = async () => {
+    const current = await readPublicAccount(page)
+    assert.deepEqual(current, original, 'Owned profile identity changed')
+    await profile.recordAccount(current)
+  }
+  results.push([
+    'identity and receive',
+    'PASS',
+    'public DOM identity matches the owned profile',
+  ])
+  try {
+    await page.until(
+      `!!document.querySelector('[data-testid="wallet-available"] span[title]')?.getAttribute('title')`,
+      60000,
+      'fresh exact wallet observation',
+    )
+    const state = await readWalletState(page)
+    if (state.pending) {
+      results.push([
+        'wallet observation',
+        'BLOCKED',
+        'pending operation retained; no financial action attempted',
+      ])
+    } else {
+      if (profile.fresh)
+        assert.equal(
+          state.grossWei,
+          0n,
+          'Unexpected funded fresh profile; preserve it',
+        )
+      results.push([
+        'wallet observation',
+        'PASS',
+        `exact owned ${mon(state.grossWei)} MONT; available ${mon(
+          state.availableWei,
+        )} MONT; no spending`,
+      ])
+    }
+  } catch {
+    results.push([
+      'wallet observation',
+      'BLOCKED',
+      'fresh exact balance unavailable or unexpected; never inferred as zero',
+    ])
+  }
+  await page.evaluate(`location.hash = '#/wallet/monad?tab=history'`)
+  await page.until(
+    `!!document.querySelector('[data-testid="wallet-activity-list"], [data-testid="wallet-activity-empty"]')`,
+    20000,
+    'read-only history loaded',
+  )
+  const count = await page.evaluate(
+    `document.querySelectorAll('[data-activity-id]').length`,
+  )
+  assert(
+    Number.isSafeInteger(count) && count >= 0,
+    'Unknown history observation',
+  )
+  if (profile.fresh)
+    assert.equal(count, 0, 'Unexpected history in fresh profile; preserve it')
+  results.push([
+    'history',
+    'PASS',
+    `observed ${count} existing rows without mutation`,
+  ])
+  await page.evaluate(`location.hash = '#/contacts'`)
+  await page.until(
+    `!!document.querySelector('[data-testid="contacts-page"]')`,
+    20000,
+    'contacts navigation',
+  )
+  await page.evaluate('history.back()')
+  await page.until(
+    `location.hash === '#/wallet/monad?tab=history' && !!document.querySelector('[data-testid="wallet-activity-list"], [data-testid="wallet-activity-empty"]')`,
+    20000,
+    'back to history',
+  )
+  results.push([
+    'navigation/back',
+    'PASS',
+    'contacts and history; no send or purchase route',
+  ])
+  await committedNavigation(page, 'Page.reload')
+  await unchanged()
+  results.push([
+    'reload',
+    'PASS',
+    'same public identity and receive address after reload',
+  ])
+  const controlled = await page.evaluate(
+    '!!navigator.serviceWorker?.controller',
+  )
+  if (!controlled) {
+    results.push([
+      'offline reload',
+      'BLOCKED',
+      'no controlling service worker; offline reload not claimed',
+    ])
+  } else {
+    try {
+      await page.call('Network.emulateNetworkConditions', {
+        offline: true,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      })
+      await page.until('navigator.onLine === false', 10000, 'browser offline')
+      await committedNavigation(page, 'Page.reload')
+      await unchanged()
+      results.push([
+        'offline reload',
+        'PASS',
+        'owned identity restored offline; balances and delivery not claimed',
+      ])
+    } catch {
+      results.push([
+        'offline reload',
+        'FAIL',
+        'offline owned-state restoration did not complete; profile retained',
+      ])
+    } finally {
+      await page.call('Network.emulateNetworkConditions', {
+        offline: false,
+        latency: 0,
+        downloadThroughput: -1,
+        uploadThroughput: -1,
+      })
+    }
+  }
+  try {
+    await page.until('navigator.onLine === true', 10000, 'browser online')
+  } catch {
+    results.push([
+      'network restored',
+      'FAIL',
+      'browser online state not observed; profile retained and backend connectivity unverified',
+    ])
+    return results
+  }
+  await committedNavigation(page, 'Page.reload')
+  await unchanged()
+  results.push([
+    'network restored',
+    'PASS',
+    'browser reports online and identity is retained; backend republication not established by this check',
+  ])
+  await restart()
+  await committedNavigation(page, 'Page.navigate', {
+    url: origin + '/#/wallet/monad',
+  })
+  await unchanged()
+  results.push([
+    'browser restart',
+    'PASS',
+    'same owned profile retained across serial browser restart',
+  ])
+  results.push([
+    'backend enrollment and sync',
+    'UNVERIFIED',
+    'UI activation and identity checks do not prove backend republication or second-device sync',
+  ])
+  await captureScreenshot('nonfinancial_retained_wallet.png')
+  return results
+}
+
+export async function onboard({
+  profile,
+  directory,
+  origin,
+  page,
+  results,
+  captureScreenshot,
+}) {
+  const { evaluate, until, call, click, key, getValue, typeInput } = page
+  if (profile.account) {
+    // The profile already holds an account: open it, do not create another.
+    console.log(`\n--- SCENARIO 1: reusing the account in ${directory} ---`)
+    await call('Page.navigate', { url: origin + '/#/wallet' })
+    await profile.recordAccount(await readPublicAccount({ evaluate, until }))
+    results.push([
+      '1 onboarding',
+      'NOT_RUN_REUSED',
+      `not run: reused the account ${profile.account.receive} in ${directory}`,
+    ])
+  } else {
+    // SCENARIO 1: ONBOARDING & ACCOUNT CREATION
+    console.log('\n--- SCENARIO 1: Onboarding & Account Creation ---')
+    await call('Page.navigate', { url: origin + '/#/setup' })
+    await until(
+      `document.querySelector('[data-test="new-account"]')`,
+      20000,
+      'setup page loaded',
+    )
+    console.log('✅ Setup page mounted')
+
+    // Click New Account
+    await click('[data-test="new-account"]')
+    await until(
+      `document.querySelector('[data-test="backup-policy"]')`,
+      10000,
+      'backup policy choice',
+    )
+
+    // Focus radio and press Space to select default policy
+    await evaluate(
+      `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
+    )
+    await key(' ', 'Space', 32)
+    await until(
+      `!document.querySelector('[data-test="generate-backups"]').disabled`,
+      5000,
+      'generate button enabled',
+    )
+
+    // Double click to trigger form submit
+    await evaluate(`(() => {
+    document.querySelector('[data-test="generate-backups"]').click();
+    document.querySelector('[data-test="generate-backups"]').click();
+  })()`)
+
+    // Collect 3 shares
+    await until(
+      `document.querySelector('[data-test="backup-share"]')`,
+      10000,
+      'backup shares presented',
+    )
+    const shares = []
+    for (let i = 0; i < 3; i++) {
+      const shareVal = await getValue('[data-test="backup-share"]')
+      shares.push(shareVal)
+      await click('[data-test="next-share"]')
+    }
+    console.log(`✅ Generated ${shares.length} Codex32 backup shares`)
+
+    // Confirm shares and enter display name
+    await until(
+      `document.querySelector('[data-test="confirm-shares"]')`,
+      10000,
+      'confirm shares view',
+    )
+    await typeInput(
+      '[data-test="confirm-shares"]',
+      shares.slice(0, 2).join('\n'),
+    )
+    await typeInput('[data-test="display-name"]', 'Autonomous Tester')
+    await click('[data-test="verify-backups"]')
+
+    await until(
+      `document.querySelector('[data-test="activate-account"]')`,
+      15000,
+      'activate account ready',
+    )
+    console.log('✅ Backups verified successfully. Activating account...')
+    await click('[data-test="activate-account"]')
+
+    await until(
+      `location.hash !== '#/setup'`,
+      15000,
+      'navigated away from setup',
+    )
+    console.log(
+      `✅ Account activated! Landed on ${await evaluate('location.hash')}`,
+    )
+    await new Promise(r => setTimeout(r, 2000))
+    await captureScreenshot('01_account_created.png')
+
+    results.push([
+      '1 onboarding',
+      'PASS',
+      'landed on ' + (await evaluate('location.hash')),
+    ])
+
+    await profile.recordAccount(await readPublicAccount({ evaluate, until }))
+  }
+}
+
+async function financialScenarios(funds) {
+  // SCENARIO 2: what a new account has, with no manual step
+  await scenario('2 new user funds', async () => {
+    const ids = await readPublicAccount({ evaluate, until })
+    await profile.recordAccount(ids)
+    console.log(`profile ${ids.profile}  receive ${ids.receive}`)
+    await evaluate(`location.hash = '#/wallet'`)
+    // Read the exact available title; shortened or unknown presentation is not a spending cap.
+    const appeared = await until(
+      `(() => { const value = document.querySelector('[data-testid="wallet-available"] span[title]')?.getAttribute('title'); return /^\\d+(?:\\.\\d+)? MONT$/.test(value ?? '') && !/^0(?:\\.0+)? MONT$/.test(value) })()`,
+      60000,
+      'any funds shown on the wallet page',
+    ).then(
+      () => true,
+      () => false,
+    )
+    const shown = await evaluate(
+      `(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '(no balance element)').replace(/\\s+/g, ' ').trim()`,
+    )
+    await captureScreenshot('02_wallet_new_user.png')
+    const spendable = await funds.spendable()
+    const owned = await funds.owned()
+    let note = `wallet page shows "${shown}"${
+      appeared ? '' : ' (nothing arrived within 60 s of creating the account)'
+    }; owned ${owned} wei; available ${spendable} wei`
+    if (spendable < 100000000000000000n) {
+      const transfer = await funds.ensure(monWei(fundMon))
+      console.log(transfer)
+      await until(
+        `(() => { const value = document.querySelector('[data-testid="wallet-available"] span[title]')?.getAttribute('title'); return /^\\d+(?:\\.\\d+)? MONT$/.test(value ?? '') && !/^0(?:\\.0+)? MONT$/.test(value) })()`,
+        60000,
+        'the transfer shown on the wallet page',
+      )
+      await captureScreenshot('02_wallet_after_funding.png')
+      throw new Error(
+        `${note}. A new account cannot pay for anything on its own; continued after funding its receive address with ${fundMon} MON`,
+      )
+    }
+    return note
+  })
+
+  // SCENARIO 3: Qwen, with timings
+  await scenario('3 qwen', async () => {
+    await openConversation('Qwen')
+    const timings = []
+    for (let i = 1; i <= 3; i++)
+      // One question at a time, waiting past the bot's own allowance (45 s a model call, three
+      // tries), so the next received message is the answer to this question and no other.
+      timings.push(await timedSend(`What is Frank? (${i})`, 150000))
+    await captureScreenshot('03_qwen.png')
+    if (timings.some(t => t.reply === undefined))
+      throw new Error('no reply: ' + JSON.stringify(timings))
+    // The answer must be an answer to the question: either the labelled offline stub echoing
+    // it, or a model's sentence about Frank. "Slow down", an error line or an empty bubble fail.
+    const answer = await lastReceivedText()
+    const stub = answer.includes('[STUB -- no model, offline canned reply]')
+    if (
+      stub
+        ? !answer.includes('What is Frank?')
+        : !(answer.length >= 20 && /frank/i.test(answer))
+    )
+      throw new Error(
+        `Qwen's reply does not answer the question: ${JSON.stringify(
+          answer.slice(0, 160),
+        )}`,
+      )
+    return (
+      timings.map(t => `sent ${t.sent} ms, reply ${t.reply} ms`).join('; ') +
+      `; ${stub ? 'stub' : 'model'} answer: ${JSON.stringify(
+        answer.slice(0, 80),
+      )}`
+    )
+  })
+
+  // SCENARIO 4: blackjack against the hosted dealer, from the dealer's own challenge card
+  await scenario('4 blackjack', async () => {
+    await openConversation('Blackjack')
+    await captureScreenshot('04_blackjack_challenge.png')
+    await typeInput('[data-testid="blackjack-bet-amount"]', '0.02')
+    await click('[data-testid="blackjack-bet"]')
+    await until(
+      `document.querySelector('[data-testid="blackjack-stand"], [data-testid="blackjack-outcome"]')`,
+      45000,
+      'cards dealt',
+    )
+    await captureScreenshot('04_blackjack_dealt.png')
+    for (let step = 0; step < 6; step++) {
+      if (
+        await evaluate(
+          `!!document.querySelector('[data-testid="blackjack-outcome"]')`,
+        )
+      )
+        break
+      const total = await evaluate(
+        `(() => { const m = [...document.querySelectorAll('[data-testid="blackjack-line"]')].map(e => e.innerText).reverse().find(t => /^Player:/.test(t)); return m ? Number(/\\((\\d+)\\)/.exec(m)?.[1] ?? 0) : 0 })()`,
+      )
+      const move = total > 0 && total < 12 ? 'hit' : 'stand'
+      const before = await messageCount()
+      await click(`[data-testid="blackjack-${move}"]`)
+      await until(
+        `document.querySelectorAll('.chat-message-list .q-message').length >= ${
+          before + 2
+        }`,
+        45000,
+        `dealer answer to ${move}`,
+      )
+      await new Promise(r => setTimeout(r, 800))
+      await captureScreenshot(`04_blackjack_${step + 1}_${move}.png`)
+    }
+    const outcome = await evaluate(
+      `[...document.querySelectorAll('[data-testid="blackjack-outcome"], [data-testid="blackjack-payout"]')].map(e => e.innerText).join(' ')`,
+    )
+    if (!outcome) throw new Error('hand did not reach an outcome')
+    // A finished hand states who won (or a push); anything else is not an outcome.
+    if (!/win|won|lose|lost|push|bust|blackjack/i.test(outcome))
+      throw new Error(
+        `the hand ended without a result: ${JSON.stringify(outcome)}`,
+      )
+    return outcome
+  })
+
+  // SCENARIO 5: picture shop catalog and the Buy flow up to confirmation
+  await scenario('5 vendor', async () => {
+    await openConversation('Picture Shop')
+    await new Promise(r => setTimeout(r, 1500))
+    await captureScreenshot('05_picture_shop.png')
+    const state = await evaluate(
+      `({ catalog: !!document.querySelector('.digital-goods'), buy: !!document.querySelector('[data-testid="goods-buy"]'), rawJson: document.querySelector('.chat-message-list').innerText.includes('"type":"digital-goods"') })`,
+    )
+    if (state.rawJson) throw new Error('the catalog is shown as raw JSON text')
+    if (!state.buy) throw new Error('no catalog with a Buy button')
+    await click('[data-testid="goods-buy"]')
+    await until(
+      `document.querySelector('[data-testid="goods-confirm-buy"]')`,
+      10000,
+      'confirm buy',
+    )
+    await captureScreenshot('05_picture_shop_confirm_buy.png')
+    return 'catalog rendered; Buy reaches confirmation'
+  })
+
+  // SCENARIO 6: two bots in quick succession, reload mid-send, recover, send again
+  await scenario('6 quick sends and reload', async () => {
+    const tag = Date.now() % 100000
+    const qwen = await openConversation('Qwen')
+    await sendChatMessage(`quick A ${tag}`)
+    const lobby = await openConversation('Lobby')
+    await sendChatMessage(`quick B ${tag}`)
+    await call('Page.reload', {})
+    await new Promise(r => setTimeout(r, 6000))
+    const settled = async (target, text) => {
+      await evaluate(`location.hash = ${JSON.stringify(target)}`)
+      await until(
+        `document.querySelector('.chat-input-field')`,
+        15000,
+        'chat after reload',
+      )
+      await new Promise(r => setTimeout(r, 1500))
+      return evaluate(
+        `(() => { const l = document.querySelector('.chat-message-list'); const mine = [...l.querySelectorAll('.q-message-sent')].filter(e => e.innerText.includes(${JSON.stringify(
+          text,
+        )})); return { copies: mine.length, sending: mine.some(e => e.innerText.includes('Sending')), failed: mine.some(e => e.querySelector('[data-testid="outgoing-failed"]') !== null) } })()`,
+      )
+    }
+    let a = await settled(qwen, `quick A ${tag}`)
+    await captureScreenshot('06_after_reload_qwen.png')
+    const b = await settled(lobby, `quick B ${tag}`)
+    await captureScreenshot('06_after_reload_lobby.png')
+    for (const [name, state] of [
+      ['Qwen', a],
+      ['Lobby', b],
+    ]) {
+      if (state.copies !== 1)
+        throw new Error(`${name}: ${state.copies} copies after reload`)
+      if (state.sending)
+        throw new Error(`${name}: still "Sending" after reload`)
+    }
+    // A send the reload caught after its payment was recorded shows "Payment pending, will
+    // retry" and finishes on its own; later sends in that chat wait behind it.
+    const pendingSince = Date.now()
+    let pendingNote = ''
+    if (
+      await evaluate(
+        `location.hash = ${JSON.stringify(
+          qwen,
+        )}, new Promise(r => setTimeout(() => r(/Payment pending/.test(document.querySelector('.chat-message-list')?.innerText ?? '')), 2500))`,
+      )
+    ) {
+      await until(
+        `!/Payment pending/.test(document.querySelector('.chat-message-list').innerText)`,
+        300000,
+        'the pending payment of the interrupted message to settle',
+      )
+      pendingNote = `; the interrupted Qwen message stayed "Payment pending" for ${Math.round(
+        (Date.now() - pendingSince) / 1000,
+      )} s before it was delivered`
+      a = await settled(qwen, `quick A ${tag}`)
+    }
+    await evaluate(`location.hash = ${JSON.stringify(lobby)}`)
+    await until(
+      `document.querySelector('.chat-input-field')`,
+      15000,
+      'lobby chat',
+    )
+    await new Promise(r => setTimeout(r, 1500))
+    // An interrupted message is offered for resend; resend the one still open (Lobby).
+    if (b.failed) {
+      await evaluate(
+        `[...document.querySelectorAll('.chat-message-list .q-btn')].find(e => e.innerText.includes('replay'))?.click()`,
+      )
+      await until(
+        `document.querySelector('.chat-message-list [data-testid="outgoing-failed"]') === null`,
+        30000,
+        'resend',
+      )
+    }
+    await evaluate(`location.hash = ${JSON.stringify(qwen)}`)
+    await until(
+      `document.querySelector('.chat-input-field')`,
+      15000,
+      'qwen chat',
+    )
+    await new Promise(r => setTimeout(r, 1500))
+    const again = await timedSend(`after reload ${tag}`, 40000)
+    await captureScreenshot('06_send_again.png')
+    if (again.reply === undefined)
+      throw new Error('no reply to a send after reload')
+    return `after reload: Qwen ${JSON.stringify(a)}, Lobby ${JSON.stringify(
+      b,
+    )}; resend and a new send both delivered${pendingNote}`
+  })
+
+  // SCENARIO 7: native send from the wallet page, then a paid message
+  await scenario('7 native send', async () => {
+    // To the wallet that funds this account, so the amount comes straight back.
+    const recipient = (await funds.testWallet()).address
+    const receipt = await funds.sendFromPage(recipient, '0.01')
+    await captureScreenshot('07_native_send.png')
+    await openConversation('Qwen')
+    const paid = await timedSend('paid message after a native send', 40000)
+    if (paid.sent === undefined)
+      throw new Error('paid message after the native send was not sent')
+    return `recipient credit verified for original ${receipt.operationId}; automatic navigation not assessed by this receipt check`
+  })
+
+  // SCENARIO 8: the other hosted bots
+  // Each must answer with what its command produces, not just with something.
+  for (const [name, text, expected] of [
+    ['Lobby', '/help', /Lobby Group Chat Commands/i],
+    ['Satoshi Dice', '/roll 0.01', /roll|dice|win|lose|lost|won/i],
+    ['RPS Arena', '/rps', /rock|paper|scissors/i],
+  ]) {
+    await scenario(`8 ${name} "${text}"`, async () => {
+      await openConversation(name)
+      const t = await timedSend(text, 25000)
+      await captureScreenshot(
+        `08_${name.toLowerCase().replace(/[^a-z]+/g, '_')}.png`,
+      )
+      if (t.reply === undefined)
+        throw new Error(`sent in ${t.sent} ms, no reply in 25 s`)
+      const answer = await lastReceivedText()
+      if (!expected.test(answer))
+        throw new Error(
+          `the reply is not an answer to "${text}": ${JSON.stringify(
+            answer.slice(0, 160),
+          )}`,
+        )
+      return `reply in ${t.reply} ms: ${JSON.stringify(answer.slice(0, 60))}`
+    })
+  }
 }
 
 // ---------------------- TEST SUITE EXECUTION ----------------------
@@ -467,384 +1102,46 @@ async function run() {
   const logOffsets = await getLogOffsets()
 
   try {
-    await launch()
-
-    if (profile.account) {
-      // The profile already holds an account: open it, do not create another.
-      console.log(`\n--- SCENARIO 1: reusing the account in ${directory} ---`)
-      await call('Page.navigate', { url: origin + '/#/wallet' })
-      await profile.recordAccount(await readPublicAccount({ evaluate, until }))
-      results.push([
-        '1 onboarding',
-        'NOT_RUN_REUSED',
-        `not run: reused the account ${profile.account.receive} in ${directory}`,
-      ])
-    } else {
-      // SCENARIO 1: ONBOARDING & ACCOUNT CREATION
-      console.log('\n--- SCENARIO 1: Onboarding & Account Creation ---')
-      await call('Page.navigate', { url: origin + '/#/setup' })
-      await until(
-        `document.querySelector('[data-test="new-account"]')`,
-        20000,
-        'setup page loaded',
-      )
-      console.log('✅ Setup page mounted')
-
-      // Click New Account
-      await click('[data-test="new-account"]')
-      await until(
-        `document.querySelector('[data-test="backup-policy"]')`,
-        10000,
-        'backup policy choice',
-      )
-
-      // Focus radio and press Space to select default policy
-      await evaluate(
-        `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
-      )
-      await key(' ', 'Space', 32)
-      await until(
-        `!document.querySelector('[data-test="generate-backups"]').disabled`,
-        5000,
-        'generate button enabled',
-      )
-
-      // Double click to trigger form submit
-      await evaluate(`(() => {
-      document.querySelector('[data-test="generate-backups"]').click();
-      document.querySelector('[data-test="generate-backups"]').click();
-    })()`)
-
-      // Collect 3 shares
-      await until(
-        `document.querySelector('[data-test="backup-share"]')`,
-        10000,
-        'backup shares presented',
-      )
-      const shares = []
-      for (let i = 0; i < 3; i++) {
-        const shareVal = await getValue('[data-test="backup-share"]')
-        shares.push(shareVal)
-        await click('[data-test="next-share"]')
-      }
-      console.log(`✅ Generated ${shares.length} Codex32 backup shares`)
-
-      // Confirm shares and enter display name
-      await until(
-        `document.querySelector('[data-test="confirm-shares"]')`,
-        10000,
-        'confirm shares view',
-      )
-      await typeInput(
-        '[data-test="confirm-shares"]',
-        shares.slice(0, 2).join('\n'),
-      )
-      await typeInput('[data-test="display-name"]', 'Autonomous Tester')
-      await click('[data-test="verify-backups"]')
-
-      await until(
-        `document.querySelector('[data-test="activate-account"]')`,
-        15000,
-        'activate account ready',
-      )
-      console.log('✅ Backups verified successfully. Activating account...')
-      await click('[data-test="activate-account"]')
-
-      await until(
-        `location.hash !== '#/setup'`,
-        15000,
-        'navigated away from setup',
-      )
-      console.log(
-        `✅ Account activated! Landed on ${await evaluate('location.hash')}`,
-      )
-      await new Promise(r => setTimeout(r, 2000))
-      await captureScreenshot('01_account_created.png')
-
-      results.push([
-        '1 onboarding',
-        'PASS',
-        'landed on ' + (await evaluate('location.hash')),
-      ])
-
-      await profile.recordAccount(await readPublicAccount({ evaluate, until }))
-    }
-
-    // SCENARIO 2: what a new account has, with no manual step
-    await scenario('2 new user funds', async () => {
-      const ids = await readPublicAccount({ evaluate, until })
-      await profile.recordAccount(ids)
-      console.log(`profile ${ids.profile}  receive ${ids.receive}`)
-      await evaluate(`location.hash = '#/wallet'`)
-      // Read the exact available title; shortened or unknown presentation is not a spending cap.
-      const appeared = await until(
-        `(() => { const value = document.querySelector('[data-testid="wallet-available"] span[title]')?.getAttribute('title'); return /^\\d+(?:\\.\\d+)? MONT$/.test(value ?? '') && !/^0(?:\\.0+)? MONT$/.test(value) })()`,
-        60000,
-        'any funds shown on the wallet page',
-      ).then(
-        () => true,
-        () => false,
-      )
-      const shown = await evaluate(
-        `(document.querySelector('[data-testid="wallet-balance"]')?.innerText ?? '(no balance element)').replace(/\\s+/g, ' ').trim()`,
-      )
-      await captureScreenshot('02_wallet_new_user.png')
-      const spendable = await funds.spendable()
-      const owned = await funds.owned()
-      let note = `wallet page shows "${shown}"${
-        appeared ? '' : ' (nothing arrived within 60 s of creating the account)'
-      }; owned ${owned} wei; available ${spendable} wei`
-      if (spendable < 100000000000000000n) {
-        const transfer = await funds.ensure(monWei(fundMon))
-        console.log(transfer)
-        await until(
-          `(() => { const value = document.querySelector('[data-testid="wallet-available"] span[title]')?.getAttribute('title'); return /^\\d+(?:\\.\\d+)? MONT$/.test(value ?? '') && !/^0(?:\\.0+)? MONT$/.test(value) })()`,
-          60000,
-          'the transfer shown on the wallet page',
-        )
-        await captureScreenshot('02_wallet_after_funding.png')
-        throw new Error(
-          `${note}. A new account cannot pay for anything on its own; continued after funding its receive address with ${fundMon} MON`,
-        )
-      }
-      return note
+    await executeSelectedScenario(selectedScenario, {
+      start: launch,
+      onboard: () =>
+        onboard({
+          profile,
+          directory,
+          origin,
+          page: { evaluate, until, call, click, key, getValue, typeInput },
+          results,
+          captureScreenshot,
+        }),
+      inspect: () =>
+        runNonfinancialJourney({
+          page: { evaluate, until, call },
+          profile,
+          results,
+          captureScreenshot,
+          restart: async () => {
+            await stop()
+            sessionId = undefined
+            await launch()
+          },
+          origin,
+        }),
+      createFunds: () =>
+        (funds = testFunds({
+          repoRoot,
+          directory,
+          profile,
+          page: { evaluate, typeInput, click, until },
+          stop,
+        })),
+      financial: financialScenarios,
     })
-
-    // SCENARIO 3: Qwen, with timings
-    await scenario('3 qwen', async () => {
-      await openConversation('Qwen')
-      const timings = []
-      for (let i = 1; i <= 3; i++)
-        // One question at a time, waiting past the bot's own allowance (45 s a model call, three
-        // tries), so the next received message is the answer to this question and no other.
-        timings.push(await timedSend(`What is Frank? (${i})`, 150000))
-      await captureScreenshot('03_qwen.png')
-      if (timings.some(t => t.reply === undefined))
-        throw new Error('no reply: ' + JSON.stringify(timings))
-      // The answer must be an answer to the question: either the labelled offline stub echoing
-      // it, or a model's sentence about Frank. "Slow down", an error line or an empty bubble fail.
-      const answer = await lastReceivedText()
-      const stub = answer.includes('[STUB -- no model, offline canned reply]')
-      if (
-        stub
-          ? !answer.includes('What is Frank?')
-          : !(answer.length >= 20 && /frank/i.test(answer))
-      )
-        throw new Error(
-          `Qwen's reply does not answer the question: ${JSON.stringify(
-            answer.slice(0, 160),
-          )}`,
-        )
-      return (
-        timings.map(t => `sent ${t.sent} ms, reply ${t.reply} ms`).join('; ') +
-        `; ${stub ? 'stub' : 'model'} answer: ${JSON.stringify(
-          answer.slice(0, 80),
-        )}`
-      )
-    })
-
-    // SCENARIO 4: blackjack against the hosted dealer, from the dealer's own challenge card
-    await scenario('4 blackjack', async () => {
-      await openConversation('Blackjack')
-      await captureScreenshot('04_blackjack_challenge.png')
-      await typeInput('[data-testid="blackjack-bet-amount"]', '0.02')
-      await click('[data-testid="blackjack-bet"]')
-      await until(
-        `document.querySelector('[data-testid="blackjack-stand"], [data-testid="blackjack-outcome"]')`,
-        45000,
-        'cards dealt',
-      )
-      await captureScreenshot('04_blackjack_dealt.png')
-      for (let step = 0; step < 6; step++) {
-        if (
-          await evaluate(
-            `!!document.querySelector('[data-testid="blackjack-outcome"]')`,
-          )
-        )
-          break
-        const total = await evaluate(
-          `(() => { const m = [...document.querySelectorAll('[data-testid="blackjack-line"]')].map(e => e.innerText).reverse().find(t => /^Player:/.test(t)); return m ? Number(/\\((\\d+)\\)/.exec(m)?.[1] ?? 0) : 0 })()`,
-        )
-        const move = total > 0 && total < 12 ? 'hit' : 'stand'
-        const before = await messageCount()
-        await click(`[data-testid="blackjack-${move}"]`)
-        await until(
-          `document.querySelectorAll('.chat-message-list .q-message').length >= ${
-            before + 2
-          }`,
-          45000,
-          `dealer answer to ${move}`,
-        )
-        await new Promise(r => setTimeout(r, 800))
-        await captureScreenshot(`04_blackjack_${step + 1}_${move}.png`)
-      }
-      const outcome = await evaluate(
-        `[...document.querySelectorAll('[data-testid="blackjack-outcome"], [data-testid="blackjack-payout"]')].map(e => e.innerText).join(' ')`,
-      )
-      if (!outcome) throw new Error('hand did not reach an outcome')
-      // A finished hand states who won (or a push); anything else is not an outcome.
-      if (!/win|won|lose|lost|push|bust|blackjack/i.test(outcome))
-        throw new Error(
-          `the hand ended without a result: ${JSON.stringify(outcome)}`,
-        )
-      return outcome
-    })
-
-    // SCENARIO 5: picture shop catalog and the Buy flow up to confirmation
-    await scenario('5 vendor', async () => {
-      await openConversation('Picture Shop')
-      await new Promise(r => setTimeout(r, 1500))
-      await captureScreenshot('05_picture_shop.png')
-      const state = await evaluate(
-        `({ catalog: !!document.querySelector('.digital-goods'), buy: !!document.querySelector('[data-testid="goods-buy"]'), rawJson: document.querySelector('.chat-message-list').innerText.includes('"type":"digital-goods"') })`,
-      )
-      if (state.rawJson)
-        throw new Error('the catalog is shown as raw JSON text')
-      if (!state.buy) throw new Error('no catalog with a Buy button')
-      await click('[data-testid="goods-buy"]')
-      await until(
-        `document.querySelector('[data-testid="goods-confirm-buy"]')`,
-        10000,
-        'confirm buy',
-      )
-      await captureScreenshot('05_picture_shop_confirm_buy.png')
-      return 'catalog rendered; Buy reaches confirmation'
-    })
-
-    // SCENARIO 6: two bots in quick succession, reload mid-send, recover, send again
-    await scenario('6 quick sends and reload', async () => {
-      const tag = Date.now() % 100000
-      const qwen = await openConversation('Qwen')
-      await sendChatMessage(`quick A ${tag}`)
-      const lobby = await openConversation('Lobby')
-      await sendChatMessage(`quick B ${tag}`)
-      await call('Page.reload', {})
-      await new Promise(r => setTimeout(r, 6000))
-      const settled = async (target, text) => {
-        await evaluate(`location.hash = ${JSON.stringify(target)}`)
-        await until(
-          `document.querySelector('.chat-input-field')`,
-          15000,
-          'chat after reload',
-        )
-        await new Promise(r => setTimeout(r, 1500))
-        return evaluate(
-          `(() => { const l = document.querySelector('.chat-message-list'); const mine = [...l.querySelectorAll('.q-message-sent')].filter(e => e.innerText.includes(${JSON.stringify(
-            text,
-          )})); return { copies: mine.length, sending: mine.some(e => e.innerText.includes('Sending')), failed: mine.some(e => e.querySelector('[data-testid="outgoing-failed"]') !== null) } })()`,
-        )
-      }
-      let a = await settled(qwen, `quick A ${tag}`)
-      await captureScreenshot('06_after_reload_qwen.png')
-      const b = await settled(lobby, `quick B ${tag}`)
-      await captureScreenshot('06_after_reload_lobby.png')
-      for (const [name, state] of [
-        ['Qwen', a],
-        ['Lobby', b],
-      ]) {
-        if (state.copies !== 1)
-          throw new Error(`${name}: ${state.copies} copies after reload`)
-        if (state.sending)
-          throw new Error(`${name}: still "Sending" after reload`)
-      }
-      // A send the reload caught after its payment was recorded shows "Payment pending, will
-      // retry" and finishes on its own; later sends in that chat wait behind it.
-      const pendingSince = Date.now()
-      let pendingNote = ''
-      if (
-        await evaluate(
-          `location.hash = ${JSON.stringify(
-            qwen,
-          )}, new Promise(r => setTimeout(() => r(/Payment pending/.test(document.querySelector('.chat-message-list')?.innerText ?? '')), 2500))`,
-        )
-      ) {
-        await until(
-          `!/Payment pending/.test(document.querySelector('.chat-message-list').innerText)`,
-          300000,
-          'the pending payment of the interrupted message to settle',
-        )
-        pendingNote = `; the interrupted Qwen message stayed "Payment pending" for ${Math.round(
-          (Date.now() - pendingSince) / 1000,
-        )} s before it was delivered`
-        a = await settled(qwen, `quick A ${tag}`)
-      }
-      await evaluate(`location.hash = ${JSON.stringify(lobby)}`)
-      await until(
-        `document.querySelector('.chat-input-field')`,
-        15000,
-        'lobby chat',
-      )
-      await new Promise(r => setTimeout(r, 1500))
-      // An interrupted message is offered for resend; resend the one still open (Lobby).
-      if (b.failed) {
-        await evaluate(
-          `[...document.querySelectorAll('.chat-message-list .q-btn')].find(e => e.innerText.includes('replay'))?.click()`,
-        )
-        await until(
-          `document.querySelector('.chat-message-list [data-testid="outgoing-failed"]') === null`,
-          30000,
-          'resend',
-        )
-      }
-      await evaluate(`location.hash = ${JSON.stringify(qwen)}`)
-      await until(
-        `document.querySelector('.chat-input-field')`,
-        15000,
-        'qwen chat',
-      )
-      await new Promise(r => setTimeout(r, 1500))
-      const again = await timedSend(`after reload ${tag}`, 40000)
-      await captureScreenshot('06_send_again.png')
-      if (again.reply === undefined)
-        throw new Error('no reply to a send after reload')
-      return `after reload: Qwen ${JSON.stringify(a)}, Lobby ${JSON.stringify(
-        b,
-      )}; resend and a new send both delivered${pendingNote}`
-    })
-
-    // SCENARIO 7: native send from the wallet page, then a paid message
-    await scenario('7 native send', async () => {
-      // To the wallet that funds this account, so the amount comes straight back.
-      const recipient = (await funds.testWallet()).address
-      const receipt = await funds.sendFromPage(recipient, '0.01')
-      await captureScreenshot('07_native_send.png')
-      await openConversation('Qwen')
-      const paid = await timedSend('paid message after a native send', 40000)
-      if (paid.sent === undefined)
-        throw new Error('paid message after the native send was not sent')
-      return `recipient credit verified for original ${receipt.operationId}; automatic navigation not assessed by this receipt check`
-    })
-
-    // SCENARIO 8: the other hosted bots
-    // Each must answer with what its command produces, not just with something.
-    for (const [name, text, expected] of [
-      ['Lobby', '/help', /Lobby Group Chat Commands/i],
-      ['Satoshi Dice', '/roll 0.01', /roll|dice|win|lose|lost|won/i],
-      ['RPS Arena', '/rps', /rock|paper|scissors/i],
-    ]) {
-      await scenario(`8 ${name} "${text}"`, async () => {
-        await openConversation(name)
-        const t = await timedSend(text, 25000)
-        await captureScreenshot(
-          `08_${name.toLowerCase().replace(/[^a-z]+/g, '_')}.png`,
-        )
-        if (t.reply === undefined)
-          throw new Error(`sent in ${t.sent} ms, no reply in 25 s`)
-        const answer = await lastReceivedText()
-        if (!expected.test(answer))
-          throw new Error(
-            `the reply is not an answer to "${text}": ${JSON.stringify(
-              answer.slice(0, 160),
-            )}`,
-          )
-        return `reply in ${t.reply} ms: ${JSON.stringify(answer.slice(0, 60))}`
-      })
-    }
 
     console.log('\n================ SCENARIO RESULTS ================')
     for (const [name, verdict, detail] of results)
       console.log(`${verdict.padEnd(4)} ${name}: ${detail}`)
-    if (results.some(r => r[1] === 'FAIL')) process.exitCode = 1
+    if (results.some(r => ['FAIL', 'BLOCKED'].includes(r[1])))
+      process.exitCode = 1
 
     // ZERO ERROR TOLERANCE AUDIT
     console.log(
@@ -908,9 +1205,21 @@ async function run() {
     } catch {}
     process.exitCode = 1
   } finally {
-    if (socket) await funds.finish()
+    await finishSelectedScenario(selectedScenario, async () => {
+      if (socket) await funds?.finish()
+    })
     await stop()
   }
 }
 
-await run()
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(resolve(process.argv[1])).href
+) {
+  void main().catch(() => {
+    console.error(
+      'Runner configuration or startup failed; verify explicit scenario and owned fixture inputs. Private error body omitted.',
+    )
+    process.exitCode = 1
+  })
+}

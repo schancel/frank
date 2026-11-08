@@ -246,6 +246,46 @@ test('wrong checkpoint prevents funding tool execution and UI confirmation', asy
   expect(page.click).not.toHaveBeenCalled()
 })
 
+test('funding uses the exact available shortfall and requires matching recipient credit', async () => {
+  const f = fixture()
+  walletHtml({ gross: '10 MONT', available: '0.02 MONT' })
+  f.rpc.getTransaction.mockResolvedValue({ hash, blockHash, chainId: 10143n, to: address, value: 80000000000000000n })
+  const funds = f.helper.testFunds({ repoRoot: '/repo', directory: '/owned/test-profile', profile: { account: { receive: address } }, page: domPage() })
+  await expect(funds.ensure(f.helper.monWei('0.1'))).resolves.toContain('funded 0.08 MON')
+  expect(f.execFile.mock.calls[1][1].slice(-2)).toEqual([address, '0.08'])
+  await expect(funds.ensure(f.helper.monWei('0.1'))).rejects.toThrow('already attempted')
+})
+
+test('unknown available balance never launches funding', async () => {
+  const f = fixture()
+  walletHtml({ available: '' })
+  const funds = f.helper.testFunds({ repoRoot: '/repo', directory: '/owned/test-profile', profile: { account: { receive: address } }, page: domPage() })
+  await expect(funds.ensure(f.helper.monWei('0.1'))).rejects.toThrow()
+  expect(f.execFile).not.toHaveBeenCalled()
+  expect(f.rpc.getNetwork).not.toHaveBeenCalled()
+})
+
+test('finish reports actual matching return credit once, excluding fees and gross decreases', async () => {
+  const f = fixture()
+  walletHtml({ gross: '10 MONT', available: '0.1 MONT' })
+  f.rpc.getTransaction.mockResolvedValue({ hash, blockHash, chainId: 10143n, to: recipient, value: 80000000000000000n })
+  const page = domPage()
+  const baseEvaluate = page.evaluate.getMockImplementation()
+  let histories = 0
+  page.evaluate.mockImplementation(async expression => {
+    if (expression.includes('review-recipient')) return { recipient, amount: '0.08 MONT' }
+    if (expression.includes("querySelectorAll('[data-activity-id]')")) return histories++ ? [{ id: 'native:original', hashes: [hash] }] : []
+    return baseEvaluate(expression)
+  })
+  page.until.mockResolvedValue(undefined)
+  const funds = f.helper.testFunds({ repoRoot: '/repo', directory: '/owned/test-profile', profile: { account: { receive: address } }, page })
+  const result = await funds.finish()
+  expect(result.returnedWei).toBe(80000000000000000n)
+  expect(result.heldWei).toBe(10000000000000000000n)
+  await funds.finish()
+  expect(page.click.mock.calls.filter(([selector]) => selector === '[data-test="review-confirm-button"]')).toHaveLength(1)
+})
+
 test('ambiguous original UI send is confirmed once; finish preserves it without replacement', async () => {
   const f = fixture()
   walletHtml({ available: '0.1 MONT' })
@@ -261,6 +301,7 @@ test('ambiguous original UI send is confirmed once; finish preserves it without 
   })
   const funds = f.helper.testFunds({ repoRoot: '/repo', directory: '/owned/test-profile', profile: { account: { receive: address } }, page })
   await expect(funds.sendFromPage(recipient, '0.01')).rejects.toThrow('timeout')
+  await expect(funds.sendFromPage(recipient, '0.01')).rejects.toThrow('remains uncertain')
   const result = await funds.finish()
   await funds.finish()
   expect(page.click.mock.calls.filter(([selector]) => selector === '[data-test="review-confirm-button"]')).toHaveLength(1)

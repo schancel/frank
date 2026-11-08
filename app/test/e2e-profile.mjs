@@ -293,6 +293,7 @@ export function testFunds({ repoRoot, directory, profile, page, stop }) {
   const owned = async () => (await snapshot()).grossWei
 
   async function sendFromPage(to, amountMon) {
+    if (uncertainPayment) throw new Error('Original payment remains uncertain; no replacement authorized')
     if (!ADDRESS.test(to)) throw new Error('Invalid test return recipient')
     const valueWei = monWei(amountMon)
     if (!valueWei) throw new Error('A test return must be positive')

@@ -20,6 +20,7 @@ jest.mock('../accounts/session', () => ({ accountStatus: { revision: 1 } }))
 import {
   registerMonadIdentityCbor,
   fetchMonadProfile,
+  MonadIdentity,
 } from '@frank/wallet/evm-identity'
 
 const mockSetRelayData = jest.fn()
@@ -270,132 +271,6 @@ describe('Profile.vue', () => {
       ownProfileCheck.unchecked = null
     }
   })
-
-  it.each(['published', 'missing'] as const)(
-    'blocks a cold named-account local edit during directory failure until the %s profile read',
-    async answer => {
-      const { ownProfileCheck, restoreOwnProfileWithRelay } = await import(
-        'src/utils/own-profile'
-      )
-      const owner = '0x1234567890123456789012345678901234567890'
-      const identity = {
-        address: { raw: owner },
-        compressedPubKey: Uint8Array.from(
-          Buffer.from(
-            '0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
-            'hex',
-          ),
-        ),
-      }
-      const wallet = {
-        identity,
-        relayBaseUrl: 'https://127.0.0.1:18443',
-      } as unknown as NativeWalletHandle
-      const salt = jest
-        .spyOn(evmChain, 'conversationIdSaltOf')
-        .mockReturnValue(undefined)
-      const fetch = jest.fn(async () => {
-        throw new TypeError('offline fixture')
-      })
-      const registerProfile = jest.fn()
-      const deps: MessagingDeps = {
-        session: {
-          state: {
-            status: 'ready',
-            revision: 1,
-            account: {
-              displayName: 'Alice',
-              receipt: { context: { accountId: 'retained-account' } },
-            },
-          },
-          getWallet: async () => wallet,
-        },
-        relayBaseUrl: 'https://127.0.0.1:18443',
-        networkTag: 'MONT',
-        chainId: 10143n,
-        directory: {
-          nowNs: () => BigInt(Date.now()) * 1_000_000n,
-          fetch,
-          openStore: jest.fn(),
-          discardUnenrolled: jest.fn(),
-          checkpoints: { load: () => null, save: () => undefined },
-          pins: { load: () => null, save: () => undefined },
-        },
-        install: jest.fn(),
-        startPolling: jest.fn(),
-        startReconcile: jest.fn(),
-        retryDelayMs: () => 60_000,
-        registerProfile,
-      }
-      const read = fetchMonadProfile as jest.Mock
-      read.mockResolvedValue(
-        answer === 'published'
-          ? { name: 'Alice', address: identity.address }
-          : undefined,
-      )
-      ;(useActiveWallet as jest.Mock).mockResolvedValue(wallet)
-      ownProfileCheck.unchecked = null
-      await configureMessagingForTest(deps)
-      let wrapper: ReturnType<typeof mount> | undefined
-      try {
-        await startMessaging()
-        expect(fetch).toHaveBeenCalled()
-        expect(registerProfile).not.toHaveBeenCalled()
-        expect(read).not.toHaveBeenCalled()
-        expect(ownProfileCheck.unchecked).toBe(owner)
-        wrapper = mount(ProfilePage, {
-          global: {
-            mocks: {
-              $t: (key: string) => key,
-              $router: { push: jest.fn() },
-              $q: { loading: { show: jest.fn(), hide: jest.fn() } },
-            },
-            stubs: {
-              ...defaultStubs,
-              'q-btn': {
-                props: ['disable'],
-                template: '<button :disabled="disable"><slot /></button>',
-              },
-              'q-banner': { template: '<div v-bind="$attrs"><slot /></div>' },
-              'q-icon': true,
-            },
-          },
-        })
-        expect(
-          wrapper.get('[data-test="own-profile-unchecked"]').text(),
-        ).toContain('accountRecovery.profile_relay_unchecked_save_waits')
-        expect(
-          wrapper.get('[data-test="profile-update"]').attributes('disabled'),
-        ).toBeDefined()
-        ;(wrapper.vm as any).name = 'Attempted offline edit'
-        await (wrapper.vm as any).updateRelayData()
-        expect(mockSetRelayData).not.toHaveBeenCalled()
-        expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
-        // Use the existing answered-read operation, never a direct marker reset.
-        await restoreOwnProfileWithRelay({
-          relayBaseUrl: deps.relayBaseUrl,
-          identity: identity as never,
-        })
-        await wrapper.vm.$nextTick()
-        expect(read).toHaveBeenCalledTimes(1)
-        expect(ownProfileCheck.unchecked).toBeNull()
-        expect(
-          wrapper.find('[data-test="own-profile-unchecked"]').exists(),
-        ).toBe(false)
-        expect(
-          wrapper.get('[data-test="profile-update"]').attributes('disabled'),
-        ).toBeUndefined()
-        await (wrapper.vm as any).updateRelayData()
-        expect(mockSetRelayData).toHaveBeenCalledTimes(1)
-      } finally {
-        wrapper?.unmount()
-        await configureMessagingForTest(undefined)
-        ownProfileCheck.unchecked = null
-        read.mockReset()
-        salt.mockRestore()
-      }
-    },
-  )
 
   it('rejects a profile form kept open across an account revision change', async () => {
     const wrapper = mount(ProfilePage, {
@@ -1276,6 +1151,143 @@ describe('mounted profile during real background synchronization', () => {
       else Reflect.deleteProperty(AbortSignal, name)
     }
   })
+  test.each(['published', 'missing'] as const)(
+    'blocks a cold named-account local edit during directory failure until the %s profile read',
+    async answer => {
+      const { ownProfileCheck, restoreOwnProfileWithRelay } = await import(
+        'src/utils/own-profile'
+      )
+      jest.clearAllMocks()
+      accountStatus.revision = 1
+      clearOwnUsername()
+      const identity = MonadIdentity.fromPrivateKeyHex('0x' + '05'.repeat(32))
+      const owner = identity.address.raw.toLowerCase()
+      const store = reactive({
+        owner,
+        profile: { name: 'Alice' },
+        inbox: { acceptancePrice: 100 },
+        restored: Promise.resolve(),
+        setRelayData: mockSetRelayData,
+      })
+      const useStore = jest.mocked(useProfileStore)
+      const previousStore = useStore.getMockImplementation()
+      useStore.mockReturnValue(
+        store as unknown as ReturnType<typeof useProfileStore>,
+      )
+      const previousWallet = jest.mocked(useActiveWallet).getMockImplementation()
+      const wallet = {
+        identity,
+        relayBaseUrl: 'https://127.0.0.1:18443',
+      } as unknown as NativeWalletHandle
+      const salt = jest
+        .spyOn(evmChain, 'conversationIdSaltOf')
+        .mockReturnValue(undefined)
+      const fetch = jest.fn(async () => {
+        throw new TypeError('offline fixture')
+      })
+      const registerProfile = jest.fn()
+      const deps: MessagingDeps = {
+        session: {
+          state: {
+            status: 'ready',
+            revision: 1,
+            account: {
+              displayName: 'Alice',
+              receipt: { context: { accountId: 'retained-account' } },
+            },
+          },
+          getWallet: async () => wallet,
+        },
+        relayBaseUrl: 'https://127.0.0.1:18443',
+        networkTag: 'MONT',
+        chainId: 10143n,
+        directory: {
+          nowNs: () => BigInt(Date.now()) * 1_000_000n,
+          fetch,
+          openStore: jest.fn(),
+          discardUnenrolled: jest.fn(),
+          checkpoints: { load: () => null, save: () => undefined },
+          pins: { load: () => null, save: () => undefined },
+        },
+        install: jest.fn(),
+        startPolling: jest.fn(),
+        startReconcile: jest.fn(),
+        retryDelayMs: () => 60_000,
+        registerProfile,
+      }
+      const read = fetchMonadProfile as jest.Mock
+      read.mockResolvedValue(
+        answer === 'published'
+          ? { name: 'Alice', address: identity.address }
+          : undefined,
+      )
+      ;(useActiveWallet as jest.Mock).mockResolvedValue(wallet)
+      ownProfileCheck.unchecked = null
+      await configureMessagingForTest(deps)
+      let wrapper: ReturnType<typeof mount> | undefined
+      try {
+        await startMessaging()
+        expect(fetch).toHaveBeenCalled()
+        expect(registerProfile).not.toHaveBeenCalled()
+        expect(read).not.toHaveBeenCalled()
+        wrapper = mount(ProfilePage, {
+          global: {
+            mocks: {
+              $t: (key: string) => key,
+              $router: { push: jest.fn() },
+              $q: { loading: { show: jest.fn(), hide: jest.fn() } },
+            },
+            stubs: {
+              ...defaultStubs,
+              'q-btn': {
+                props: ['disable'],
+                template: '<button :disabled="disable"><slot /></button>',
+              },
+              'q-banner': { template: '<div v-bind="$attrs"><slot /></div>' },
+              'q-icon': true,
+            },
+          },
+        })
+        ;(wrapper.vm as any).name = 'Attempted offline edit'
+        // Exercise the actual handler too: a disabled button alone is not save admission.
+        await (wrapper.vm as any).updateRelayData()
+        expect(mockSetRelayData).not.toHaveBeenCalled()
+        expect(registerMonadIdentityCbor).not.toHaveBeenCalled()
+        expect(ownProfileCheck.unchecked).toBe(owner)
+        expect(
+          wrapper.get('[data-test="own-profile-unchecked"]').text(),
+        ).toContain('accountRecovery.profile_relay_unchecked_save_waits')
+        expect(
+          wrapper.get('[data-test="profile-update"]').attributes('disabled'),
+        ).toBeDefined()
+        // Use the existing answered-read operation, never a direct marker reset.
+        await restoreOwnProfileWithRelay({
+          relayBaseUrl: deps.relayBaseUrl,
+          identity,
+        })
+        await wrapper.vm.$nextTick()
+        expect(read).toHaveBeenCalledTimes(1)
+        expect(ownProfileCheck.unchecked).toBeNull()
+        expect(
+          wrapper.find('[data-test="own-profile-unchecked"]').exists(),
+        ).toBe(false)
+        expect(
+          wrapper.get('[data-test="profile-update"]').attributes('disabled'),
+        ).toBeUndefined()
+        await (wrapper.vm as any).updateRelayData()
+        expect(mockSetRelayData).toHaveBeenCalledTimes(1)
+      } finally {
+        wrapper?.unmount()
+        await configureMessagingForTest(undefined)
+        ownProfileCheck.unchecked = null
+        read.mockReset()
+        salt.mockRestore()
+        useStore.mockImplementation(previousStore!)
+        jest.mocked(useActiveWallet).mockImplementation(previousWallet!)
+      }
+    },
+  )
+
   test.each(['unchanged', 'remote-update', 'error-recovery'] as const)(
     '%s preserves unsaved fields and merges untouched remote fields',
     async scenario => {

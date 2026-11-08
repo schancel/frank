@@ -8,7 +8,6 @@ import { useProfileStore } from 'src/stores/my-profile'
 import { useActiveWallet } from 'src/composables/useActiveWallet'
 import { accountStatus } from '../accounts/session'
 import * as evmChain from '@frank/wallet/chain/evm-chain'
-import * as identityApi from '@frank/wallet/evm-identity'
 import type { NativeWalletHandle } from '@frank/wallet/chain'
 import {
   configureMessagingForTest,
@@ -18,7 +17,10 @@ import {
 
 jest.mock('../accounts/session', () => ({ accountStatus: { revision: 1 } }))
 
-import { registerMonadIdentityCbor } from '@frank/wallet/evm-identity'
+import {
+  registerMonadIdentityCbor,
+  fetchMonadProfile,
+} from '@frank/wallet/evm-identity'
 
 const mockSetRelayData = jest.fn()
 jest.mock('src/stores/my-profile', () => ({
@@ -43,6 +45,7 @@ jest.mock('@frank/wallet/evm-identity', () => {
   return {
     ...actual,
     registerMonadIdentityCbor: jest.fn(),
+    fetchMonadProfile: jest.fn(),
   }
 })
 
@@ -324,13 +327,12 @@ describe('Profile.vue', () => {
         retryDelayMs: () => 60_000,
         registerProfile,
       }
-      const read = jest
-        .spyOn(identityApi, 'fetchMonadProfile')
-        .mockResolvedValue(
-          answer === 'published'
-            ? ({ name: 'Alice', address: identity.address } as never)
-            : undefined,
-        )
+      const read = fetchMonadProfile as jest.Mock
+      read.mockResolvedValue(
+        answer === 'published'
+          ? { name: 'Alice', address: identity.address }
+          : undefined,
+      )
       ;(useActiveWallet as jest.Mock).mockResolvedValue(wallet)
       ownProfileCheck.unchecked = null
       await configureMessagingForTest(deps)
@@ -389,7 +391,7 @@ describe('Profile.vue', () => {
         wrapper?.unmount()
         await configureMessagingForTest(undefined)
         ownProfileCheck.unchecked = null
-        read.mockRestore()
+        read.mockReset()
         salt.mockRestore()
       }
     },

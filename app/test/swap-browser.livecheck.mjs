@@ -6,8 +6,10 @@
  *   ACCOUNT_APP_ORIGIN=http://localhost:<app port> E2E_SCREENSHOT_DIR=<dir> \
  *     SWAP_BROWSER_AMOUNT=0.01 node app/test/swap-browser.livecheck.mjs
  *
- * The account lives in a PERSISTENT Chrome profile, ~/.frank-e2e-browser/swap-browser
- * (E2E_PROFILE_DIR; see e2e-profile.mjs): the first run creates it, later runs open the same
+ * Required: explicit E2E_PROFILE_DIR and E2E_BROWSER_RESOLVER_RULES mapping BOTH
+ * signet.mx and relay.signet.mx to admitted private fixtures (including a loopback app).
+ * Root separately admits servers/TLS and the matching 10143 artifact.
+ * The account lives in that PERSISTENT Chrome profile (see e2e-profile.mjs): the first run creates it, later runs open the same
  * account. When it holds less than the amount plus 0.06 MON for gas it is funded up to that
  * from the test wallet (FRANK_TEST_WALLET_JSON, through packages/bot/demo/fund.ts). When the run
  * ends (pass, failure or Ctrl-C) what it holds above the test-account float (0.02 MON) is sent
@@ -17,22 +19,22 @@
  */
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import {
-  mkdir,
-  writeFile,
-  readFile,
-  readdir,
-  open,
-  stat,
-} from 'node:fs/promises'
-import { homedir } from 'node:os'
+import { mkdir, writeFile } from 'node:fs/promises'
 import { join, resolve } from 'node:path'
 
 import { fileURLToPath } from 'node:url'
 
-import { persistentProfile, testFunds } from './e2e-profile.mjs'
+import {
+  persistentProfile,
+  testFunds,
+  browserFixture,
+  readPublicAccount,
+  monWei,
+  appendEvidence,
+  evidenceUrl,
+} from './e2e-profile.mjs'
 
-const origin = process.env.ACCOUNT_APP_ORIGIN ?? 'http://localhost:8080'
+const { origin, resolverArgument } = browserFixture()
 const profile = await persistentProfile('swap-browser')
 const directory = profile.directory
 // Where screenshots go; defaults to a folder inside the profile directory.
@@ -50,6 +52,7 @@ const frontendErrors = []
 const frontendWarnings = []
 const networkFailures = []
 const consoleLogs = []
+const unverifiedLookups = []
 let sequence = 0
 const pending = new Map()
 
@@ -63,6 +66,7 @@ async function launch() {
       '--disable-background-networking',
       '--disable-component-update',
       '--remote-debugging-port=0',
+      resolverArgument,
       `--user-data-dir=${directory}`,
       'about:blank',
     ],
@@ -77,7 +81,7 @@ async function launch() {
     )
     child.once('error', reject)
     child.stderr.on('data', data => {
-      output += data
+      output = (output + data).slice(-8192)
       const match = /DevTools listening on (ws:\/\/(\S+))/.exec(output)
       if (match) {
         clearTimeout(timer)
@@ -99,9 +103,11 @@ async function launch() {
       return
     }
     const handler = pending.get(message.id)
+    if (!handler) return
+    clearTimeout(handler.timer)
     pending.delete(message.id)
     if (message.error) {
-      handler.reject(new Error(message.error.message))
+      handler.reject(new Error('Browser protocol request failed; body omitted'))
     } else {
       handler.resolve(message.result)
     }
@@ -110,7 +116,11 @@ async function launch() {
   call = (method, params = {}, session = sessionId) =>
     new Promise((resolve, reject) => {
       const id = ++sequence
-      pending.set(id, { resolve, reject })
+      const timer = setTimeout(() => {
+        pending.delete(id)
+        reject(new Error('Browser protocol request timed out; body omitted'))
+      }, 180000)
+      pending.set(id, { resolve, reject, timer })
       socket.send(
         JSON.stringify({
           id,
@@ -126,35 +136,30 @@ async function launch() {
 
 function handleEvent(event) {
   if (event.method === 'Runtime.exceptionThrown') {
-    const desc =
-      event.params.exceptionDetails?.exception?.description ||
-      event.params.exceptionDetails?.text
-    frontendErrors.push(`[EXCEPTION] ${desc}`)
-    console.error(`🔴 FRONTEND EXCEPTION:`, desc)
+    appendEvidence(frontendErrors, '[FRONTEND EXCEPTION; private body omitted]')
   } else if (event.method === 'Runtime.consoleAPICalled') {
     const type = event.params.type
-    const args = event.params.args
-      .map(a => a.value ?? a.description ?? JSON.stringify(a))
-      .join(' ')
-    consoleLogs.push(`[${type}] ${args}`)
+    appendEvidence(consoleLogs, '[console body omitted]')
     if (type === 'error') {
-      frontendErrors.push(`[CONSOLE_ERROR] ${args}`)
-      console.error(`🔴 FRONTEND CONSOLE ERROR:`, args)
+      appendEvidence(frontendErrors, '[CONSOLE ERROR; private body omitted]')
     } else if (type === 'warn') {
-      frontendWarnings.push(`[CONSOLE_WARN] ${args}`)
+      appendEvidence(
+        frontendWarnings,
+        '[CONSOLE WARNING; private body omitted]',
+      )
     }
   } else if (event.method === 'Network.responseReceived') {
     const { status, url } = event.params.response
-    const isExpected404 =
+    const unverified404 =
       status === 404 &&
-      (url.includes('/metadata/') ||
-        url.includes('/directory/v1/') ||
-        url.includes('/favicon.ico'))
-    const isExpected401 = status === 401 && url.includes('/capability')
-    if (status >= 400 && !isExpected404 && !isExpected401) {
-      networkFailures.push(`[HTTP ${status}] ${url}`)
-      console.warn(`⚠️ HTTP ${status}: ${url}`)
-    }
+      (url.includes('/metadata/') || url.includes('/directory/v1/'))
+    if (unverified404)
+      appendEvidence(
+        unverifiedLookups,
+        `[HTTP 404; republication not verified] ${evidenceUrl(url)}`,
+      )
+    else if (status >= 400 && !(status === 404 && url.endsWith('/favicon.ico')))
+      appendEvidence(networkFailures, `[HTTP ${status}] ${evidenceUrl(url)}`)
   }
 }
 
@@ -186,10 +191,7 @@ async function evaluate(expression) {
     returnByValue: true,
   })
   if (result.exceptionDetails) {
-    throw new Error(
-      result.exceptionDetails.exception?.description ??
-        result.exceptionDetails.text,
-    )
+    throw new Error('Browser evaluation failed; private exception body omitted')
   }
   return result.result.value
 }
@@ -203,13 +205,10 @@ async function until(expression, timeoutMs = 25000, description = '') {
     } catch {}
     await new Promise(r => setTimeout(r, 200))
   }
-  const pageText = await evaluate(
-    'document.body.innerText.slice(0, 1000)',
-  ).catch(() => 'unknown')
   throw new Error(
     `Timeout waiting for [${
-      description || expression
-    }] after ${timeoutMs}ms. Page text:\n${pageText}`,
+      description || 'UI state'
+    }] after ${timeoutMs}ms; private page text omitted`,
   )
 }
 
@@ -290,6 +289,12 @@ async function getValue(selector) {
 }
 
 async function captureScreenshot(filename) {
+  if (
+    await evaluate(
+      `!!document.querySelector('[data-test="backup-share"], [data-test="confirm-shares"], input[type="password"]')`,
+    )
+  )
+    throw new Error('Sensitive account screen screenshot omitted')
   const { data } = await call('Page.captureScreenshot', { format: 'png' })
   const filepath = join(screenshotDir, filename)
   await writeFile(filepath, Buffer.from(data, 'base64'))
@@ -321,21 +326,17 @@ const repoRoot = resolve(fileURLToPath(new URL('../..', import.meta.url)))
 const funds = testFunds({
   repoRoot,
   directory,
+  profile,
   page: { evaluate, typeInput, click, until },
   stop,
 })
 
 async function run() {
   await launch()
-  const sessionModule = `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name)`
   if (profile.account) {
     // The profile already holds an account: open it, do not create another.
     await call('Page.navigate', { url: origin + '/#/wallet' })
-    await until(
-      `${sessionModule}.then(m => m.accountSession.getWallet()).then(w => !!w, () => false)`,
-      60000,
-      `the account saved in ${directory} to open (do not delete this profile while its account ${profile.account.receive} holds money; set E2E_PROFILE_DIR to use another)`,
-    )
+    await profile.recordAccount(await readPublicAccount({ evaluate, until }))
   } else {
     await call('Page.navigate', { url: origin + '/#/setup' })
     await until(
@@ -393,14 +394,13 @@ async function run() {
     await new Promise(r => setTimeout(r, 2000))
   }
 
-  const session = `import(performance.getEntriesByType('resource').find(e => e.name.includes('/src/accounts/session.ts')).name)`
-  const main = await evaluate(
-    `${session}.then(async m => (await (await m.accountSession.getWallet()).getReceiveAddress()).raw)`,
+  const identity = await readPublicAccount({ evaluate, until })
+  await profile.recordAccount(identity)
+  console.log(
+    `MAIN ACCOUNT ${identity.receive}  (${profile.fresh ? 'new' : 'reused'})`,
   )
-  if (!profile.account) await profile.recordAccount({ receive: main })
-  console.log(`MAIN ACCOUNT ${main}  (${profile.account ? 'reused' : 'new'})`)
   // The swap amount plus gas for the moves and the swap; funded only when it holds less.
-  const needWei = BigInt(Math.round((Number(amount) + 0.06) * 1e6)) * 10n ** 12n
+  const needWei = monWei(amount) + monWei('0.06')
   const funded = await funds.ensure(needWei)
   console.log(funded ?? 'the account already holds enough: not funded')
 
@@ -412,27 +412,18 @@ async function run() {
     'swap panel',
   )
   await until(
-    `/Available: [0-9]/.test(document.querySelector('[data-testid="swap-pay-balance"]')?.innerText ?? '')`,
+    `/^\\d+(?:\\.\\d+)?$/.test(document.querySelector('[data-testid="swap-pay-balance"]')?.getAttribute('title') ?? '')`,
     60000,
     'balances read from the chain',
   )
   console.log('venue:', await t('swap-venue'), '|', await t('swap-venue-note'))
   console.log(
-    'unfunded:',
+    'initial:',
     await t('swap-pay-balance'),
     '|',
     await t('swap-receive-balance'),
   )
   await captureScreenshot('swap_01_empty.png')
-
-  await until(
-    `(() => { document.querySelector('[data-testid="evm-swap-panel"]').dispatchEvent(new Event('pointerdown', { bubbles: true })); const m = /Available: ([0-9.]+)/.exec(document.querySelector('[data-testid="swap-pay-balance"]')?.innerText ?? ''); return m && parseFloat(m[1]) > ${Number(
-      amount,
-    )}; })()`,
-    600000,
-    'the main account to be funded',
-  )
-  console.log('funded:', await t('swap-pay-balance'))
 
   await typeInput('[data-testid="swap-pay-amount"]', amount)
   await until(
@@ -492,8 +483,10 @@ async function run() {
   console.log('result:', await t('swap-result'))
   console.log(
     'explorer:',
-    await evaluate(
-      `document.querySelector('[data-testid="swap-result-explorer"]')?.href ?? null`,
+    evidenceUrl(
+      await evaluate(
+        `document.querySelector('[data-testid="swap-result-explorer"]')?.href ?? null`,
+      ),
     ),
   )
   await captureScreenshot('swap_05_result.png')
@@ -507,11 +500,18 @@ async function run() {
   )
   await captureScreenshot('swap_06_wallet.png')
   console.log('frontend errors:', JSON.stringify(frontendErrors.slice(0, 10)))
+  if (unverifiedLookups.length)
+    console.log(
+      `Directory/metadata absence observed ${unverifiedLookups.length} times; fresh-backend republication NOT VERIFIED by this journey`,
+    )
+  if (frontendErrors.length || networkFailures.length) process.exitCode = 1
 }
 
 run()
   .catch(async error => {
-    console.error('FAILED', error?.message ?? error)
+    console.error(
+      'FAILED: browser journey did not complete; private error body omitted',
+    )
     await captureScreenshot('swap_failed.png').catch(() => undefined)
     console.log('frontend errors:', JSON.stringify(frontendErrors.slice(0, 10)))
     process.exitCode = 1

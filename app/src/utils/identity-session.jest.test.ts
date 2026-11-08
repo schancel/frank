@@ -398,7 +398,7 @@ test('an obsolete wallet opening cannot mark the replacement identity unchecked'
   const alice = await wallet(0, 'old-opening'), bob = await wallet(1, 'current-opening')
   const d = device(alice)
   let release!: (wallet: EvmChainWalletHandle) => void
-  d.deps.session.getWallet = jest.fn(() => new Promise(resolve => { release = resolve }))
+  d.deps.session.getWallet = jest.fn(() => new Promise<EvmChainWalletHandle>(resolve => { release = resolve }))
   await configureMessagingForTest(d.deps)
   mockStatus.status = 'ready'
   const old = startMessaging()

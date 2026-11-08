@@ -194,13 +194,24 @@ export async function persistentProfile(check) {
       )
     saved.account = publicAccount(saved.account)
     const attempt = saved.financialAttempt
-    if (attempt !== null && (!attempt ||
+    if (
+      attempt !== null &&
+      (!attempt ||
         !['fund', 'return'].includes(attempt.kind) ||
         !ADDRESS.test(attempt.recipient ?? '') ||
-        typeof attempt.amountWei !== 'string' || !/^[1-9]\d{0,77}$/.test(attempt.amountWei) ||
-        Object.keys(attempt).some(key => !['kind', 'recipient', 'amountWei'].includes(key)) ||
-        (attempt.kind === 'fund' && attempt.recipient !== saved.account.receive)))
+        typeof attempt.amountWei !== 'string' ||
+        !/^[1-9]\d{0,77}$/.test(attempt.amountWei) ||
+        Object.keys(attempt).some(
+          key => !['kind', 'recipient', 'amountWei'].includes(key),
+        ) ||
+        (attempt.kind === 'fund' &&
+          attempt.recipient !== saved.account.receive))
+    )
       throw new Error('Invalid financial uncertainty marker; profile preserved')
+    if (attempt)
+      throw new Error(
+        'Unreconciled financial attempt; profile preserved; manual reconciliation required before another journey',
+      )
   }
   let active = false
   async function persist(next) {
@@ -208,7 +219,10 @@ export async function persistentProfile(check) {
     if (JSON.stringify(observed) !== JSON.stringify(saved))
       throw new Error('Fixture marker changed')
     const temporary = marker + '.' + randomUUID()
-    await writeFile(temporary, JSON.stringify(next), { mode: 0o600, flag: 'wx' })
+    await writeFile(temporary, JSON.stringify(next), {
+      mode: 0o600,
+      flag: 'wx',
+    })
     await rename(temporary, marker)
     saved = next
   }
@@ -221,17 +235,35 @@ export async function persistentProfile(check) {
     // Only this harness/profile is serialized. Product wallet sends remain independent.
     admitFinancialAction() {
       if (active || saved.financialAttempt)
-        throw new Error('Active or ambiguous financial operation retained; no replacement authorized')
+        throw new Error(
+          'Active or ambiguous financial operation retained; no replacement authorized',
+        )
       active = true
-      return () => { active = false }
+      return () => {
+        active = false
+      }
     },
     async recordFinancialAttempt(kind, recipient, amountWei) {
-      if (!active || saved.financialAttempt || !saved.account ||
-          !['fund', 'return'].includes(kind) || !ADDRESS.test(recipient) ||
-          typeof amountWei !== 'bigint' || amountWei <= 0n || amountWei.toString().length > 78 ||
-          (kind === 'fund' && recipient.toLowerCase() !== saved.account.receive))
+      if (
+        !active ||
+        saved.financialAttempt ||
+        !saved.account ||
+        !['fund', 'return'].includes(kind) ||
+        !ADDRESS.test(recipient) ||
+        typeof amountWei !== 'bigint' ||
+        amountWei <= 0n ||
+        amountWei.toString().length > 78 ||
+        (kind === 'fund' && recipient.toLowerCase() !== saved.account.receive)
+      )
         throw new Error('Financial admission does not match the owned fixture')
-      await persist({ ...saved, financialAttempt: { kind, recipient: recipient.toLowerCase(), amountWei: amountWei.toString() } })
+      await persist({
+        ...saved,
+        financialAttempt: {
+          kind,
+          recipient: recipient.toLowerCase(),
+          amountWei: amountWei.toString(),
+        },
+      })
     },
     async completeFinancialAttempt() {
       if (!active || !saved.financialAttempt)
@@ -248,7 +280,8 @@ export async function persistentProfile(check) {
         throw new Error(
           'Fixture identity changed; no replacement account accepted',
         )
-      if (active) throw new Error('Financial action active; identity marker retained')
+      if (active)
+        throw new Error('Financial action active; identity marker retained')
       await persist({ ...saved, account })
     },
   }
@@ -399,8 +432,10 @@ export async function creditedPayment(provider, hashes, recipient, valueWei) {
       !receipt ||
       receipt.status !== 1 ||
       tx.chainId !== 10143n ||
-      !Number.isSafeInteger(receipt.blockNumber) || receipt.blockNumber < 0 ||
-      receipt.blockNumber > head || tx.blockNumber !== receipt.blockNumber ||
+      !Number.isSafeInteger(receipt.blockNumber) ||
+      receipt.blockNumber < 0 ||
+      receipt.blockNumber > head ||
+      tx.blockNumber !== receipt.blockNumber ||
       !receipt.blockHash ||
       tx.hash?.toLowerCase() !== hash.toLowerCase() ||
       receipt.hash?.toLowerCase() !== hash.toLowerCase() ||
@@ -408,8 +443,11 @@ export async function creditedPayment(provider, hashes, recipient, valueWei) {
     )
       continue
     const canonical = await provider.getBlock(receipt.blockNumber)
-    if (canonical?.number !== receipt.blockNumber ||
-        canonical.hash?.toLowerCase() !== receipt.blockHash.toLowerCase()) continue
+    if (
+      canonical?.number !== receipt.blockNumber ||
+      canonical.hash?.toLowerCase() !== receipt.blockHash.toLowerCase()
+    )
+      continue
     if (tx.to?.toLowerCase() === recipient.toLowerCase()) {
       credited += tx.value
       included.push(hash)
@@ -609,7 +647,11 @@ export function testFunds({ repoRoot, directory, profile, page, stop }) {
 
   async function sendFromPage(to, amountMon) {
     const release = profile.admitFinancialAction()
-    try { return await sendAdmitted(to, amountMon) } finally { release() }
+    try {
+      return await sendAdmitted(to, amountMon)
+    } finally {
+      release()
+    }
   }
 
   const finish = () =>
@@ -670,50 +712,52 @@ export function testFunds({ repoRoot, directory, profile, page, stop }) {
     async ensure(needWei) {
       const release = profile.admitFinancialAction()
       try {
-      if (typeof needWei !== 'bigint' || needWei <= 0n)
-        throw new Error('Invalid exact fixture funding target')
-      const state = await snapshot()
-      if (state.pending || uncertainPayment)
-        throw new Error(
-          'Pending operations retained; no duplicate fixture funding',
+        if (typeof needWei !== 'bigint' || needWei <= 0n)
+          throw new Error('Invalid exact fixture funding target')
+        const state = await snapshot()
+        if (state.pending || uncertainPayment)
+          throw new Error(
+            'Pending operations retained; no duplicate fixture funding',
+          )
+        if (state.availableWei >= needWei) return undefined
+        if (fundingAttempted)
+          throw new Error(
+            'Funding was already attempted; reconcile it instead of retrying',
+          )
+        const missing = needWei - state.availableWei
+        const configuredMax =
+          process.env.FRANK_TEST_MAX_FUND_WEI ?? '500000000000000000'
+        if (!/^\d+$/.test(configuredMax) || missing > BigInt(configuredMax))
+          throw new Error(
+            'Fixture funding exceeds the existing per-transfer limit',
+          )
+        await chain()
+        const target = await testWallet()
+        await profile.recordFinancialAttempt('fund', state.receive, missing)
+        fundingAttempted = true
+        uncertainPayment = true
+        const output = await fundTool(
+          repoRoot,
+          [state.receive, mon(missing)],
+          180000,
         )
-      if (state.availableWei >= needWei) return undefined
-      if (fundingAttempted)
-        throw new Error(
-          'Funding was already attempted; reconcile it instead of retrying',
-        )
-      const missing = needWei - state.availableWei
-      const configuredMax =
-        process.env.FRANK_TEST_MAX_FUND_WEI ?? '500000000000000000'
-      if (!/^\d+$/.test(configuredMax) || missing > BigInt(configuredMax))
-        throw new Error(
-          'Fixture funding exceeds the existing per-transfer limit',
-        )
-      await chain()
-      const target = await testWallet()
-      await profile.recordFinancialAttempt('fund', state.receive, missing)
-      fundingAttempted = true
-      uncertainPayment = true
-      const output = await fundTool(
-        repoRoot,
-        [state.receive, mon(missing)],
-        180000,
-      )
-      const hash = /: (0x[0-9a-fA-F]{64})$/.exec(output)?.[1]
-      const receipt =
-        hash &&
-        (await creditedPayment(provider, [hash], state.receive, missing))
-      if (!receipt)
-        throw new Error(
-          'Funding receipt unverified; original operation/profile retained',
-        )
-      await profile.completeFinancialAttempt()
-      fundedWei += receipt.creditedWei
-      uncertainPayment = false
-      return `funded ${mon(receipt.creditedWei)} MON from ${
-        target.address
-      }: ${hash}`
-      } finally { release() }
+        const hash = /: (0x[0-9a-fA-F]{64})$/.exec(output)?.[1]
+        const receipt =
+          hash &&
+          (await creditedPayment(provider, [hash], state.receive, missing))
+        if (!receipt)
+          throw new Error(
+            'Funding receipt unverified; original operation/profile retained',
+          )
+        await profile.completeFinancialAttempt()
+        fundedWei += receipt.creditedWei
+        uncertainPayment = false
+        return `funded ${mon(receipt.creditedWei)} MON from ${
+          target.address
+        }: ${hash}`
+      } finally {
+        release()
+      }
     },
   }
 }

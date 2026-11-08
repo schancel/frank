@@ -72,7 +72,11 @@ function fixture() {
   }
   const rpc = {
     getNetwork: jest.fn(async () => ({ chainId: 10143n })),
-    getBlock: jest.fn(async number => number === 0 ? ({ hash: checkpoint, number: 0 }) : ({ hash: blockHash, number })),
+    getBlock: jest.fn(async number =>
+      number === 0
+        ? { hash: checkpoint, number: 0 }
+        : { hash: blockHash, number },
+    ),
     getBlockNumber: jest.fn(async () => 10),
     getTransaction: jest.fn(async () => ({
       hash,
@@ -515,10 +519,14 @@ test('ambiguous original UI send is confirmed once; finish preserves it without 
 test('mutually matching orphan transaction and receipt are not canonical credit', async () => {
   const { helper, rpc } = fixture()
   rpc.getBlock.mockResolvedValue({ number: 1, hash: '0x' + '9'.repeat(64) })
-  await expect(helper.creditedPayment(rpc, [hash], recipient, 10000000000000000n)).resolves.toBeUndefined()
+  await expect(
+    helper.creditedPayment(rpc, [hash], recipient, 10000000000000000n),
+  ).resolves.toBeUndefined()
   rpc.getBlock.mockResolvedValue({ number: 1, hash: blockHash })
   rpc.getBlockNumber.mockResolvedValue(0)
-  await expect(helper.creditedPayment(rpc, [hash], recipient, 10000000000000000n)).resolves.toBeUndefined()
+  await expect(
+    helper.creditedPayment(rpc, [hash], recipient, 10000000000000000n),
+  ).resolves.toBeUndefined()
 })
 
 test('signal cleanup cannot enter a second return during the original first await', async () => {
@@ -526,8 +534,18 @@ test('signal cleanup cannot enter a second return during the original first awai
   const profile = await ownedProfile(f)
   const page = domPage()
   let rejectNetwork
-  f.rpc.getNetwork.mockImplementation(() => new Promise((resolve, reject) => { rejectNetwork = reject }))
-  const funds = f.helper.testFunds({ repoRoot: '/repo', directory: profile.directory, profile, page })
+  f.rpc.getNetwork.mockImplementation(
+    () =>
+      new Promise((resolve, reject) => {
+        rejectNetwork = reject
+      }),
+  )
+  const funds = f.helper.testFunds({
+    repoRoot: '/repo',
+    directory: profile.directory,
+    profile,
+    page,
+  })
   const original = funds.sendFromPage(recipient, '0.01')
   // Let registry I/O reach the deferred network read, without running any browser or timer.
   for (let i = 0; i < 20 && !rejectNetwork; i++) await Promise.resolve()
@@ -549,11 +567,23 @@ test('ensure admission is synchronous and cleanup cannot navigate or fund concur
   const profile = await ownedProfile(f)
   const page = domPage()
   let resumeSnapshot
-  page.evaluate.mockImplementationOnce(() => new Promise(resolve => { resumeSnapshot = resolve }))
+  page.evaluate.mockImplementationOnce(
+    () =>
+      new Promise(resolve => {
+        resumeSnapshot = resolve
+      }),
+  )
   f.rpc.getNetwork.mockRejectedValue(new Error('pre-exposure fixture failure'))
-  const funds = f.helper.testFunds({ repoRoot: '/repo', directory: profile.directory, profile, page })
+  const funds = f.helper.testFunds({
+    repoRoot: '/repo',
+    directory: profile.directory,
+    profile,
+    page,
+  })
   const original = funds.ensure(f.helper.monWei('0.1'))
-  await expect(funds.ensure(f.helper.monWei('0.1'))).rejects.toThrow('Active or ambiguous')
+  await expect(funds.ensure(f.helper.monWei('0.1'))).rejects.toThrow(
+    'Active or ambiguous',
+  )
   await funds.finish()
   expect(page.evaluate).toHaveBeenCalledTimes(1)
   expect(f.execFile).not.toHaveBeenCalled()
@@ -567,18 +597,46 @@ test('funding ambiguity is durably marked before exposure and blocks fresh actio
   const profile = await ownedProfile(f)
   const marker = '/owned/test-profile/frank-account.json'
   f.execFile.mockImplementation((executable, args, options, done) => {
-    if (args.includes('--info')) return done(null, JSON.stringify({ address: recipient, floatWei: '20000000000000000' }))
-    expect(JSON.parse(f.files.get(marker)).financialAttempt).toEqual({ kind: 'fund', recipient: address, amountWei: '80000000000000000' })
+    if (args.includes('--info'))
+      return done(
+        null,
+        JSON.stringify({ address: recipient, floatWei: '20000000000000000' }),
+      )
+    expect(JSON.parse(f.files.get(marker)).financialAttempt).toEqual({
+      kind: 'fund',
+      recipient: address,
+      amountWei: '80000000000000000',
+    })
     done(new Error('broadcast may have occurred; no hash returned'))
   })
-  const funds = f.helper.testFunds({ repoRoot: '/repo', directory: profile.directory, profile, page: domPage() })
-  await expect(funds.ensure(f.helper.monWei('0.1'))).rejects.toThrow('funding tool failed')
-  const reopened = await f.helper.persistentProfile('funds')
-  expect(reopened.account).toEqual(profile.account)
+  const funds = f.helper.testFunds({
+    repoRoot: '/repo',
+    directory: profile.directory,
+    profile,
+    page: domPage(),
+  })
+  await expect(funds.ensure(f.helper.monWei('0.1'))).rejects.toThrow(
+    'funding tool failed',
+  )
+  const retained = f.files.get(marker)
+  await expect(f.helper.persistentProfile('funds')).rejects.toThrow(
+    'manual reconciliation required',
+  )
+  expect(f.files.get(marker)).toBe(retained)
+  expect(JSON.parse(retained).account).toEqual(profile.account)
   const page = domPage()
-  const retry = f.helper.testFunds({ repoRoot: '/repo', directory: profile.directory, profile: reopened, page })
-  await expect(retry.ensure(f.helper.monWei('0.1'))).rejects.toThrow('Active or ambiguous')
-  await expect(retry.sendFromPage(recipient, '0.01')).rejects.toThrow('Active or ambiguous')
+  const retry = f.helper.testFunds({
+    repoRoot: '/repo',
+    directory: profile.directory,
+    profile,
+    page,
+  })
+  await expect(retry.ensure(f.helper.monWei('0.1'))).rejects.toThrow(
+    'Active or ambiguous',
+  )
+  await expect(retry.sendFromPage(recipient, '0.01')).rejects.toThrow(
+    'Active or ambiguous',
+  )
   await retry.finish()
   expect(page.evaluate).not.toHaveBeenCalled()
   expect(f.execFile).toHaveBeenCalledTimes(2)
@@ -589,15 +647,32 @@ test('canonical original credit clears the durable guard; failed clear cannot au
   const f = fixture()
   walletHtml()
   const profile = await ownedProfile(f)
-  f.rpc.getTransaction.mockResolvedValue({ hash, blockHash, blockNumber: 1, chainId: 10143n, to: address, value: 80000000000000000n })
-  const funds = f.helper.testFunds({ repoRoot: '/repo', directory: profile.directory, profile, page: domPage() })
+  f.rpc.getTransaction.mockResolvedValue({
+    hash,
+    blockHash,
+    blockNumber: 1,
+    chainId: 10143n,
+    to: address,
+    value: 80000000000000000n,
+  })
+  const funds = f.helper.testFunds({
+    repoRoot: '/repo',
+    directory: profile.directory,
+    profile,
+    page: domPage(),
+  })
   await funds.ensure(f.helper.monWei('0.1'))
-  expect(JSON.parse(f.files.get('/owned/test-profile/frank-account.json')).financialAttempt).toBeNull()
+  expect(
+    JSON.parse(f.files.get('/owned/test-profile/frank-account.json'))
+      .financialAttempt,
+  ).toBeNull()
   const reopened = await f.helper.persistentProfile('funds')
   const release = reopened.admitFinancialAction()
   await reopened.recordFinancialAttempt('return', recipient, 1n)
   f.fs.rename.mockRejectedValueOnce(new Error('disk failure'))
-  await expect(reopened.completeFinancialAttempt()).rejects.toThrow('disk failure')
+  await expect(reopened.completeFinancialAttempt()).rejects.toThrow(
+    'disk failure',
+  )
   release()
   expect(() => reopened.admitFinancialAction()).toThrow('Active or ambiguous')
 })

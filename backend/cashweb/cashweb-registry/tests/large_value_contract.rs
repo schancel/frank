@@ -707,7 +707,10 @@ mod fixture_config_tests {
                 force_path_style: true,
             }
         );
-        assert_eq!(config(&values, "child").unwrap().prefix, "lab-fixture-1/child");
+        assert_eq!(
+            config(&values, "child").unwrap().prefix,
+            "lab-fixture-1/child"
+        );
     }
 
     #[test]
@@ -722,7 +725,10 @@ mod fixture_config_tests {
     #[test]
     fn fixture_config_api_is_not_inferred_from_endpoint() {
         let mut values = inputs();
-        values.insert("FRANK_LAB_S3_ENDPOINT", "https://storage.googleapis.com".into());
+        values.insert(
+            "FRANK_LAB_S3_ENDPOINT",
+            "https://storage.googleapis.com".into(),
+        );
         assert_eq!(config(&values, "").unwrap().api, S3Api::S3);
     }
 
@@ -778,7 +784,10 @@ mod fixture_config_tests {
             values.remove(name);
             assert!(config(&values, "").is_err());
         }
-        for name in required.into_iter().chain(["FRANK_LAB_S3_API", "FRANK_LAB_S3_PREFIX"]) {
+        for name in required
+            .into_iter()
+            .chain(["FRANK_LAB_S3_API", "FRANK_LAB_S3_PREFIX"])
+        {
             let values = inputs();
             let result = fixture_s3_config(
                 |key| {

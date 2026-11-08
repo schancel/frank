@@ -14,7 +14,8 @@ import {
 import { compressAvatarFile } from './avatar-resize'
 import { png, jpeg } from './image-data-uri.fixtures'
 
-const headerBytes = (uri: string) => new Uint8Array(Buffer.from(uri.split(',')[1], 'base64'))
+const headerBytes = (uri: string) =>
+  new Uint8Array(Buffer.from(uri.split(',')[1], 'base64'))
 
 describe('image-resize utilities', () => {
   describe('constants', () => {
@@ -437,83 +438,160 @@ describe('File source admission and terminal loading', () => {
   }
   beforeEach(() => {
     bytes = headerBytes(png(400, 300))
-    readers = []; images = []
-    holdPrefix = false; holdFull = false; holdImage = false
+    readers = []
+    images = []
+    holdPrefix = false
+    holdFull = false
+    holdImage = false
     class Reader {
-      onload: any = null; onerror: any = null; onabort: any = null
+      onload: any = null
+      onerror: any = null
+      onabort: any = null
       readyState = 1
-      abort = jest.fn(() => { this.readyState = 2 })
+      abort = jest.fn(() => {
+        this.readyState = 2
+      })
       prefix = false
-      complete = () => this.onload?.({ target: { result: this.prefix ? bytes.buffer : raw } })
-      readAsArrayBuffer = jest.fn(() => { this.prefix = true; if (!holdPrefix) this.complete() })
-      readAsDataURL = jest.fn(() => { if (!holdFull) this.complete() })
-      constructor() { readers.push(this) }
+      complete = () =>
+        this.onload?.({ target: { result: this.prefix ? bytes.buffer : raw } })
+      readAsArrayBuffer = jest.fn(() => {
+        this.prefix = true
+        if (!holdPrefix) this.complete()
+      })
+      readAsDataURL = jest.fn(() => {
+        if (!holdFull) this.complete()
+      })
+      constructor() {
+        readers.push(this)
+      }
     }
     class Picture {
-      width = 400; height = 300; naturalWidth = 400; naturalHeight = 300
-      complete = false; onload: any = null; onerror: any = null
+      width = 400
+      height = 300
+      naturalWidth = 400
+      naturalHeight = 300
+      complete = false
+      onload: any = null
+      onerror: any = null
       _src = ''
-      set src(value: string) { this._src = value; if (value && !holdImage) this.onload?.() }
-      get src() { return this._src }
-      constructor() { images.push(this) }
+      set src(value: string) {
+        this._src = value
+        if (value && !holdImage) this.onload?.()
+      }
+      get src() {
+        return this._src
+      }
+      constructor() {
+        images.push(this)
+      }
     }
     window.FileReader = Reader as any
     window.Image = Picture as any
-    HTMLCanvasElement.prototype.getContext = jest.fn(() => ({ drawImage: jest.fn(), fillRect: jest.fn() })) as any
-    HTMLCanvasElement.prototype.toDataURL = jest.fn(() => 'data:image/webp;base64,AAAA')
+    HTMLCanvasElement.prototype.getContext = jest.fn(() => ({
+      drawImage: jest.fn(),
+      fillRect: jest.fn(),
+    })) as any
+    HTMLCanvasElement.prototype.toDataURL = jest.fn(
+      () => 'data:image/webp;base64,AAAA',
+    )
   })
   afterEach(() => {
-    window.Image = originalImage; window.FileReader = originalReader
-    jest.useRealTimers(); jest.restoreAllMocks()
+    window.Image = originalImage
+    window.FileReader = originalReader
+    jest.useRealTimers()
+    jest.restoreAllMocks()
   })
-  it.each(['image/png', 'image/svg+xml', 'image/avif', 'image/heic'])('rejects oversized %s before any read or DOM entry', async type => {
-    const input = file(32 * 1024 * 1024 + 1, type)
-    await expect(downscaleImage(input)).rejects.toThrow()
-    expect(input.slice).not.toHaveBeenCalled()
-    expect(readers).toHaveLength(0); expect(images).toHaveLength(0)
-    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled()
-  })
-  it.each([[8001, 8000], [32769, 1], [0, 100]])('rejects declared dimensions %s by %s before decoding', async (w, h) => {
-    bytes = headerBytes(png(w, h))
-    await expect(downscaleImage(file(8 * 1024 * 1024))).rejects.toThrow()
-    expect(readers.every(r => r.readAsDataURL.mock.calls.length === 0)).toBe(true)
-    expect(images).toHaveLength(0)
-  })
-  it.each(['bad', 'mismatch'])('rejects %s raster headers before decode', async kind => {
-    bytes = kind === 'bad' ? new Uint8Array([1, 2]) : headerBytes(jpeg(400, 300))
-    await expect(downscaleImage(file(100))).rejects.toThrow()
-    expect(images).toHaveLength(0)
-  })
-  it.each([[4032, 3024, 8], [8000, 6000, 20], [8000, 8000, 32], [32768, 1, 1]])('admits bounded %s by %s phone source without allocating pixels', async (w, h, mb) => {
-    bytes = headerBytes(png(w, h))
-    const input = file(mb * 1024 * 1024)
-    await expect(downscaleImage(input)).resolves.toBe('data:image/webp;base64,AAAA')
-    expect(input.slice).toHaveBeenCalledWith(0, 256 * 1024)
-    expect(readers.filter(r => r.readAsDataURL.mock.calls.length)).toHaveLength(1)
-    expect(images[0].src).toBe(raw)
-  })
-  it.each(['image/svg+xml', 'image/avif', 'image/heic'])('preserves byte-bounded %s compression entry', async type => {
-    await expect(downscaleImage(file(1024, type))).resolves.toBe(raw)
-    expect(images).toHaveLength(1)
-  })
+  it.each(['image/png', 'image/svg+xml', 'image/avif', 'image/heic'])(
+    'rejects oversized %s before any read or DOM entry',
+    async type => {
+      const input = file(32 * 1024 * 1024 + 1, type)
+      await expect(downscaleImage(input)).rejects.toThrow()
+      expect(input.slice).not.toHaveBeenCalled()
+      expect(readers).toHaveLength(0)
+      expect(images).toHaveLength(0)
+      expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled()
+    },
+  )
+  it.each([
+    [8001, 8000],
+    [32769, 1],
+    [0, 100],
+  ])(
+    'rejects declared dimensions %s by %s before decoding',
+    async (w, h) => {
+      bytes = headerBytes(png(w, h))
+      await expect(downscaleImage(file(8 * 1024 * 1024))).rejects.toThrow()
+      expect(readers.every(r => r.readAsDataURL.mock.calls.length === 0)).toBe(
+        true,
+      )
+      expect(images).toHaveLength(0)
+    },
+  )
+  it.each(['bad', 'mismatch'])(
+    'rejects %s raster headers before decode',
+    async kind => {
+      bytes = kind === 'bad' ? new Uint8Array([1, 2]) : headerBytes(jpeg(400, 300))
+      await expect(downscaleImage(file(100))).rejects.toThrow()
+      expect(images).toHaveLength(0)
+    },
+  )
+  it.each([
+    [4032, 3024, 8],
+    [8000, 6000, 20],
+    [8000, 8000, 32],
+    [32768, 1, 1],
+  ])(
+    'admits bounded %s by %s phone source without allocating pixels',
+    async (w, h, mb) => {
+      bytes = headerBytes(png(w, h))
+      const input = file(mb * 1024 * 1024)
+      await expect(downscaleImage(input)).resolves.toBe(
+        'data:image/webp;base64,AAAA',
+      )
+      expect(input.slice).toHaveBeenCalledWith(0, 256 * 1024)
+      expect(readers.filter(r => r.readAsDataURL.mock.calls.length)).toHaveLength(1)
+      expect(images[0].src).toBe(raw)
+    },
+  )
+  it.each(['image/svg+xml', 'image/avif', 'image/heic'])(
+    'preserves byte-bounded %s compression entry',
+    async type => {
+      await expect(downscaleImage(file(1024, type))).resolves.toBe(raw)
+      expect(images).toHaveLength(1)
+    },
+  )
   it('bounds avatar File input before reading or decoding', async () => {
     await expect(compressAvatarFile(file(32 * 1024 * 1024 + 1))).rejects.toThrow()
-    expect(readers).toHaveLength(0); expect(images).toHaveLength(0)
+    expect(readers).toHaveLength(0)
+    expect(images).toHaveLength(0)
   })
-  it.each(['prefix', 'full', 'image', 'fallback'])('makes %s timeout terminal even for captured late callbacks', async stage => {
-    jest.useFakeTimers()
-    holdPrefix = stage === 'prefix'; holdFull = stage === 'full' || stage === 'fallback'; holdImage = stage === 'image'
-    if (stage === 'fallback') window.Image = undefined as any
-    const result = downscaleImage(file(100))
-    const rejected = expect(result).rejects.toThrow(/timed out/)
-    await Promise.resolve(); await Promise.resolve(); await Promise.resolve()
-    const late = readers.map(r => r.onload)
-    jest.advanceTimersByTime(1600)
-    await rejected
-    const fullReads = readers.reduce((n, r) => n + r.readAsDataURL.mock.calls.length, 0)
-    late.forEach(callback => callback?.({ target: { result: bytes.buffer } }))
-    expect(readers.reduce((n, r) => n + r.readAsDataURL.mock.calls.length, 0)).toBe(fullReads)
-    expect(images.every(img => img.src === '')).toBe(true)
-    if (stage !== 'image') expect(readers.some(r => r.abort.mock.calls.length)).toBe(true)
-  })
+  it.each(['prefix', 'full', 'image', 'fallback'])(
+    'makes %s timeout terminal even for captured late callbacks',
+    async stage => {
+      jest.useFakeTimers()
+      holdPrefix = stage === 'prefix'
+      holdFull = stage === 'full' || stage === 'fallback'
+      holdImage = stage === 'image'
+      if (stage === 'fallback') window.Image = undefined as any
+      const result = downscaleImage(file(100))
+      const rejected = expect(result).rejects.toThrow(/timed out/)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      const late = readers.map(r => r.onload)
+      jest.advanceTimersByTime(1600)
+      await rejected
+      const fullReads = readers.reduce(
+        (n, r) => n + r.readAsDataURL.mock.calls.length,
+        0,
+      )
+      late.forEach(callback => callback?.({ target: { result: bytes.buffer } }))
+      expect(
+        readers.reduce((n, r) => n + r.readAsDataURL.mock.calls.length, 0),
+      ).toBe(fullReads)
+      expect(images.every(img => img.src === '')).toBe(true)
+      if (stage !== 'image')
+        expect(readers.some(r => r.abort.mock.calls.length)).toBe(true)
+    },
+  )
 })

@@ -301,7 +301,11 @@ describe('post-editor utilities', () => {
     })
 
     it('resolves fast if raw data URL is already under small limit', async () => {
-      const smallPng = new File([new Uint8Array(Buffer.from(sourcePng(200, 150).split(',')[1], 'base64'))], 'small.png', {
+      const smallPng = new File([
+          new Uint8Array(
+            Buffer.from(sourcePng(200, 150).split(',')[1], 'base64'),
+          ),
+        ], 'small.png', {
         type: 'image/png',
       })
       const result = await compressPostImage(smallPng, { maxBytes: 100_000 })

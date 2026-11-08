@@ -12,7 +12,7 @@ import {
   resizeImage,
 } from './image-resize'
 import { compressAvatarFile } from './avatar-resize'
-import { png, jpeg } from './image-data-uri.fixtures'
+import { png, jpeg, gif, webpX } from './image-data-uri.fixtures'
 
 const headerBytes = (uri: string) =>
   new Uint8Array(Buffer.from(uri.split(',')[1], 'base64'))
@@ -639,6 +639,54 @@ describe('File source admission and terminal loading', () => {
       expect(images.every(img => img.src === '')).toBe(true)
       if (stage !== 'image')
         expect(readers.some(r => r.abort.mock.calls.length)).toBe(true)
+    },
+  )
+  // Product-stage regressions for the independently confirmed c3 MIME bypass.
+  it('rejects an empty-MIME PNG avatar before full reading or decode', async () => {
+    bytes = headerBytes(png(8001, 8000))
+    await expect(compressAvatarFile(file(100, ''))).rejects.toThrow()
+    expect(readers.every(r => !r.readAsDataURL.mock.calls.length)).toBe(true)
+    expect(images).toHaveLength(0)
+  })
+  it.each([
+    ['image/jpg', jpeg(32769, 1)],
+    ['image/avif', png(8001, 8000)],
+    ['image/svg+xml', gif(32769, 1)],
+    ['image/heic', webpX(8001, 8000)],
+  ])('bounds recognized raster bytes labeled %s', async (type, uri) => {
+    bytes = headerBytes(uri)
+    await expect(downscaleImage(file(100, type))).rejects.toThrow()
+    expect(readers.every(r => !r.readAsDataURL.mock.calls.length)).toBe(true)
+    expect(images).toHaveLength(0)
+  })
+  it.each([
+    ['png', png(400, 300), 4],
+    ['jpeg', jpeg(400, 300), 2],
+    ['gif', gif(400, 300), 4],
+    ['webp', webpX(400, 300), 12],
+  ] as const)(
+    'rejects recognized truncated %s without MIME',
+    async (_n, uri, length) => {
+      bytes = headerBytes(uri).slice(0, length)
+      await expect(downscaleImage(file(100, ''))).rejects.toThrow()
+      expect(readers.every(r => !r.readAsDataURL.mock.calls.length)).toBe(true)
+      expect(images).toHaveLength(0)
+    },
+  )
+  it('admits byte-bounded image/jpg phone JPEG through the downscaler', async () => {
+    bytes = headerBytes(jpeg(8000, 6000, 60 * 1024))
+    await expect(
+      downscaleImage(file(20 * 1024 * 1024, 'image/jpg')),
+    ).resolves.toBe('data:image/webp;base64,AAAA')
+    expect(images[0].src).toBe(raw)
+  })
+  it.each(['image/svg+xml', 'image/avif', 'image/heic'])(
+    'preserves genuinely unknown %s bytes after the bounded prefix',
+    async type => {
+      bytes = new Uint8Array([0, 0, 0, 16, 102, 116, 121, 112])
+      await expect(downscaleImage(file(1024, type))).resolves.toBe(raw)
+      expect(readers[0].readAsArrayBuffer).toHaveBeenCalledTimes(1)
+      expect(readers[0].readAsDataURL).toHaveBeenCalledTimes(1)
     },
   )
 })

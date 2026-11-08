@@ -8,7 +8,7 @@
  * 3. Returning the original input untouched if already within constraints.
  */
 
-import { imageDimensions } from './image-dimensions'
+import { imageDimensions, rasterKindFromHeader } from './image-dimensions'
 
 // Source admission is separate from compressed output and received-message limits.
 const MAX_SOURCE_BYTES = 32 * 1024 * 1024
@@ -205,18 +205,21 @@ export function readImageFile(input: File | Blob): Promise<string> {
     }
     reader.onerror = () => fail(new Error('Failed to read image file'))
     reader.onabort = () => fail(new Error('Image file reading aborted'))
-    const kind = /^image\/(png|jpeg|gif|webp)$/.exec(input.type)?.[1]
-    if (!kind) {
-      readFull()
-      return
-    }
+    const declaredKind = /^image\/(png|jpeg|gif|webp)$/.exec(input.type)?.[1]
     reader.onload = event => {
       if (settled) return
       const result = event.target?.result
-      const dims =
-        result instanceof ArrayBuffer
-          ? imageDimensions(kind, new Uint8Array(result))
-          : undefined
+      if (!(result instanceof ArrayBuffer)) {
+        fail(new ImageSourceError('unreadable image header'))
+        return
+      }
+      const bytes = new Uint8Array(result)
+      const kind = declaredKind ?? rasterKindFromHeader(bytes)
+      if (!kind) {
+        readFull()
+        return
+      }
+      const dims = imageDimensions(kind, bytes)
       if (!dims) {
         fail(new ImageSourceError('unreadable image header'))
         return

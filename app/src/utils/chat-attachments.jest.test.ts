@@ -19,6 +19,7 @@ import {
 } from './image-data-uri'
 import { gif, png } from './image-data-uri.fixtures'
 import { compressPostImage, type PostAttachment } from './post-editor'
+import { ImageSourceError } from './image-resize'
 
 jest.mock('./post-editor', () => ({
   ...jest.requireActual('./post-editor'),
@@ -75,6 +76,21 @@ describe('prepareChatImage', () => {
       reasonKey: 'reasonNotAnImage',
     })
   })
+  it.each([
+    ['too large', 'reasonTooLarge'],
+    ['dimensions too large', 'reasonDimensionsTooLarge'],
+    ['unreadable image header', 'reasonUnreadableHeader'],
+    ['empty image', 'reasonEmpty'],
+  ] as const)(
+    'preserves source admission reason %s',
+    async (reason, reasonKey) => {
+      compress.mockRejectedValue(new ImageSourceError(reason))
+      await expect(prepareChatImage(file)).resolves.toMatchObject({
+        ok: false,
+        reasonKey,
+      })
+    },
+  )
 })
 
 describe('composeChatItems', () => {

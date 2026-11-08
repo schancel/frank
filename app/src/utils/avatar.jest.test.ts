@@ -1,5 +1,5 @@
-import { png as sourcePng } from './image-data-uri.fixtures'
 /** @jest-environment jsdom */
+import { png as sourcePng } from './image-data-uri.fixtures'
 import {
   MAX_AVATAR_BYTES,
   MAX_AVATAR_DIMENSION,

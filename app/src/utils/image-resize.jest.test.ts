@@ -519,15 +519,12 @@ describe('File source admission and terminal loading', () => {
     [8001, 8000],
     [32769, 1],
     [0, 100],
-  ])(
-    'rejects declared dimensions %s by %s before decoding',
-    async (w, h) => {
-      bytes = headerBytes(png(w, h))
-      await expect(downscaleImage(file(8 * 1024 * 1024))).rejects.toThrow()
-      expect(readers.every(r => !r.readAsDataURL.mock.calls.length)).toBe(true)
-      expect(images).toHaveLength(0)
-    },
-  )
+  ])('rejects declared dimensions %s by %s before decoding', async (w, h) => {
+    bytes = headerBytes(png(w, h))
+    await expect(downscaleImage(file(8 * 1024 * 1024))).rejects.toThrow()
+    expect(readers.every(r => !r.readAsDataURL.mock.calls.length)).toBe(true)
+    expect(images).toHaveLength(0)
+  })
   it.each(['bad', 'mismatch'])(
     'rejects %s raster headers before decode',
     async kind => {

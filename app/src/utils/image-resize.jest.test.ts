@@ -689,4 +689,32 @@ describe('File source admission and terminal loading', () => {
       expect(readers[0].readAsDataURL).toHaveBeenCalledTimes(1)
     },
   )
+  it.each([downscaleImage, compressAvatarFile])(
+    'discards a captured image callback after a load timeout (%#)',
+    async resize => {
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
+      holdImage = true
+      let failure: unknown
+      const result = resize(file(100))
+      result.catch(error => {
+        failure = error
+      })
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      const lateLoad = images[0].onload
+      expect(lateLoad).toBeInstanceOf(Function)
+      jest.advanceTimersByTime(1600)
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(failure).toMatchObject({
+        message: expect.stringMatching(/timed out/),
+      })
+      expect(images[0].src).toBe('')
+      lateLoad()
+      expect(HTMLCanvasElement.prototype.toDataURL).not.toHaveBeenCalled()
+      expect(images[0].src).toBe('')
+    },
+  )
 })

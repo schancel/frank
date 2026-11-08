@@ -300,17 +300,33 @@ describe('post-editor utilities', () => {
       )
     })
 
-    it('resolves fast if raw data URL is already under small limit', async () => {
-      const smallPng = new File([
-          new Uint8Array(
-            Buffer.from(sourcePng(200, 150).split(',')[1], 'base64'),
-          ),
-        ], 'small.png', {
-        type: 'image/png',
-      })
-      const result = await compressPostImage(smallPng, { maxBytes: 100_000 })
-      expect(result.name).toBe('small.png')
-      expect(result.dataUrl).toContain('data:image/png;')
+    it('returns a loaded small File without recompression', async () => {
+      const originalImage = window.Image
+      class LoadedImage {
+        width = 200
+        height = 150
+        naturalWidth = 200
+        naturalHeight = 150
+        complete = true
+        src = ''
+      }
+      window.Image = LoadedImage as any
+      try {
+        const smallPng = new File(
+          [
+            new Uint8Array(
+              Buffer.from(sourcePng(200, 150).split(',')[1], 'base64'),
+            ),
+          ],
+          'small.png',
+          { type: 'image/png' },
+        )
+        const result = await compressPostImage(smallPng, { maxBytes: 100_000 })
+        expect(result.name).toBe('small.png')
+        expect(result.dataUrl).toContain('data:image/png;')
+      } finally {
+        window.Image = originalImage
+      }
     })
   })
 

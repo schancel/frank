@@ -459,6 +459,7 @@ describe('File source admission and terminal loading', () => {
         if (!holdPrefix) this.complete()
       })
       readAsDataURL = jest.fn(() => {
+        this.prefix = false
         if (!holdFull) this.complete()
       })
       constructor() {
@@ -521,9 +522,7 @@ describe('File source admission and terminal loading', () => {
     async (w, h) => {
       bytes = headerBytes(png(w, h))
       await expect(downscaleImage(file(8 * 1024 * 1024))).rejects.toThrow()
-      expect(readers.every(r => r.readAsDataURL.mock.calls.length === 0)).toBe(
-        true,
-      )
+      expect(readers.every(r => !r.readAsDataURL.mock.calls.length)).toBe(true)
       expect(images).toHaveLength(0)
     },
   )
@@ -549,7 +548,9 @@ describe('File source admission and terminal loading', () => {
         'data:image/webp;base64,AAAA',
       )
       expect(input.slice).toHaveBeenCalledWith(0, 256 * 1024)
-      expect(readers.filter(r => r.readAsDataURL.mock.calls.length)).toHaveLength(1)
+      expect(
+        readers.filter(r => r.readAsDataURL.mock.calls.length),
+      ).toHaveLength(1)
       expect(images[0].src).toBe(raw)
     },
   )

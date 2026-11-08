@@ -362,7 +362,9 @@ describe('image-resize utilities', () => {
       }
       window.Image = MockFileImage as any
 
-      const blob = new Blob([headerBytes(jpeg(1600, 1200))], { type: 'image/jpeg' })
+      const blob = new Blob([headerBytes(jpeg(1600, 1200))], {
+        type: 'image/jpeg',
+      })
       const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' })
 
       const result = await downscaleImage(file, { maxDimension: 800 })
@@ -529,7 +531,8 @@ describe('File source admission and terminal loading', () => {
   it.each(['bad', 'mismatch'])(
     'rejects %s raster headers before decode',
     async kind => {
-      bytes = kind === 'bad' ? new Uint8Array([1, 2]) : headerBytes(jpeg(400, 300))
+      bytes =
+        kind === 'bad' ? new Uint8Array([1, 2]) : headerBytes(jpeg(400, 300))
       await expect(downscaleImage(file(100))).rejects.toThrow()
       expect(images).toHaveLength(0)
     },
@@ -562,8 +565,37 @@ describe('File source admission and terminal loading', () => {
     },
   )
   it('bounds avatar File input before reading or decoding', async () => {
-    await expect(compressAvatarFile(file(32 * 1024 * 1024 + 1))).rejects.toThrow()
+    await expect(
+      compressAvatarFile(file(32 * 1024 * 1024 + 1)),
+    ).rejects.toThrow()
     expect(readers).toHaveLength(0)
+    expect(images).toHaveLength(0)
+  })
+  it.each([
+    [4032, 3024, 8],
+    [8000, 6000, 20],
+  ])(
+    'compresses phone JPEG %s by %s with extended metadata',
+    async (w, h, mb) => {
+      bytes = headerBytes(jpeg(w, h, 60 * 1024))
+      const input = file(mb * 1024 * 1024, 'image/jpeg')
+      await expect(downscaleImage(input)).resolves.toBe(
+        'data:image/webp;base64,AAAA',
+      )
+      expect(input.slice).toHaveBeenCalledWith(0, 256 * 1024)
+    },
+  )
+  it('rejects unreadable avatar headers before a full read', async () => {
+    bytes = new Uint8Array([1, 2])
+    await expect(compressAvatarFile(file(100))).rejects.toThrow()
+    expect(readers.every(r => !r.readAsDataURL.mock.calls.length)).toBe(true)
+    expect(images).toHaveLength(0)
+  })
+  it('rejects raster dimensions before the no-canvas fallback', async () => {
+    bytes = headerBytes(png(32769, 1))
+    HTMLCanvasElement.prototype.getContext = jest.fn(() => null)
+    await expect(downscaleImage(file(100))).rejects.toThrow()
+    expect(HTMLCanvasElement.prototype.getContext).not.toHaveBeenCalled()
     expect(images).toHaveLength(0)
   })
   it.each(['prefix', 'full', 'image', 'fallback'])(

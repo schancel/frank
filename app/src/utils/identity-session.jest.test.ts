@@ -352,9 +352,13 @@ test.each(['published', 'missing'] as const)(
   async answer => {
     const alice = await wallet(0, 'cold-named-profile')
     const d = device(alice)
-    mockStatus.account = {
-      displayName: 'Alice',
-      receipt: { context: { accountId: 'account-1' } },
+    d.deps.session.state = {
+      status: 'ready',
+      revision: 1,
+      account: {
+        displayName: 'Alice',
+        receipt: { context: { accountId: 'account-1' } },
+      },
     }
     const store = useProfileStore()
     store.owner = alice.identity.address.raw.toLowerCase()
@@ -387,7 +391,6 @@ test.each(['published', 'missing'] as const)(
       return fetch(...args)
     }
     relay.down = true
-    mockStatus.status = 'ready'
     await configureMessagingForTest(d.deps)
     try {
       expect(ownProfileCheck.unchecked).toBeNull()
@@ -417,6 +420,8 @@ test('an obsolete wallet opening cannot mark the replacement identity unchecked'
   const alice = await wallet(0, 'old-opening'),
     bob = await wallet(1, 'current-opening')
   const d = device(alice)
+  const status = { ...mockStatus, status: 'ready' }
+  d.deps.session.state = status
   let release!: (wallet: EvmChainWalletHandle) => void
   d.deps.session.getWallet = jest.fn(
     () =>
@@ -425,15 +430,15 @@ test('an obsolete wallet opening cannot mark the replacement identity unchecked'
       }),
   )
   await configureMessagingForTest(d.deps)
-  mockStatus.status = 'ready'
   const old = startMessaging()
   await until(() => !!release, 'old wallet opening')
-  mockStatus.revision++
-  mockStatus.account = {
+  status.revision++
+  status.account = {
     displayName: 'Bob',
     receipt: { context: { accountId: 'account-2' } },
   }
   const current = device(bob)
+  current.deps.session.state = status
   current.deps.retryDelayMs = () => 60_000
   relay.down = true
   await configureMessagingForTest(current.deps)
@@ -449,6 +454,8 @@ test('an old metadata answer cannot clear the new offline identity uncertainty',
   const alice = await wallet(0, 'old-profile-read'),
     bob = await wallet(1, 'new-offline-profile')
   const d = device(alice)
+  const status = { ...mockStatus, status: 'ready' }
+  d.deps.session.state = status
   const store = useProfileStore()
   store.owner = alice.identity.address.raw.toLowerCase()
   store.profile = { name: 'Alice' }
@@ -473,16 +480,16 @@ test('an old metadata answer cannot clear the new offline identity uncertainty',
     await oldRead
   }
   await configureMessagingForTest(d.deps)
-  mockStatus.status = 'ready'
   try {
     await startMessaging()
     await until(() => !!answer, 'old profile request')
-    mockStatus.revision++
-    mockStatus.account = {
+    status.revision++
+    status.account = {
       displayName: 'Bob',
       receipt: { context: { accountId: 'account-2' } },
     }
     const current = device(bob)
+    current.deps.session.state = status
     current.deps.retryDelayMs = () => 60_000
     relay.down = true
     await configureMessagingForTest(current.deps)

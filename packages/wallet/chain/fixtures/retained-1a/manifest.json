@@ -1,0 +1,14 @@
+{
+  "outgoing-message-store": {
+    "source": "1a2326ce0d02f351dbfdd3e67c0b5ea83692268a",
+    "path": "packages/wallet/storage/outgoing-message-store.ts",
+    "sha256": "6a11f199a8fea8f8067cff676610f5204fecb665b2014c23edafeee6ace0e8e9",
+    "bytes": 16832
+  },
+  "evm-native-operation-journal": {
+    "source": "1a2326ce0d02f351dbfdd3e67c0b5ea83692268a",
+    "path": "packages/wallet/storage/evm-native-operation-journal.ts",
+    "sha256": "776a7a267375cfbfe9c00f139839ec85ce7e3c52ac0526e3e3564c3dba7b9915",
+    "bytes": 63752
+  }
+}

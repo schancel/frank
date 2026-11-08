@@ -1,3 +1,5 @@
+// Existing configured CI registration; the imported suite is not separately discovered.
+import './retained-original-cutover.suite'
 import { mkdtempSync, rmSync } from 'fs'
 import level, { type LevelDB } from 'level'
 import { tmpdir } from 'os'

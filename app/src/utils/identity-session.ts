@@ -559,18 +559,8 @@ function isCurrent(current: Live, d: MessagingDeps): boolean {
   )
 }
 
-function refreshProfile(
-  current: Live,
-  d: MessagingDeps,
-  initial = false,
-): void {
+function refreshProfile(current: Live, d: MessagingDeps): void {
   if (!isCurrent(current, d) || current.profileRefresh) return
-  if (initial) {
-    const identity = (
-      current.wallet as unknown as { identity?: { address: { raw: string } } }
-    ).identity
-    if (identity) ownProfileCheck.unchecked = identity.address.raw.toLowerCase()
-  }
   const isCancelled = () => !isCurrent(current, d)
   const task = (async () => {
     await d.registerProfile?.({
@@ -679,6 +669,14 @@ async function startMessagingInternal(): Promise<void> {
     // the next, the old salt goes before the new wallet opens.
     if (saltAccount !== account) setConversationIdSalt(null)
     wallet = await d.session.getWallet()
+    if (!sameAccount()) return
+    // Even named, locally restored profiles are unchecked in a cold JS realm. Mark the
+    // active identity before directory work can fail; only the own-profile read/publication
+    // rule may clear it. An obsolete wallet opening must not mark the next account.
+    const identity = (
+      wallet as unknown as { identity?: { address: { raw: string } } }
+    ).identity
+    if (identity) ownProfileCheck.unchecked = identity.address.raw.toLowerCase()
     saltAccount = account
     // The chat store allocates conversation IDs from this account's private salt. It is
     // installed as soon as the wallet is at hand, before the relay is asked anything, and
@@ -795,7 +793,7 @@ async function startMessagingInternal(): Promise<void> {
       state.status = 'ready'
       state.reason = null
       d.resumeLegacy?.()
-      refreshProfile(live, d, true)
+      refreshProfile(live, d)
       return
     } catch (err) {
       console.error('[startMessaging] install failed:', err)

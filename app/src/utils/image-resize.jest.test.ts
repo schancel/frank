@@ -598,19 +598,36 @@ describe('File source admission and terminal loading', () => {
   it.each(['prefix', 'full', 'image', 'fallback'])(
     'makes %s timeout terminal even for captured late callbacks',
     async stage => {
-      jest.useFakeTimers()
+      // The repository Promise polyfill schedules continuations through nextTick.
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] })
       holdPrefix = stage === 'prefix'
       holdFull = stage === 'full' || stage === 'fallback'
       holdImage = stage === 'image'
       if (stage === 'fallback') window.Image = undefined as any
       const result = downscaleImage(file(100))
-      const rejected = expect(result).rejects.toThrow(/timed out/)
+      let settled = false
+      let failure: unknown
+      result.then(
+        () => {
+          settled = true
+        },
+        error => {
+          settled = true
+          failure = error
+        },
+      )
       await Promise.resolve()
       await Promise.resolve()
       await Promise.resolve()
       const late = readers.map(r => r.onload)
       jest.advanceTimersByTime(1600)
-      await rejected
+      await Promise.resolve()
+      await Promise.resolve()
+      await Promise.resolve()
+      expect(settled).toBe(true)
+      expect(failure).toMatchObject({
+        message: expect.stringMatching(/timed out/),
+      })
       const fullReads = readers.reduce(
         (n, r) => n + r.readAsDataURL.mock.calls.length,
         0,

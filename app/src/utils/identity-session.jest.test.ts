@@ -359,13 +359,27 @@ test.each(['published', 'missing'] as const)(
     const store = useProfileStore()
     store.owner = alice.identity.address.raw.toLowerCase()
     store.profile = { name: 'Alice' }
-    const read = jest.spyOn(identityApi, 'fetchEvmProfileSnapshot').mockResolvedValue({
-      profile: answer === 'published' ? { name: 'Alice' } as ProfileInfo : undefined,
-      precondition: answer === 'published' ? { kind: 'matches', digest: '0'.repeat(64) } : { kind: 'absent' },
-    })
-    const publish = jest.spyOn(identityApi, 'registerMonadIdentityCbor').mockResolvedValue(undefined)
+    const read = jest
+      .spyOn(identityApi, 'fetchEvmProfileSnapshot')
+      .mockResolvedValue({
+        profile:
+          answer === 'published'
+            ? ({ name: 'Alice' } as ProfileInfo)
+            : undefined,
+        precondition:
+          answer === 'published'
+            ? { kind: 'matches', digest: '0'.repeat(64) }
+            : { kind: 'absent' },
+      })
+    const publish = jest
+      .spyOn(identityApi, 'registerMonadIdentityCbor')
+      .mockResolvedValue(undefined)
     d.deps.registerProfile = jest.fn(async ({ wallet, isCancelled }) => {
-      await syncOwnProfileWithRelay({ relayBaseUrl: RELAY, identity: (wallet as EvmChainWalletHandle).identity, isCancelled })
+      await syncOwnProfileWithRelay({
+        relayBaseUrl: RELAY,
+        identity: (wallet as EvmChainWalletHandle).identity,
+        isCancelled,
+      })
     })
     const fetch = d.deps.directory.fetch
     d.deps.directory.fetch = (...args) => {
@@ -384,7 +398,12 @@ test.each(['published', 'missing'] as const)(
       expect(d.deps.registerProfile).not.toHaveBeenCalled()
       expect(read).not.toHaveBeenCalled()
       relay.down = false
-      await until(() => messagingState.status === 'ready' && ownProfileCheck.unchecked === null, 'answered metadata after directory retry')
+      await until(
+        () =>
+          messagingState.status === 'ready' &&
+          ownProfileCheck.unchecked === null,
+        'answered metadata after directory retry',
+      )
       expect(read).toHaveBeenCalledTimes(1)
       expect(publish).toHaveBeenCalledTimes(answer === 'missing' ? 1 : 0)
     } finally {
@@ -395,16 +414,25 @@ test.each(['published', 'missing'] as const)(
 )
 
 test('an obsolete wallet opening cannot mark the replacement identity unchecked', async () => {
-  const alice = await wallet(0, 'old-opening'), bob = await wallet(1, 'current-opening')
+  const alice = await wallet(0, 'old-opening'),
+    bob = await wallet(1, 'current-opening')
   const d = device(alice)
   let release!: (wallet: EvmChainWalletHandle) => void
-  d.deps.session.getWallet = jest.fn(() => new Promise<EvmChainWalletHandle>(resolve => { release = resolve }))
+  d.deps.session.getWallet = jest.fn(
+    () =>
+      new Promise<EvmChainWalletHandle>(resolve => {
+        release = resolve
+      }),
+  )
   await configureMessagingForTest(d.deps)
   mockStatus.status = 'ready'
   const old = startMessaging()
   await until(() => !!release, 'old wallet opening')
   mockStatus.revision++
-  mockStatus.account = { displayName: 'Bob', receipt: { context: { accountId: 'account-2' } } }
+  mockStatus.account = {
+    displayName: 'Bob',
+    receipt: { context: { accountId: 'account-2' } },
+  }
   const current = device(bob)
   current.deps.retryDelayMs = () => 60_000
   relay.down = true
@@ -418,16 +446,30 @@ test('an obsolete wallet opening cannot mark the replacement identity unchecked'
 })
 
 test('an old metadata answer cannot clear the new offline identity uncertainty', async () => {
-  const alice = await wallet(0, 'old-profile-read'), bob = await wallet(1, 'new-offline-profile')
+  const alice = await wallet(0, 'old-profile-read'),
+    bob = await wallet(1, 'new-offline-profile')
   const d = device(alice)
   const store = useProfileStore()
   store.owner = alice.identity.address.raw.toLowerCase()
   store.profile = { name: 'Alice' }
-  let answer!: (value: Awaited<ReturnType<typeof identityApi.fetchEvmProfileSnapshot>>) => void
-  const read = jest.spyOn(identityApi, 'fetchEvmProfileSnapshot').mockImplementation(() => new Promise(resolve => { answer = resolve }))
+  let answer!: (
+    value: Awaited<ReturnType<typeof identityApi.fetchEvmProfileSnapshot>>,
+  ) => void
+  const read = jest
+    .spyOn(identityApi, 'fetchEvmProfileSnapshot')
+    .mockImplementation(
+      () =>
+        new Promise(resolve => {
+          answer = resolve
+        }),
+    )
   let oldRead: Promise<unknown> | undefined
   d.deps.registerProfile = async ({ wallet, isCancelled }) => {
-    oldRead = syncOwnProfileWithRelay({ relayBaseUrl: RELAY, identity: (wallet as EvmChainWalletHandle).identity, isCancelled })
+    oldRead = syncOwnProfileWithRelay({
+      relayBaseUrl: RELAY,
+      identity: (wallet as EvmChainWalletHandle).identity,
+      isCancelled,
+    })
     await oldRead
   }
   await configureMessagingForTest(d.deps)
@@ -436,14 +478,20 @@ test('an old metadata answer cannot clear the new offline identity uncertainty',
     await startMessaging()
     await until(() => !!answer, 'old profile request')
     mockStatus.revision++
-    mockStatus.account = { displayName: 'Bob', receipt: { context: { accountId: 'account-2' } } }
+    mockStatus.account = {
+      displayName: 'Bob',
+      receipt: { context: { accountId: 'account-2' } },
+    }
     const current = device(bob)
     current.deps.retryDelayMs = () => 60_000
     relay.down = true
     await configureMessagingForTest(current.deps)
     await startMessaging()
     expect(ownProfileCheck.unchecked).toBe(bob.identity.address.raw.toLowerCase())
-    answer({ profile: { name: 'Late Alice' } as ProfileInfo, precondition: { kind: 'matches', digest: '0'.repeat(64) } })
+    answer({
+      profile: { name: 'Late Alice' } as ProfileInfo,
+      precondition: { kind: 'matches', digest: '0'.repeat(64) },
+    })
     await oldRead
     expect(ownProfileCheck.unchecked).toBe(bob.identity.address.raw.toLowerCase())
     expect(store.profile).toEqual({ name: 'Alice' })

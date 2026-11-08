@@ -8,6 +8,27 @@
  * 3. Returning the original input untouched if already within constraints.
  */
 
+import { imageDimensions, rasterKindFromHeader } from './image-dimensions'
+
+// Source admission is separate from compressed output and received-message limits.
+const MAX_SOURCE_BYTES = 32 * 1024 * 1024
+const MAX_SOURCE_PIXELS = 64_000_000
+const MAX_SOURCE_EDGE = 32768
+const SOURCE_HEADER_BYTES = 256 * 1024
+
+export class ImageSourceError extends Error {
+  constructor(
+    readonly reason:
+      | 'too large'
+      | 'unreadable image header'
+      | 'empty image'
+      | 'dimensions too large',
+  ) {
+    super(reason)
+    this.name = 'ImageSourceError'
+  }
+}
+
 export const DEFAULT_MAX_DIMENSION = 800
 export const DEFAULT_MAX_BYTES = 150 * 1024 // 150 KB (153,600 bytes)
 export const DEFAULT_QUALITY = 0.82
@@ -123,127 +144,154 @@ export function canvasToCompressedDataUrl(
   return null
 }
 
-/**
- * Loads an image from a File, Blob, or base64 data URL into an HTMLImageElement.
+/** Admit a local source before any full read; unknown formats retain byte-only admission.
+ * SVG/AVIF/HEIC pixel and decode-memory budgets remain unproved.
  */
-function loadImageSource(
-  input: File | Blob | string,
-): Promise<{ img: HTMLImageElement; rawDataUrl: string }> {
+export function readImageFile(input: File | Blob): Promise<string> {
   return new Promise((resolve, reject) => {
-    if (typeof Image === 'undefined') {
-      reject(new Error('Image constructor not available in environment'))
+    if (
+      !Number.isFinite(input.size) ||
+      input.size < 0 ||
+      input.size > MAX_SOURCE_BYTES
+    ) {
+      reject(new ImageSourceError('too large'))
       return
     }
+    if (input.type && !input.type.startsWith('image/')) {
+      reject(new Error('File is not a valid image'))
+      return
+    }
+    if (typeof FileReader === 'undefined') {
+      reject(new Error('FileReader not available'))
+      return
+    }
+    let settled = false
+    const reader = new FileReader()
+    const clear = () => {
+      clearTimeout(timer)
+      reader.onload = null
+      reader.onerror = null
+      reader.onabort = null
+    }
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      clear()
+      if (reader.readyState === 1) reader.abort()
+      reject(error)
+    }
+    const timer = setTimeout(
+      () => fail(new Error('Image file reading timed out')),
+      1500,
+    )
+    const readFull = () => {
+      if (settled) return
+      reader.onload = event => {
+        if (settled) return
+        const result = event.target?.result
+        if (typeof result !== 'string' || !result) {
+          fail(new Error('Failed to read image file'))
+          return
+        }
+        settled = true
+        clear()
+        resolve(result)
+      }
+      try {
+        reader.readAsDataURL(input)
+      } catch {
+        fail(new Error('Failed to read image file'))
+      }
+    }
+    reader.onerror = () => fail(new Error('Failed to read image file'))
+    reader.onabort = () => fail(new Error('Image file reading aborted'))
+    const declaredKind = /^image\/(png|jpeg|gif|webp)$/.exec(input.type)?.[1]
+    reader.onload = event => {
+      if (settled) return
+      const result = event.target?.result
+      if (!(result instanceof ArrayBuffer)) {
+        fail(new ImageSourceError('unreadable image header'))
+        return
+      }
+      const bytes = new Uint8Array(result)
+      const kind = declaredKind ?? rasterKindFromHeader(bytes)
+      if (!kind) {
+        readFull()
+        return
+      }
+      const dims = imageDimensions(kind, bytes)
+      if (!dims) {
+        fail(new ImageSourceError('unreadable image header'))
+        return
+      }
+      if (dims[0] < 1 || dims[1] < 1) {
+        fail(new ImageSourceError('empty image'))
+        return
+      }
+      if (
+        dims[0] > MAX_SOURCE_EDGE ||
+        dims[1] > MAX_SOURCE_EDGE ||
+        dims[0] * dims[1] > MAX_SOURCE_PIXELS
+      ) {
+        fail(new ImageSourceError('dimensions too large'))
+        return
+      }
+      readFull()
+    }
+    try {
+      reader.readAsArrayBuffer(
+        input.slice(0, Math.min(input.size, SOURCE_HEADER_BYTES)),
+      )
+    } catch {
+      fail(new Error('Failed to read image header'))
+    }
+  })
+}
 
+/** The untrusted File path must wait for actual load, never the string shortcut. */
+function loadImageSource(
+  input: string,
+  trustedString: boolean,
+): Promise<{ img: HTMLImageElement; rawDataUrl: string }> {
+  return new Promise((resolve, reject) => {
     const img = new Image()
     img.crossOrigin = 'Anonymous'
     let settled = false
-
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true
-        reject(new Error('Image decoding timed out'))
-      }
-    }, 1500)
-
-    const finish = (dataUrl: string) => {
+    let fallbackTimer: ReturnType<typeof setTimeout> | undefined
+    const clear = () => {
+      clearTimeout(timeout)
+      clearTimeout(fallbackTimer)
+      img.onload = null
+      img.onerror = null
+    }
+    const fail = (error: Error) => {
       if (settled) return
       settled = true
-      clearTimeout(timeout)
-      resolve({ img, rawDataUrl: dataUrl })
+      clear()
+      img.src = ''
+      reject(error)
     }
-
-    img.onerror = () => {
-      if (!settled) {
-        settled = true
-        clearTimeout(timeout)
-        reject(new Error('Failed to decode image'))
-      }
+    const timeout = setTimeout(
+      () => fail(new Error('Image decoding timed out')),
+      1500,
+    )
+    const finish = () => {
+      if (settled) return
+      settled = true
+      clear()
+      // Keep the successfully loaded source until the caller finishes compression.
+      resolve({ img, rawDataUrl: input })
     }
-
-    if (typeof input === 'string') {
-      const fallbackTimer = setTimeout(() => {
-        if (!settled && input.length <= 40 * 1024) {
-          finish(input)
-        }
-      }, 50)
-
-      img.onload = () => {
-        clearTimeout(fallbackTimer)
-        finish(input)
-      }
-      img.onerror = () => {
-        clearTimeout(fallbackTimer)
-        if (!settled) {
-          settled = true
-          clearTimeout(timeout)
-          reject(new Error('Failed to decode image'))
-        }
-      }
+    if (trustedString && input.length <= 40 * 1024) {
+      fallbackTimer = setTimeout(finish, 50)
+    }
+    img.onload = finish
+    img.onerror = () => fail(new Error('Failed to decode image'))
+    try {
       img.src = input
-      if (img.complete && (img.naturalWidth !== 0 || img.width !== 0)) {
-        clearTimeout(fallbackTimer)
-        finish(input)
-      }
-    } else {
-      if (input.type && !input.type.startsWith('image/')) {
-        settled = true
-        clearTimeout(timeout)
-        reject(new Error('File is not a valid image'))
-        return
-      }
-
-      if (typeof FileReader === 'undefined') {
-        settled = true
-        clearTimeout(timeout)
-        reject(new Error('FileReader not available'))
-        return
-      }
-
-      const reader = new FileReader()
-      reader.onload = evt => {
-        const dataUrl = evt.target?.result as string
-        if (!dataUrl) {
-          if (!settled) {
-            settled = true
-            clearTimeout(timeout)
-            reject(new Error('Failed to read image file'))
-          }
-          return
-        }
-
-        const fallbackTimer = setTimeout(() => {
-          if (!settled && dataUrl.length <= 40 * 1024) {
-            finish(dataUrl)
-          }
-        }, 50)
-
-        img.onload = () => {
-          clearTimeout(fallbackTimer)
-          finish(dataUrl)
-        }
-        img.onerror = () => {
-          clearTimeout(fallbackTimer)
-          if (!settled) {
-            settled = true
-            clearTimeout(timeout)
-            reject(new Error('Failed to decode image'))
-          }
-        }
-        img.src = dataUrl
-        if (img.complete && (img.naturalWidth !== 0 || img.width !== 0)) {
-          clearTimeout(fallbackTimer)
-          finish(dataUrl)
-        }
-      }
-      reader.onerror = () => {
-        if (!settled) {
-          settled = true
-          clearTimeout(timeout)
-          reject(new Error('Failed to read image file'))
-        }
-      }
-      reader.readAsDataURL(input)
+      if (img.complete && (img.naturalWidth !== 0 || img.width !== 0)) finish()
+    } catch {
+      fail(new Error('Failed to decode image'))
     }
   })
 }
@@ -327,45 +375,24 @@ export async function downscaleImage(
   const maxDim = options?.maxDimension ?? DEFAULT_MAX_DIMENSION
   const maxBytes = options?.maxBytes ?? DEFAULT_MAX_BYTES
 
-  // Fast path for non-browser/non-DOM environments
+  // Admission precedes even DOM/canvas probing and non-browser fallback reads.
+  const isInputString = typeof input === 'string'
+  const dataUrl = typeof input === 'string' ? input : await readImageFile(input)
   if (typeof document === 'undefined' || typeof Image === 'undefined') {
-    if (typeof input === 'string') return input
-    if (typeof FileReader !== 'undefined') {
-      return new Promise((resolve, reject) => {
-        const reader = new FileReader()
-        reader.onload = evt => resolve((evt.target?.result as string) || '')
-        reader.onerror = reject
-        reader.readAsDataURL(input)
-      })
-    }
-    return ''
+    return dataUrl
   }
-
-  // Fast path if Canvas 2D context is unavailable in current environment
   try {
     const testCanvas = document.createElement('canvas')
-    if (!testCanvas.getContext || !testCanvas.getContext('2d')) {
-      if (typeof input === 'string') return input
-      if (typeof FileReader !== 'undefined') {
-        return new Promise((resolve, reject) => {
-          const reader = new FileReader()
-          reader.onload = evt => resolve((evt.target?.result as string) || '')
-          reader.onerror = reject
-          reader.readAsDataURL(input)
-        })
-      }
-      return ''
-    }
+    if (!testCanvas.getContext || !testCanvas.getContext('2d')) return dataUrl
   } catch {
-    if (typeof input === 'string') return input
+    if (isInputString) return dataUrl
   }
 
-  const { img, rawDataUrl } = await loadImageSource(input)
+  const { img, rawDataUrl } = await loadImageSource(dataUrl, isInputString)
 
   const naturalWidth = img.naturalWidth || img.width || 0
   const naturalHeight = img.naturalHeight || img.height || 0
   const rawSize = getImageByteSize(rawDataUrl)
-  const isInputString = typeof input === 'string'
   const inputSize = isInputString ? input.length : input.size
 
   // If already within all constraints, return original without re-compressing

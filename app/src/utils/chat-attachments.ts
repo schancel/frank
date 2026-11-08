@@ -36,6 +36,7 @@ import {
   replaceAttachmentReferences,
   type PostAttachment,
 } from './post-editor'
+import { ImageSourceError } from './image-resize'
 
 /** What a picked picture is downscaled and re-encoded towards: three fit one message. */
 export const CHAT_IMAGE_TARGET = { maxDimension: 1280, maxBytes: 160 * 1024 }
@@ -71,8 +72,15 @@ export async function prepareChatImage(
   }
   try {
     dataUrl = (await compressPostImage(file, CHAT_IMAGE_TARGET)).dataUrl
-  } catch {
-    return { ok: false, name, reasonKey: 'reasonNotAnImage' }
+  } catch (error) {
+    return {
+      ok: false,
+      name,
+      reasonKey:
+        error instanceof ImageSourceError
+          ? IMAGE_REASON_KEYS[error.reason] ?? 'reasonNotAnImage'
+          : 'reasonNotAnImage',
+    }
   }
   const check = inspectImageDataUri(dataUrl, SENT_IMAGE_LIMITS)
   if (check.ok)

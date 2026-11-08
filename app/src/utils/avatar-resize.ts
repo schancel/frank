@@ -1,3 +1,5 @@
+import { readImageFile } from './image-resize'
+
 export const MAX_AVATAR_DIMENSION = 512
 export const MAX_AVATAR_BYTES = 65536
 export const DEFAULT_AVATAR_QUALITY = 0.8
@@ -229,11 +231,23 @@ export function compressAvatarDataUrl(
     const img = new Image()
     img.crossOrigin = 'Anonymous'
     let settled = false
+    const clear = () => {
+      clearTimeout(timer)
+      img.onload = null
+      img.onerror = null
+    }
+    const fail = (error: Error) => {
+      if (settled) return
+      settled = true
+      clear()
+      img.src = ''
+      reject(error)
+    }
 
     const finish = () => {
       if (settled) return
       settled = true
-      clearTimeout(timer)
+      clear()
       try {
         const maxDimension = options?.maxDimension ?? MAX_AVATAR_DIMENSION
         const maxBytes = options?.maxBytes ?? MAX_AVATAR_BYTES
@@ -251,29 +265,25 @@ export function compressAvatarDataUrl(
           throw new Error('Avatar cannot fit within the byte limit')
         resolve(compressed)
       } catch (err) {
+        img.src = ''
         reject(err)
       }
     }
 
     const timer = setTimeout(() => {
-      if (!settled) {
-        settled = true
-        reject(new Error('Avatar image compression timed out'))
-      }
+      fail(new Error('Avatar image compression timed out'))
     }, 1500)
 
     img.onload = finish
     img.onerror = () => {
-      if (!settled) {
-        settled = true
-        clearTimeout(timer)
-        reject(new Error('Failed to load avatar image for compression'))
-      }
+      fail(new Error('Failed to load avatar image for compression'))
     }
 
-    img.src = dataUrl
-    if (img.complete && (img.naturalWidth !== 0 || img.width !== 0)) {
-      finish()
+    try {
+      img.src = dataUrl
+      if (img.complete && (img.naturalWidth !== 0 || img.width !== 0)) finish()
+    } catch {
+      fail(new Error('Failed to load avatar image for compression'))
     }
   })
 }
@@ -281,23 +291,9 @@ export function compressAvatarDataUrl(
 /**
  * Reads a File/Blob, resizes it using canvas, and returns a compressed data URL under maxBytes.
  */
-export function compressAvatarFile(
+export async function compressAvatarFile(
   file: Blob | File,
   options?: AvatarResizeOptions,
 ): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader()
-    reader.onload = evt => {
-      const dataUrl = evt.target?.result as string
-      if (!dataUrl) {
-        reject(new Error('Failed to read avatar file'))
-        return
-      }
-      compressAvatarDataUrl(dataUrl, options).then(resolve, reject)
-    }
-    reader.onerror = () => {
-      reject(new Error('Failed to read avatar file'))
-    }
-    reader.readAsDataURL(file)
-  })
+  return compressAvatarDataUrl(await readImageFile(file), options)
 }

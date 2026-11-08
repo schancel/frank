@@ -12,9 +12,41 @@ import {
 } from './image-data-uri.fixtures'
 import {
   DELIVERED_IMAGE_LIMITS,
+  inspectImageBytes,
   inspectImageDataUri,
   THUMBNAIL_LIMITS,
 } from './image-data-uri'
+import { imageDimensions } from './image-dimensions'
+
+describe('shared header parser and received policy', () => {
+  it.each([
+    ['png', png(320, 200)],
+    ['gif', gif(320, 200)],
+    ['jpeg', jpeg(320, 200)],
+    ['webp', webpX(320, 200)],
+    ['webp', webpL(320, 200)],
+    ['webp', webpLossy(320, 200)],
+  ])('keeps %s byte and URI inspection equivalent', (kind, uri) => {
+    const bytes = new Uint8Array(Buffer.from(uri.split(',')[1], 'base64'))
+    expect(imageDimensions(kind, bytes)).toEqual([320, 200])
+    expect(inspectImageBytes(bytes, `image/${kind}`)).toEqual(
+      inspectImageDataUri(uri, DELIVERED_IMAGE_LIMITS),
+    )
+    for (const length of [0, 2, 9]) {
+      const truncated = bytes.subarray(0, length)
+      expect(imageDimensions(kind, truncated)).toBeUndefined()
+      expect(inspectImageBytes(truncated, `image/${kind}`).ok).toBe(false)
+    }
+  })
+
+  it('keeps the received 48 KiB header budget distinct from source admission', () => {
+    const uri = jpeg(320, 200, 60 * 1024)
+    const bytes = new Uint8Array(Buffer.from(uri.split(',')[1], 'base64'))
+    expect(imageDimensions('jpeg', bytes)).toEqual([320, 200])
+    expect(inspectImageBytes(bytes, 'image/jpeg').ok).toBe(false)
+    expect(inspectImageDataUri(uri, DELIVERED_IMAGE_LIMITS).ok).toBe(false)
+  })
+})
 
 describe('inspectImageDataUri', () => {
   it.each([

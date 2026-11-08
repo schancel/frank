@@ -38,16 +38,16 @@ export const gif = (w: number, h: number) =>
     0,
     0,
   ])}`
-// SOI, an APP1 segment of 300 bytes (EXIF-like) BEFORE the SOF0 that carries the size.
-export const jpeg = (w: number, h: number) =>
+// SOI, an APP1 segment (EXIF-like) BEFORE the SOF0 that carries the size.
+export const jpeg = (w: number, h: number, metadataBytes = 300) =>
   `data:image/jpeg;base64,${b64([
     0xff,
     0xd8,
     0xff,
     0xe1,
-    0x01,
-    0x2c,
-    ...new Array(298).fill(0),
+    (metadataBytes >> 8) & 255,
+    metadataBytes & 255,
+    ...new Array(metadataBytes - 2).fill(0),
     0xff,
     0xc0,
     0x00,

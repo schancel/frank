@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+import { png as sourcePng } from './image-data-uri.fixtures'
 import {
   MAX_AVATAR_BYTES,
   MAX_AVATAR_DIMENSION,
@@ -291,7 +292,14 @@ describe('avatar resizing and compression utilities', () => {
       window.Image = MockImage as any
 
       try {
-        const blob = new Blob(['fake image data'], { type: 'image/png' })
+        const blob = new Blob(
+          [
+            new Uint8Array(
+              Buffer.from(sourcePng(960, 960).split(',')[1], 'base64'),
+            ),
+          ],
+          { type: 'image/png' },
+        )
         const file = new File([blob], 'avatar.png', { type: 'image/png' })
         const result = await compressAvatarFile(file, { maxBytes: 4096 })
         expect(result).toBe(compressedUrl)

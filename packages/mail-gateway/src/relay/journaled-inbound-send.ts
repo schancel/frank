@@ -29,6 +29,7 @@ export interface JournaledInboundSendOptions {
   readonly ledger: CreditLedger;
   readonly journal: MailJournal;
   readonly blobStore?: BlobStore;
+  readonly operatorAccountAddress?: string;
   readonly heldAutoResponder?: Pick<
     HeldEmailAutoResponder,
     'processHeldEmails'
@@ -62,6 +63,7 @@ export class JournaledInboundSend {
   private readonly ledger: CreditLedger;
   private readonly journal: MailJournal;
   private readonly blobStore?: BlobStore;
+  private readonly operatorAccountAddress?: string;
   private readonly heldAutoResponder?: Pick<
     HeldEmailAutoResponder,
     'processHeldEmails'
@@ -73,6 +75,7 @@ export class JournaledInboundSend {
     this.ledger = options.ledger;
     this.journal = options.journal;
     this.blobStore = options.blobStore;
+    this.operatorAccountAddress = options.operatorAccountAddress?.trim().toLowerCase();
     this.heldAutoResponder = options.heldAutoResponder;
     this.journal.assertCreditLedger(this.ledger);
     if (this.chain.chainIdentifier !== this.journal.chainIdentifier) {
@@ -115,7 +118,8 @@ export class JournaledInboundSend {
           references: threadHeaders.references,
         });
       const isOperatorMailbox =
-        mailboxLocalPart !== undefined && isOperatorMailboxLocalPart(mailboxLocalPart);
+        scope === this.operatorAccountAddress && mailboxLocalPart !== undefined &&
+        isOperatorMailboxLocalPart(mailboxLocalPart);
       // The host already resolved the recipient through the shared SMTP/webhook lookup.
       // Relay usernames and direct account addresses need no local issuance row.
       const introductory = !isOperatorMailbox && !this.journal.hasInboundSender(sender);

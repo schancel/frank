@@ -186,6 +186,7 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       journal,
       blobStore,
       heldAutoResponder,
+      ...(input.operatorAccountAddress ? { operatorAccountAddress: input.operatorAccountAddress } : {}),
     });
     const securePortal =
       input.secureMessagePortal ??

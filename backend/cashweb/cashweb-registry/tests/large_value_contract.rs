@@ -124,6 +124,142 @@ fn scoped_s3(scope: &str) -> Arc<S3ObjectStore> {
     Arc::new(S3ObjectStore::new(config).unwrap())
 }
 
+// These cases deliberately exercise only the existing HTTP object capability,
+// without booting FDB. The integration target still links the FDB native client.
+fn gcs_negative_config(
+    read_env: impl Fn(&str) -> Result<String, std::env::VarError>,
+    scope: &str,
+) -> Result<S3BlobStoreConfig, String> {
+    let config = fixture_s3_config(&read_env, scope)?;
+    let run = read_env("FRANK_LAB_RUN_ID").map_err(|_| "disposable run required")?;
+    let prefix = read_env("FRANK_LAB_S3_PREFIX").map_err(|_| "explicit run prefix required")?;
+    if config.api != cashweb_config::S3Api::GcsXml
+        || config.endpoint != "https://storage.googleapis.com"
+        || prefix != format!("contract/{run}")
+    {
+        return Err("explicit GCS XML endpoint and disposable run prefix required".into());
+    }
+    Ok(config)
+}
+
+fn gcs_negative_fixture(scope: &str) -> (S3BlobStoreConfig, S3ObjectStore) {
+    let config = match gcs_negative_config(|name| std::env::var(name), scope) {
+        Ok(config) => config,
+        Err(_) => panic!("invalid disposable GCS fixture"),
+    };
+    let objects = match S3ObjectStore::new(config.clone()) {
+        Ok(objects) => objects,
+        Err(_) => panic!("GCS fixture client unavailable"),
+    };
+    for key in ["control-before", "attempt", "control-after"] {
+        gcs_absent(&objects, key);
+    }
+    (config, objects)
+}
+
+fn gcs_absent(objects: &dyn ObjectStore, key: &str) {
+    assert!(
+        matches!(objects.get(key), Ok(None)),
+        "GCS GET absence unconfirmed"
+    );
+    assert!(
+        matches!(objects.contains(key), Ok(false)),
+        "GCS HEAD absence unconfirmed"
+    );
+}
+
+fn gcs_positive_control(objects: &dyn ObjectStore, key: &str) {
+    let bytes = b"\x00GCS control\xff";
+    let hash: [u8; 32] = Sha256::digest(bytes).into();
+    assert!(
+        matches!(objects.put_if_absent(key, bytes, &hash), Ok(true)),
+        "GCS control create refused"
+    );
+    assert!(
+        matches!(objects.get(key), Ok(Some(value)) if value.as_slice() == &bytes[..]),
+        "GCS control bytes differ"
+    );
+    assert!(
+        matches!(objects.contains(key), Ok(true)),
+        "GCS control HEAD refused"
+    );
+    let replacement = b"different control bytes";
+    let replacement_hash: [u8; 32] = Sha256::digest(replacement).into();
+    assert!(
+        matches!(objects.put_if_absent(key, replacement, &replacement_hash), Ok(false)),
+        "GCS conditional collision admitted"
+    );
+    assert!(
+        matches!(objects.get(key), Ok(Some(value)) if value.as_slice() == &bytes[..]),
+        "GCS collision changed bytes"
+    );
+}
+
+#[test]
+#[ignore = "requires explicitly admitted disposable GCS XML fixture"]
+fn gcs_xml_wrong_secret_conditional_put_is_refused_without_object() {
+    let (mut config, valid) = gcs_negative_fixture("gcs-negative-wrong-secret");
+    gcs_positive_control(&valid, "control-before");
+    assert!(
+        config.secret_access_key.len() == 40 && config.secret_access_key.is_ascii(),
+        "GCS HMAC secret shape invalid"
+    );
+    let replacement = if config.secret_access_key.starts_with('A') {
+        "B"
+    } else {
+        "A"
+    };
+    config.secret_access_key.replace_range(..1, replacement);
+    let wrong = match S3ObjectStore::new(config) {
+        Ok(objects) => objects,
+        Err(_) => panic!("negative GCS fixture client unavailable"),
+    };
+    let bytes = b"\x00wrong-secret attempt\xff";
+    let hash: [u8; 32] = Sha256::digest(bytes).into();
+    let refused = wrong.put_if_absent("attempt", bytes, &hash).is_err();
+    let absent = matches!(valid.get("attempt"), Ok(None))
+        && matches!(valid.contains("attempt"), Ok(false));
+    gcs_positive_control(&valid, "control-after");
+    for key in ["control-before", "control-after"] {
+        assert!(valid.delete(key).is_ok(), "GCS control cleanup refused");
+        gcs_absent(&valid, key);
+    }
+    assert!(refused, "GCS wrong-secret request was not refused");
+    assert!(
+        absent,
+        "GCS wrong-secret request left an object or absence was unconfirmed"
+    );
+    gcs_absent(&valid, "attempt");
+}
+
+#[test]
+#[ignore = "requires explicitly admitted disposable GCS XML fixture"]
+fn gcs_xml_wrong_payload_hash_conditional_put_is_refused_without_object() {
+    let (_, valid) = gcs_negative_fixture("gcs-negative-payload-hash");
+    gcs_positive_control(&valid, "control-before");
+    let bytes = b"\x00payload-hash attempt\xff";
+    let actual_hash: [u8; 32] = Sha256::digest(bytes).into();
+    let wrong_hash: [u8; 32] = Sha256::digest(b"different declared payload").into();
+    assert!(actual_hash != wrong_hash, "negative payload hash must differ");
+    let refused = valid.put_if_absent("attempt", bytes, &wrong_hash).is_err();
+    let absent = matches!(valid.get("attempt"), Ok(None))
+        && matches!(valid.contains("attempt"), Ok(false));
+    gcs_positive_control(&valid, "control-after");
+    for key in ["control-before", "control-after"] {
+        assert!(valid.delete(key).is_ok(), "GCS control cleanup refused");
+        gcs_absent(&valid, key);
+    }
+    assert!(
+        refused,
+        "GCS payload-hash mismatch request was not refused"
+    );
+    assert!(
+        absent,
+        "GCS payload-hash mismatch left an object or absence was unconfirmed"
+    );
+    gcs_absent(&valid, "attempt");
+}
+
 /// One relay's view: its own FDB client and its own S3 client.
 fn relay(kv: &Arc<FoundationDbKvStore>, objects: &Arc<S3ObjectStore>) -> GroupStore {
     GroupStore::new(kv.clone(), objects.clone())
@@ -689,6 +825,46 @@ mod fixture_config_tests {
             |name| values.get(name).cloned().ok_or(VarError::NotPresent),
             scope,
         )
+    }
+
+    #[test]
+    fn gcs_negative_config_requires_explicit_endpoint_api_and_run_prefix() {
+        let mut values = inputs();
+        values.insert("FRANK_LAB_S3_API", "gcs_xml".into());
+        values.insert("FRANK_LAB_S3_PREFIX", "contract/fixture-1".into());
+        values.insert(
+            "FRANK_LAB_S3_ENDPOINT",
+            "https://storage.googleapis.com".into(),
+        );
+        let read = |values: &HashMap<&str, String>| {
+            super::gcs_negative_config(
+                |name| values.get(name).cloned().ok_or(VarError::NotPresent),
+                "gcs-negative-wrong-secret",
+            )
+        };
+        assert_eq!(
+            read(&values).unwrap().prefix,
+            "contract/fixture-1/gcs-negative-wrong-secret"
+        );
+        for (name, invalid) in [
+            ("FRANK_LAB_S3_API", "s3"),
+            ("FRANK_LAB_S3_API", ""),
+            ("FRANK_LAB_S3_ENDPOINT", "http://storage.googleapis.com"),
+            ("FRANK_LAB_S3_ENDPOINT", "https://objects.invalid"),
+            ("FRANK_LAB_S3_ENDPOINT", "https://storage.googleapis.com/"),
+            ("FRANK_LAB_S3_PREFIX", "lab-fixture-1"),
+            ("FRANK_LAB_S3_PREFIX", "contract/other-run"),
+            ("FRANK_LAB_S3_PREFIX", "contract/fixture-1/"),
+        ] {
+            let mut invalid_values = values.clone();
+            invalid_values.insert(name, invalid.into());
+            assert!(read(&invalid_values).is_err());
+        }
+        for name in ["FRANK_LAB_S3_API", "FRANK_LAB_S3_PREFIX"] {
+            let mut missing = values.clone();
+            missing.remove(name);
+            assert!(read(&missing).is_err());
+        }
     }
 
     #[test]

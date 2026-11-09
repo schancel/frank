@@ -7,6 +7,8 @@ import { HeldEmailAutoResponder } from '../src/mta/held-email-auto-responder';
 import { CreditLedger } from '../src/ledger/credit-ledger';
 import { createJournaledMailHost, type JournaledMailHost } from '../src/host/journaled-mail-host';
 import { buildStripeWebhookSignatureHeader } from '../src/http/checkout-server';
+import { createIssuedMailboxLookup } from '../src/smtp/issued-mailbox-lookup';
+import { JournaledSmtpIngress } from '../src/smtp/journaled-smtp-ingress';
 import { parseRawRfc822 } from '../src/smtp/smtp-listener';
 
 const GATEWAY = `0x${'9'.repeat(40)}`;
@@ -187,16 +189,67 @@ describe('first authenticated mail introductory postage through the production h
     expect(attempts.size).toBe(1);
   });
 
-  it('does not subsidize unissued or forged mail; suppresses automated receipts without undoing accepted delivery', async () => {
-    expect(admit('unissued', RECIPIENT, 'unissued')).toEqual({ kind: 'held' });
-    expect(ledger.getBalance(SENDER)).toBe(0);
-    const forged = Buffer.from('From: someone@example.org\r\n\r\nForged');
-    expect(() => host.inbound.admit({ email: parseRawRfc822(forged), authenticatedSenderEmail: SENDER, verifiedTransportId: 'untrusted' }, RECIPIENT, 1000n, undefined, 'alice')).toThrow('differ');
-    expect(ledger.getBalance(SENDER)).toBe(0);
-    await restart();
-    expect(admit('existing-sender')).toEqual({ kind: 'held' });
+  function smtpIngress() {
+    return new JournaledSmtpIngress({
+      gatewayDomain: 'gateway.example', sender: host.inbound, stampValue: 1000n,
+      issuedMailboxLookup: createIssuedMailboxLookup(host.journal, {
+        relayUrl: 'https://relay.example',
+        fetcher: (async (url: string | URL | Request) => String(url).endsWith('/usernames/relayuser')
+          ? new Response(JSON.stringify({ address: RECIPIENT }), { status: 200 })
+          : new Response('', { status: 404 })) as typeof fetch,
+      }),
+      authentication: { authenticatedAuthor: async () => SENDER },
+    });
+  }
+
+  function smtpMail(id: string, localPart: string, from = SENDER) {
+    return Buffer.from(`From: ${from}\r\nTo: ${localPart}@gateway.example\r\nMessage-ID: <${id}@example.org>\r\nSubject: ${id}\r\n\r\nBody`);
+  }
+
+  const envelope = (localPart: string) => ({
+    clientIp: '192.0.2.1', helo: 'sender.example.org', mailFrom: SENDER,
+    recipients: [`${localPart}@gateway.example`],
   });
 
+  it('introduces a real relay-resolved username without creating or requiring an issued alias row', async () => {
+    expect(host.journal.issuedMailbox('relayuser')).toBeUndefined();
+    const raw = smtpMail('relay-first', 'relayuser');
+    const ingress = smtpIngress();
+    await Promise.all([ingress.accept(raw, envelope('relayuser')), ingress.accept(raw, envelope('relayuser'))]);
+    expect(ledger.getBalance(SENDER)).toBe(2);
+    expect(host.journal.listUnfinishedFrankSends()).toHaveLength(1);
+    const slot = host.journal.listUnfinishedFrankSends()[0];
+    // A separately authenticated webhook arrival shares the same source, regardless of transport id.
+    expect(host.inbound.admit({ email: parseRawRfc822(raw), authenticatedSenderEmail: SENDER,
+      verifiedTransportId: 'resend:relay-first' }, RECIPIENT, 1000n, undefined, 'relayuser'))
+      .toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: slot.slotId } });
+    expect(ledger.getBalance(SENDER)).toBe(2);
+    expect(slot).toMatchObject({ scopeAccount: RECIPIENT, stampValue: '1000' });
+    expect(await host.inbound.resume(slot.slotId)).toBe('delivered');
+    expect(host.journal.issuedMailbox('relayuser')).toBeUndefined();
+  });
+
+  it.each([RECIPIENT, `u.${RECIPIENT}`])('introduces the existing direct-address fallback %s through actual SMTP resolution', async (localPart) => {
+    await smtpIngress().accept(smtpMail('direct-first', localPart), envelope(localPart));
+    expect(ledger.getBalance(SENDER)).toBe(2);
+    const slot = host.journal.listUnfinishedFrankSends()[0];
+    expect(slot).toMatchObject({ scopeAccount: RECIPIENT, stampValue: '1000' });
+    expect(await host.inbound.resume(slot.slotId)).toBe('delivered');
+  });
+
+  it('rejects unknown/malformed recipients and forged From at actual ingress before any subsidy or history mutation', async () => {
+    const ingress = smtpIngress();
+    expect(await ingress.acceptsRecipient('unknown@gateway.example')).toBe(false);
+    expect(await ingress.acceptsRecipient('bad!@gateway.example')).toBe(false);
+    await expect(ingress.accept(smtpMail('unknown', 'unknown'), envelope('unknown'))).rejects.toThrow('Recipient unavailable');
+    await expect(ingress.accept(smtpMail('forged', 'alice', 'someone@example.org'), envelope('alice'))).rejects.toThrow('projection differs');
+    expect(ledger.getBalance(SENDER)).toBe(0);
+    expect(host.journal.listHeldInboundEmails()).toHaveLength(0);
+    expect(host.journal.listUnfinishedFrankSends()).toHaveLength(0);
+    await restart();
+    expect(admit('first-after-rejections').kind).toBe('queued');
+    expect(ledger.getBalance(SENDER)).toBe(2);
+  });
 
   it('keeps reply allowance consumption ahead of ordinary postage and never resets either balance', async () => {
     ledger.grantReplyAllowance(SENDER, RECIPIENT, 1);

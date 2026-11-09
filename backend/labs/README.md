@@ -644,3 +644,46 @@ payload-hash rejection, atomic concurrent namespace claims and LargeValues
 reopen/GC still require a separately authorized isolated service run. No bucket,
 key or IAM creation, deployment, persistent-format change or migration is implied.
 The existing large-value lab still defaults to the S3 dialect.
+
+Two additional ignored cases in the existing `large_value_contract` target
+prepare real GCS negative qualification:
+
+- `gcs_xml_wrong_secret_conditional_put_is_refused_without_object`
+- `gcs_xml_wrong_payload_hash_conditional_put_is_refused_without_object`
+
+They require explicit `FRANK_LAB_S3_API=gcs_xml`, the exact endpoint
+`https://storage.googleapis.com`, and an explicit
+`FRANK_LAB_S3_PREFIX=contract/${FRANK_LAB_RUN_ID}`. The operator must first bind
+that run ID to a fresh approved owner UUID, bucket instance, protected HMAC
+credential and effective create/get/delete permissions. Input syntax is not
+authorization. Never use an existing production, registration or custody prefix.
+
+Each case appends its own `gcs-negative-wrong-secret` or
+`gcs-negative-payload-hash` scope. Only `control-before`, `attempt` and
+`control-after` can be used there. Valid GET and HEAD must establish absence
+before any write. Valid conditional creates, exact binary readback, HEAD and a
+conditional collision bracket the negative attempt. The wrong-secret case
+changes one character of the approved secret in memory; it creates no other key.
+The wrong-hash case supplies a different declared SHA256 through the existing
+object-store API while sending the original body. Both require an error, not a
+conditional-collision result, and valid-client GET/HEAD absence of `attempt`.
+Successful cases delete their two controls and verify absence. Failure leaves
+only these known keys for separately approved enumerated cleanup; a failed
+request is not proof of no side effect. Root must independently contain the
+original HMAC even if compute or object cleanup fails.
+
+These cases need the target's `foundationdb` feature and native-client build
+dependency, but their bodies do not boot FDB or open a cluster. They use only the
+existing S3 object-store constructor/operations and fixed nonsecret failure
+labels; they do not print raw provider errors, secrets or signatures. An error
+plus healthy controls establishes the tested request's refusal, not an exact
+HTTP status or exclusive cryptographic cause. Post-signature header tampering
+remains covered by the existing mock test only.
+
+The ordinary `gcs_negative_config_requires_explicit_endpoint_api_and_run_prefix`
+test exercises the same configuration guard with fake environment readers and
+no client creation. Neither compilation nor that pure test establishes a live
+GCS pass. Actual execution still requires a separately admitted hosted image,
+protected credential delivery, exact test inventory/one-pass checks, resource
+bounds and owned cleanup. Do not run these cases through the MinIO stop/restart
+script or interpret their addition as permission to contact GCS.

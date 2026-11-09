@@ -52,6 +52,7 @@ describe('first authenticated mail introductory postage through the production h
     host = createJournaledMailHost({
       chain, wallet: { identity: { address: { raw: GATEWAY } } } as WalletHandle,
       journalFile: path.join(directory, 'mail.sqlite3'), blobDirectory: path.join(directory, 'blobs'),
+      operatorAccountAddress: GATEWAY,
       journalMode: mode, gatewayDomain: 'gateway.example', mailboxSalt: new Uint8Array(32).fill(7),
       resendApiKey: 're_test', resendWebhookSecret: 'whsec_test', resendRawOrigins: ['https://raw.example'],
       inboundStampValue: 1000n, webhookHost: '127.0.0.1', webhookPort: 0,
@@ -193,7 +194,7 @@ describe('first authenticated mail introductory postage through the production h
     return new JournaledSmtpIngress({
       gatewayDomain: 'gateway.example', sender: host.inbound, stampValue: 1000n,
       issuedMailboxLookup: createIssuedMailboxLookup(host.journal, {
-        relayUrl: 'https://relay.example',
+        relayUrl: 'https://relay.example', operatorAccountAddress: GATEWAY,
         fetcher: (async (url: string | URL | Request) => String(url).endsWith('/usernames/relayuser')
           ? new Response(JSON.stringify({ address: RECIPIENT }), { status: 200 })
           : new Response('', { status: 404 })) as typeof fetch,
@@ -235,6 +236,35 @@ describe('first authenticated mail introductory postage through the production h
     const slot = host.journal.listUnfinishedFrankSends()[0];
     expect(slot).toMatchObject({ scopeAccount: RECIPIENT, stampValue: '1000' });
     expect(await host.inbound.resume(slot.slotId)).toBe('delivered');
+  });
+
+  it.each(['help', 'info', 'contact'])('introduces user-owned %s as ordinary postage even when a different operator is configured', async (localPart) => {
+    host.journal.issueMailbox({ localPart, scopeAccount: RECIPIENT });
+    const ingress = smtpIngress();
+    const slots: number[] = [];
+    for (let i = 0; i < 3; i++) {
+      await ingress.accept(smtpMail(`user-contact-${i}`, localPart), envelope(localPart));
+      expect(ledger.getBalance(SENDER)).toBe(2 - i);
+      slots.push(host.journal.listUnfinishedFrankSends().at(-1)!.slotId);
+    }
+    expect(await host.inbound.resume(slots[0])).toBe('delivered');
+    await host.inbound.sendPendingHeldAutoReplies();
+    expect(submitted).toHaveLength(1);
+    await ingress.accept(smtpMail('fourth-user-contact', localPart), envelope(localPart));
+    expect(ledger.getBalance(SENDER)).toBe(0);
+    expect(host.journal.listHeldInboundEmails()).toHaveLength(1);
+    expect(host.journal.listUnfinishedFrankSends()).toHaveLength(2);
+    expect(submitted).toHaveLength(1);
+  });
+
+  it.each(['help', 'postmaster'])('preserves the configured operator fallback %s without requiring or granting introductory postage', async (localPart) => {
+    const ingress = smtpIngress();
+    await ingress.accept(smtpMail('operator-contact', localPart), envelope(localPart));
+    expect(ledger.getBalance(SENDER)).toBe(0);
+    expect(host.journal.listUnfinishedFrankSends()).toMatchObject([{ scopeAccount: GATEWAY }]);
+    expect(host.journal.listHeldInboundEmails()).toHaveLength(0);
+    await host.inbound.sendPendingHeldAutoReplies();
+    expect(submitted).toHaveLength(0);
   });
 
   it('rejects unknown/malformed recipients and forged From at actual ingress before any subsidy or history mutation', async () => {

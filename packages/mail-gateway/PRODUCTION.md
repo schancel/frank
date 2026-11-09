@@ -105,7 +105,7 @@ resolution when this discovery path lands. Profile-owned
 
 ### First-email postage introduction
 
-A normalized, transport-authenticated sender's first inbound email to an issued user mailbox receives three ordinary postage credits, once across all recipients. The existing credit ledger provider transaction records the one-time grant; grant, credit consumption and original send-slot admission commit together. Existing inbound history prevents retroactive introductions to returning senders. The configured inbound stamp amount remains unchanged. Reply allowances retain priority over ordinary credits.
+A normalized, transport-authenticated sender's first inbound email to a normally resolved user mailbox (issued alias, relay username or direct account address) receives three ordinary postage credits, once across all recipients. The existing credit ledger provider transaction records the one-time grant; grant, credit consumption and original send-slot admission commit together. Existing inbound history prevents retroactive introductions to returning senders. The configured inbound stamp amount remains unchanged. Reply allowances retain priority over ordinary credits.
 
 After the first send is accepted by the relay, the normal recovery pass prepares one welcome receipt. Its balance is ordinary postage (including any purchased credits), measured when the receipt is composed. The existing responder stores the raw receipt before SMTP submission and fences uncertain acceptance; a restart never authorizes another welcome submission. Automated/list/backscatter and rate suppression still apply. This authenticates a sender address; it does not establish one unique human across multiple addresses or create a global promotion budget.
 

@@ -90,6 +90,11 @@ describe('journal-backed inbound Frank send', () => {
       },
     } as unknown as ActiveChain;
     open();
+    // These recovery/held-mail cases exercise a returning sender after their introduction.
+    ledger.atomic(() => {
+      ledger.grantIntroductoryPostage(SENDER);
+      for (let i = 0; i < 3; i++) ledger.consumeCredit(SENDER, RECIPIENT);
+    });
   });
 
   afterEach(() => {
@@ -169,11 +174,11 @@ describe('journal-backed inbound Frank send', () => {
     expect(second).toMatchObject({ kind: 'queued', slot: { conversationId: bobConversation } });
     if (first.kind !== 'queued' || second.kind !== 'queued') throw new Error('mail was not queued');
     expect(second.slot.slotId).not.toBe(first.slot.slotId);
-    expect(ledger.getBalance(SENDER)).toBe(3);
+    expect(ledger.getBalance(SENDER)).toBe(0);
     sender = restart();
     expect(sender.admit(verified, RECIPIENT, 1000n, aliceConversation, 'alice')).toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: first.slot.slotId } });
     expect(sender.admit(verified, RECIPIENT, 1000n, bobConversation, 'bob')).toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: second.slot.slotId } });
-    expect(ledger.getBalance(SENDER)).toBe(3);
+    expect(ledger.getBalance(SENDER)).toBe(0);
   });
 
   it('preserves the assigned alias conversation while mail is held for credit', () => {

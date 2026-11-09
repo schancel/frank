@@ -86,6 +86,7 @@ describe('journaled mail host admission', () => {
 
   it('a verified Stripe payment releases the paid-for held mail and no other (BOT-8)', async () => {
     const recipient = `0x${'a'.repeat(40)}`;
+    const atomic = jest.spyOn(CreditLedger.prototype, 'atomic');
     const host = createJournaledMailHost({
       ...options(dir, 'provision'),
       chain: {
@@ -93,6 +94,14 @@ describe('journaled mail host admission', () => {
         parseAddress: (input: string) => (/^0x[0-9a-f]{40}$/.test(input) ? { raw: input } : undefined),
       } as unknown as ActiveChain,
       stripeWebhookSecret: 'whsec_stripe_test',
+    });
+    const ledger = atomic.mock.contexts[0] as CreditLedger;
+    atomic.mockRestore();
+    ledger.atomic(() => {
+      for (const sender of ['carol@mail.example', 'dave@mail.example']) {
+        ledger.grantIntroductoryPostage(sender);
+        for (let i = 0; i < 3; i++) ledger.consumeCredit(sender, recipient);
+      }
     });
     try {
       const mail = (from: string, id: string) => Buffer.from(

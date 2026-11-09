@@ -83,7 +83,11 @@ export class JournaledInboundSend {
     }
   }
 
-  /** Admission and one credit debit commit together, before any wallet effect. */
+  /**
+   * The host supplies the existing shared recipient resolver's result (issued alias,
+   * relay username or direct address). Admission, introduction and debit commit
+   * together before any wallet effect; this boundary never performs a second lookup.
+   */
   admit(mail: VerifiedInboundMail, scopeAccount: string, stampValue: bigint, conversationId?: string, mailboxLocalPart?: string): InboundAdmission {
     if (!mail.verifiedTransportId) throw new Error('Verified transport identity is required');
     if (stampValue < 0n) throw new Error('Stamp value must be non-negative');
@@ -112,8 +116,9 @@ export class JournaledInboundSend {
         });
       const isOperatorMailbox =
         mailboxLocalPart !== undefined && isOperatorMailboxLocalPart(mailboxLocalPart);
-      const introductory = !isOperatorMailbox &&
-        this.journal.isFirstIssuedSender(sender, scope, mailboxLocalPart, conversationId);
+      // The host already resolved the recipient through the shared SMTP/webhook lookup.
+      // Relay usernames and direct account addresses need no local issuance row.
+      const introductory = !isOperatorMailbox && !this.journal.hasInboundSender(sender);
       const admitted = this.journal.admitInboundEmail({
         scopeAccount: scope,
         mailKey: key,

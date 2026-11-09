@@ -90,6 +90,11 @@ describe('journal-backed inbound Frank send', () => {
       },
     } as unknown as ActiveChain;
     open();
+    // These recovery/held-mail cases exercise a returning sender after their introduction.
+    ledger.atomic(() => {
+      ledger.grantIntroductoryPostage(SENDER);
+      for (let i = 0; i < 3; i++) ledger.consumeCredit(SENDER, RECIPIENT);
+    });
   });
 
   afterEach(() => {
@@ -207,6 +212,11 @@ describe('journal-backed inbound Frank send', () => {
 
   it('credits and releases only the held mail a purchase was made for (BOT-8)', async () => {
     const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    // Both messages here belong to returning senders with an exhausted introduction.
+    ledger.atomic(() => {
+      ledger.grantIntroductoryPostage('dave@mail.example');
+      for (let i = 0; i < 3; i++) ledger.consumeCredit('dave@mail.example', RECIPIENT);
+    });
     const daveRaw = Buffer.from(
       `From: Dave <dave@mail.example>\r\nTo: ${RECIPIENT}@gw.example\r\nMessage-ID: <mail-2@mail.example>\r\nSubject: Other\r\n\r\nNot paid for.`,
       'utf8'
@@ -545,7 +555,7 @@ describe('journal-backed inbound Frank send', () => {
 
   it('queues inbound mail to operator/operational local-parts without requiring sender credits', () => {
     expect(ledger.getBalance(SENDER)).toBe(0);
-    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal });
+    const sender = new JournaledInboundSend({ chain, wallet, ledger, journal, operatorAccountAddress: RECIPIENT });
     const admitted = sender.admit(
       { email: parseRawRfc822(RAW), verifiedTransportId: 'resend:support-1', authenticatedSenderEmail: SENDER },
       RECIPIENT,

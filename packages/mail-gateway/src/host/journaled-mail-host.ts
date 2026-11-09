@@ -171,6 +171,9 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       port: smtpPort,
       gatewayDomain: input.gatewayDomain,
       onboardingSecret: mailboxSalt,
+      publicGatewayUrl: `https://${input.gatewayDomain}`,
+      introductoryPostageBalance: (senderEmail) => ledger.hasIntroductoryPostage(senderEmail)
+        ? ledger.getBalance(senderEmail) : undefined,
       ...(input.frankAppUrl ? { frankAppUrl: input.frankAppUrl } : {}),
       blobStore,
       dbPath: join(input.blobDirectory, 'held-auto-reply.db'),
@@ -183,6 +186,7 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
       journal,
       blobStore,
       heldAutoResponder,
+      ...(input.operatorAccountAddress ? { operatorAccountAddress: input.operatorAccountAddress } : {}),
     });
     const securePortal =
       input.secureMessagePortal ??
@@ -264,7 +268,7 @@ export function createJournaledMailHost(input: JournaledMailHostOptions): Journa
               ? 'held'
               : found.disposition === 'expired'
                 ? 'expired'
-                : 'released',
+                : journal.isInboundEmailDelivered(found) ? 'released' : 'pending',
           expiresAtMs: found.expiresAtMs ?? found.createdAtMs + 72 * 60 * 60 * 1000,
           conversationId: found.conversationId,
         };

@@ -8,6 +8,7 @@ import {
   renderHeldChallengeEmail,
   shouldSuppressHeldAutoReply,
 } from '../src/mta/held-email-auto-responder';
+import { CreditLedger } from '../src/ledger/credit-ledger';
 import { createJournaledMailHost } from '../src/host/journaled-mail-host';
 import type { OutboundMailPort } from '../src/mta/journaled-outbound-worker';
 import { parseRawRfc822 } from '../src/smtp/smtp-listener';
@@ -410,6 +411,7 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
 
         const mailboxSalt = new Uint8Array(Buffer.from('fedcba9876543210fedcba9876543210', 'utf8'));
 
+        const atomic = jest.spyOn(CreditLedger.prototype, 'atomic');
         const host = createJournaledMailHost({
           chain,
           wallet,
@@ -426,6 +428,14 @@ describe('Unpaid Held-Email Auto-Responder & Payment/Onboarding Flow', () => {
           webhookPort: 0,
           frankAppUrl: 'https://signet.mx',
           outboundPort,
+        });
+
+        const ledger = atomic.mock.contexts[0] as CreditLedger;
+        atomic.mockRestore();
+        // This held-mail journey starts after the sender has exhausted the one-time introduction.
+        ledger.atomic(() => {
+          ledger.grantIntroductoryPostage('preciouseffiang@gmail.com');
+          for (let i = 0; i < 3; i++) ledger.consumeCredit('preciouseffiang@gmail.com', DIGDEEP_ACCOUNT);
         });
 
         // Simulate gateway-service.ts zeroing its input buffer after createJournaledMailHost returns

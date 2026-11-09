@@ -1002,6 +1002,33 @@ export class MailJournal {
     return byHeld && toInboundEmail(byHeld);
   }
 
+  /** Sender history, not balance or a derived recipient cache, determines first admission. */
+  hasInboundSender(senderEmail: string): boolean {
+    return Boolean(this.get<{ found: number }>(
+      'SELECT 1 AS found FROM inbound_email WHERE sender_email = ? LIMIT 1',
+      senderEmail.toLowerCase().trim(),
+    ));
+  }
+
+  /** Derived delivered-first-send view; no competing welcome or balance state is persisted here. */
+  listFirstDeliveredInboundEmails(limit = 100, afterSlotId = 0): Array<{ slotId: number; email: InboundEmailRecord }> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000 ||
+        !Number.isSafeInteger(afterSlotId) || afterSlotId < 0) refuse('Invalid first-send page');
+    return this.all<InboundEmailRow & { slot_id: number }>(
+      `SELECT e.*, s.slot_id FROM inbound_email e JOIN frank_send s
+         ON s.source_kind = 'inbound_email' AND s.source_key = e.scope_account || ':' || e.mail_key
+       WHERE s.state = 'delivered' AND s.slot_id > ? AND NOT EXISTS (
+         SELECT 1 FROM inbound_email prior JOIN frank_send ps
+           ON ps.source_kind = 'inbound_email' AND ps.source_key = prior.scope_account || ':' || prior.mail_key
+         WHERE prior.sender_email = e.sender_email AND ps.slot_id < s.slot_id)
+       ORDER BY s.slot_id LIMIT ?`, afterSlotId, limit,
+    ).map((row) => ({ slotId: row.slot_id, email: toInboundEmail(row) }));
+  }
+
+  isInboundEmailDelivered(email: InboundEmailRecord): boolean {
+    return this.slotBySource('inbound_email', `${email.scopeAccount}:${email.mailKey}`)?.state === 'delivered';
+  }
+
   /** Bounded, stable page for a host to revisit authenticated mail after credit arrives. */
   listHeldInboundEmails(limit = 100, after?: { scopeAccount: string; mailKey: string }): InboundEmailRecord[] {
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1000) refuse('limit: not an integer from 1 to 1000');

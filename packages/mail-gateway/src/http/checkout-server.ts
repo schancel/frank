@@ -77,7 +77,7 @@ export interface HeldPaymentViewRecord {
   readonly senderEmail: string;
   readonly recipientAddress: string;
   readonly subject: string;
-  readonly status: 'held' | 'released' | 'expired';
+  readonly status: 'held' | 'released' | 'expired' | 'pending';
   readonly expiresAtMs: number;
   readonly conversationId?: string;
 }
@@ -438,7 +438,7 @@ export class CheckoutServer {
         <div class="tier">
           <div>
             <div class="tier-title">${tier.title}</div>
-            <div style="font-size:0.8rem; color:#64748b;">${tier.blurb}</div>
+            <div style="font-size:0.8rem; color:#64748b;">${held.status === 'released' || held.status === 'pending' ? `${tier.credits} postage credits for future emails` : tier.blurb}</div>
           </div>
           <div style="text-align:right;">
             <div class="tier-price">${tier.priceLabel}</div>
@@ -471,7 +471,7 @@ export class CheckoutServer {
       };
     }
 
-    if (held.status === 'released') {
+    if (held.status === 'released' || held.status === 'pending') {
       const remainingBalance = this.ledger.getBalance(held.senderEmail);
       return {
         status: 200,
@@ -481,7 +481,7 @@ export class CheckoutServer {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Payment Confirmed — Frank Gateway</title>
+  <title>Postage &amp; Delivery — Frank Gateway</title>
   <style>
     * { box-sizing: border-box; }
     body { font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; line-height: 1.55; color: #0f172a; background: radial-gradient(circle at 50% 0%, #eff6ff 0%, #f8fafc 75%); padding: 2.5rem 1rem; margin: 0; }
@@ -513,26 +513,25 @@ export class CheckoutServer {
   <div class="shell">
     <div class="card">
       <div class="badge-success">✓</div>
-      <h1>Payment Confirmed</h1>
-      <p>Your email has been cryptographically stamped and delivered to <strong>${escapeHtml(held.recipientAddress)}</strong>.</p>
+      <h1>${held.status === 'released' ? 'Delivery Accepted' : 'Delivery Pending'}</h1>
+      <p>${held.status === 'released' ? 'The Frank relay has accepted your stamped email for delivery to' : 'Your email is being reconciled for delivery to'} <strong>${escapeHtml(held.recipientAddress)}</strong>. ${held.status === 'pending' ? 'Its outcome is not yet confirmed; no additional payment is required to retry this original delivery.' : 'You do not need to pay to deliver this email again.'}</p>
       
       <div class="credit-box">
         <div class="credit-box-header">
           <span class="credit-box-title">Credit Account Balance</span>
           <span class="credit-badge">${remainingBalance} Credit${remainingBalance === 1 ? '' : 's'} Remaining</span>
         </div>
-        <p class="credit-text">&bull; <strong>1 credit</strong> was used for this email delivery.</p>
-        <p class="credit-text">&bull; Leftover credits (${remainingBalance}) remain tied to <code>${escapeHtml(held.senderEmail)}</code>. Any future emails you send to Frank users will be delivered automatically without having to pay again.</p>
+        <p class="credit-text">Your ordinary postage balance is shared across all recipients.</p>
+        <p class="credit-text">&bull; Leftover credits (${remainingBalance}) remain tied to <code>${escapeHtml(held.senderEmail)}</code>. Each future email uses postage unless an existing reply allowance applies. Top up before your balance runs out.</p>
       </div>
 
       <div class="details">
         <p><strong>From:</strong> ${escapeHtml(held.senderEmail)}</p>
         <p><strong>Subject:</strong> ${escapeHtml(held.subject)}</p>
-        <p><strong>Delivery Status:</strong> Delivered to Frank Relay</p>
+        <p><strong>Delivery Status:</strong> ${held.status === 'released' ? 'Accepted by Frank relay' : 'Pending reconciliation'}</p>
       </div>
-      <p style="font-size: 0.9rem; color: #16a34a; font-weight: 500;">
-        A reply allowance has been activated. When the recipient replies, subsequent emails in this thread will be delivered automatically for free.
-      </p>
+      <h3>Top up postage for future emails</h3>
+      ${this.renderPaymentTiers(held)}
       <div class="footer">
         Powered by Frank Gateway &bull; <a href="${escapeHtml(this.frankAppUrl)}" target="_blank">About Frank</a>
       </div>

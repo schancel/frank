@@ -1002,11 +1002,13 @@ export class MailJournal {
     return byHeld && toInboundEmail(byHeld);
   }
 
-  /** Historical inbound admission, not the current balance, determines whether a sender is new. */
-  hasInboundSender(senderEmail: string): boolean {
+  /** Exact issued ownership and sender history determine eligibility, never current balance. */
+  isFirstIssuedSender(senderEmail: string, scopeAccount: string, localPart?: string, conversationId?: string): boolean {
+    if (localPart === undefined) return false;
     return Boolean(this.get<{ found: number }>(
-      'SELECT 1 AS found FROM inbound_email WHERE sender_email = ? LIMIT 1',
-      senderEmail.toLowerCase().trim(),
+      `SELECT 1 AS found FROM issued_mailbox WHERE local_part = ? AND scope_account = ?
+         AND conversation_id IS ? AND NOT EXISTS (SELECT 1 FROM inbound_email WHERE sender_email = ?)`,
+      localPart.trim().toLowerCase(), scopeAccount, conversationId ?? null, senderEmail.toLowerCase().trim(),
     ));
   }
 

@@ -112,9 +112,8 @@ export class JournaledInboundSend {
         });
       const isOperatorMailbox =
         mailboxLocalPart !== undefined && isOperatorMailboxLocalPart(mailboxLocalPart);
-      const issued = mailboxLocalPart === undefined ? undefined : this.journal.issuedMailbox(mailboxLocalPart);
-      const introductory = !isOperatorMailbox && issued?.scopeAccount === scope &&
-        issued.conversationId === conversationId && !this.journal.hasInboundSender(sender);
+      const introductory = !isOperatorMailbox &&
+        this.journal.isFirstIssuedSender(sender, scope, mailboxLocalPart, conversationId);
       const admitted = this.journal.admitInboundEmail({
         scopeAccount: scope,
         mailKey: key,

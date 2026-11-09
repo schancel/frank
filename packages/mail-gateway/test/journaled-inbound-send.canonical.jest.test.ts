@@ -91,7 +91,7 @@ describe('mail journal to canonical wallet and receiver across interrupted linka
     expect(admission.kind).toBe('queued');
     if (admission.kind !== 'queued') throw new Error('Expected queued admission');
     const slot = admission.slot;
-    expect(ledger.getBalance(SENDER)).toBe(1);
+    expect(ledger.getBalance(SENDER)).toBe(4);
     expect(host.admit(verified, recipient, stampValue, CONVERSATION, 'alice')).toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: slot.slotId, frankMessageId: slot.frankMessageId } });
     const link = jest.spyOn(journal, 'linkFrankSend').mockImplementation(() => { throw new Error('host link interrupted before commit'); });
     await expect(host.resume(slot.slotId)).rejects.toThrow('host link interrupted before commit');
@@ -133,7 +133,7 @@ describe('mail journal to canonical wallet and receiver across interrupted linka
     expect(await f.chain.directMessages.attemptOf!({ wallet, messageId: slot.frankMessageId })).toEqual(known);
     expect(journal.issuedMailbox('alice')).toMatchObject({ conversationId: CONVERSATION, scopeAccount: recipient });
     expect(journal.findFrankSend(slot.slotId)).toMatchObject({ frankMessageId: slot.frankMessageId, state: 'sending' });
-    expect(ledger.getBalance(SENDER)).toBe(1);
+    expect(ledger.getBalance(SENDER)).toBe(4);
     f.setPhase('retained');
     // The mail host reports paid retention as pending; the canonical free send
     // surfaces its non-delivery error. Both leave the same slot recoverable.
@@ -176,7 +176,7 @@ describe('mail journal to canonical wallet and receiver across interrupted linka
     await expect(host.recover()).resolves.toMatchObject({ attempted: 0, errors: [] });
     await expect(host.resume(slot.slotId)).resolves.toBe('delivered');
     expect(f.requests).toHaveLength(requestCount);
-    expect(ledger.getBalance(SENDER)).toBe(1);
+    expect(ledger.getBalance(SENDER)).toBe(4);
     expect(externalFetch).not.toHaveBeenCalled();
   });
 });

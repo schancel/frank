@@ -54,6 +54,7 @@ export interface HeldMailSource {
     limit?: number,
     after?: { scopeAccount: string; mailKey: string },
   ): InboundEmailRecord[];
+  listFirstDeliveredInboundEmails?(limit?: number, afterSlotId?: number): Array<{ slotId: number; email: InboundEmailRecord }>;
   findInboundEmail?(scopeAccount: string, mailKey: string): InboundEmailRecord | undefined;
 }
 
@@ -218,6 +219,7 @@ export interface RenderHeldChallengeEmailInput {
   readonly payUrl: string;
   readonly expiresAtMs: number;
   readonly nowMs: number;
+  readonly introductoryBalance?: number;
 }
 
 export function renderHeldChallengeEmail(input: RenderHeldChallengeEmailInput): {
@@ -234,14 +236,14 @@ export function renderHeldChallengeEmail(input: RenderHeldChallengeEmailInput): 
   const hasRealSubject =
     cleanOrigSubject.length > 0 && cleanOrigSubject.toLowerCase() !== '(no subject)';
   const strippedRe = cleanOrigSubject.replace(/^(?:re:\s*)+/i, '').trim();
-  const subject = hasRealSubject
+  let subject = hasRealSubject
     ? `Re: ${strippedRe} [Delivery paused — stamp or verification required]`
     : `Delivery to ${input.recipientDisplay} paused — stamp or verification required`;
 
   const displaySubject = hasRealSubject ? cleanOrigSubject : '(No Subject)';
   const expiresUtc = new Date(input.expiresAtMs).toUTCString();
 
-  const textBody = [
+  let textBody = [
     `Your email to ${input.recipientDisplay} (${input.recipientEmail}) is safely held and awaiting verification.`,
     '',
     `Subject: ${displaySubject}`,
@@ -265,7 +267,7 @@ export function renderHeldChallengeEmail(input: RenderHeldChallengeEmailInput): 
     `If ${input.recipientDisplay} approves your address from their Screener queue or replies to you, your held email and all future replies in this thread are delivered automatically for free.`,
   ].join('\r\n');
 
-  const htmlBody = `<!DOCTYPE html>
+  let htmlBody = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -334,6 +336,25 @@ export function renderHeldChallengeEmail(input: RenderHeldChallengeEmailInput): 
   </div>
 </body>
 </html>`;
+
+  if (input.introductoryBalance !== undefined) {
+    subject = hasRealSubject ? `Re: ${strippedRe} [Delivery accepted — welcome to Signet]` : 'Delivery accepted — welcome to Signet';
+    textBody = [
+      `Your email to ${input.recipientEmail} has been accepted for delivery by the Frank relay.`,
+      'Welcome to Signet! Your first authenticated email received 3 free postage credits, shared across all recipients.',
+      `Postage credits remaining when this receipt was prepared: ${input.introductoryBalance}.`,
+      'The introductory allowance is finite. Add postage for future emails before it runs out.',
+      `View delivery status and top up: ${input.payUrl}`,
+      `Or open Frank: ${input.onboardingUrl}`,
+    ].join('\r\n');
+    htmlBody = `<!DOCTYPE html><html lang="en"><body><h1>Delivery accepted — welcome to Signet</h1>
+      <p>Your email to ${escapeHtml(input.recipientEmail)} has been accepted for delivery by the Frank relay.</p>
+      <p>Your first authenticated email received <strong>3 free postage credits</strong>, shared across all recipients.</p>
+      <p>Postage credits remaining when this receipt was prepared: <strong>${input.introductoryBalance}</strong>.</p>
+      <p>This introductory allowance is finite. Add postage for future emails before it runs out.</p>
+      <p><a href="${escapeHtml(input.payUrl)}">View status and top up postage</a></p>
+      <p><a href="${escapeHtml(input.onboardingUrl)}">Open Frank</a></p></body></html>`;
+  }
 
   const boundary = `frank-autoreply-${crypto.randomBytes(12).toString('hex')}`;
   const textBase64 = Buffer.from(textBody, 'utf8').toString('base64').match(/.{1,76}/g)?.join('\r\n') ?? '';
@@ -410,13 +431,14 @@ export interface HeldEmailAutoResponderOptions {
   readonly blobStore?: BlobStore;
   readonly dbPath?: string;
   readonly database?: DatabaseSync;
+  readonly introductoryPostageBalance?: (senderEmail: string) => number | undefined;
   readonly resolveRecipientUsername?: (scopeAccount: string) => Promise<string | undefined>;
   readonly rateLimitWindowMs?: number;
   readonly now?: () => number;
 }
 
 /**
- * RFC 3834-compliant auto-responder for unpaid inbound emails held in the gateway queue.
+ * RFC 3834-compliant auto-responder for held-mail challenges and the first delivered-mail welcome.
  * Sends at most one threaded payment & self-custodial onboarding challenge email per held mail
  * (and rate-limits per sender + recipient scope), while suppressing loops, bounces, and bulk mail.
  */
@@ -433,10 +455,13 @@ export class HeldEmailAutoResponder {
   private readonly resolveRecipientUsername?: (scopeAccount: string) => Promise<string | undefined>;
   private readonly rateLimitWindowMs: number;
   private readonly now: () => number;
+  private readonly introductoryPostageBalance?: (senderEmail: string) => number | undefined;
+  private introductoryAfterSlotId = 0;
   private heldAfter?: { scopeAccount: string; mailKey: string };
 
   constructor(options: HeldEmailAutoResponderOptions) {
     this.journal = options.journal;
+    this.introductoryPostageBalance = options.introductoryPostageBalance;
     this.port = options.port;
     this.domain = options.gatewayDomain.trim().toLowerCase();
     this.onboardingSecret =
@@ -602,7 +627,22 @@ export class HeldEmailAutoResponder {
     if (email.disposition !== 'held') {
       return { status: 'skipped', reason: 'not_held' };
     }
-    const existing = this.getRecord(email.scopeAccount, email.mailKey);
+    return this.processEmail(email);
+  }
+
+  private async processEmail(
+    email: InboundEmailRecord,
+    introductoryBalance?: number,
+  ): Promise<{ readonly status: 'sent' | 'suppressed' | 'skipped'; readonly reason?: string }> {
+    const recordKey = introductoryBalance === undefined ? email.mailKey : crypto.createHash('sha256')
+      .update('frank-introductory-receipt-v1\0').update(email.senderEmail.toLowerCase().trim()).digest('hex');
+    const existingRecord = () => {
+      if (introductoryBalance === undefined) return this.getRecord(email.scopeAccount, recordKey);
+      const row = this.db.prepare('SELECT scope_account FROM held_email_auto_reply WHERE mail_key = ? LIMIT 1')
+        .get(recordKey) as { scope_account: string } | undefined;
+      return row ? this.getRecord(row.scope_account, recordKey) : undefined;
+    };
+    const existing = existingRecord();
     if (existing?.status === 'submitting' || existing?.status === 'uncertain') {
       throw new Error('Held auto-reply acceptance is uncertain; reconcile before retry');
     }
@@ -614,12 +654,12 @@ export class HeldEmailAutoResponder {
     }
 
     const nowMs = this.now();
-    if (email.expiresAtMs !== undefined && email.expiresAtMs <= nowMs) {
+    if (introductoryBalance === undefined && email.expiresAtMs !== undefined && email.expiresAtMs <= nowMs) {
       return { status: 'skipped', reason: 'expired' };
     }
 
     const rawBytes = await this.resolveBytes(email.raw);
-    const replyMessageId = `<autoreply.${email.mailKey.slice(0, 32)}@${this.domain}>`;
+    const replyMessageId = `<autoreply.${recordKey.slice(0, 32)}@${this.domain}>`;
 
     const suppression = shouldSuppressHeldAutoReply({
       senderEmail: email.senderEmail,
@@ -629,7 +669,7 @@ export class HeldEmailAutoResponder {
     if (suppression.suppress) {
       this.recordOutcome({
         scopeAccount: email.scopeAccount,
-        mailKey: email.mailKey,
+        mailKey: recordKey,
         senderEmail: email.senderEmail,
         rfcMessageId: email.rfcMessageId,
         replyMessageId,
@@ -643,7 +683,7 @@ export class HeldEmailAutoResponder {
     if (this.isRecentlySentToSender(email.senderEmail, email.scopeAccount, nowMs)) {
       this.recordOutcome({
         scopeAccount: email.scopeAccount,
-        mailKey: email.mailKey,
+        mailKey: recordKey,
         senderEmail: email.senderEmail,
         rfcMessageId: email.rfcMessageId,
         replyMessageId,
@@ -686,6 +726,8 @@ export class HeldEmailAutoResponder {
     const payUrl = `${this.publicGatewayUrl}/pay/${encodeURIComponent(heldId)}`;
 
     const rendered = renderHeldChallengeEmail({
+      introductoryBalance: introductoryBalance === undefined ? undefined
+        : this.introductoryPostageBalance?.(email.senderEmail) ?? introductoryBalance,
       gatewayDomain: this.domain,
       senderEmail: email.senderEmail,
       recipientDisplay,
@@ -705,7 +747,7 @@ export class HeldEmailAutoResponder {
     // competing dispatchers and restart retries when provider acceptance is unknown.
     this.db.exec('BEGIN IMMEDIATE');
     try {
-      if (this.getRecord(email.scopeAccount, email.mailKey)) {
+      if (existingRecord()) {
         return { status: 'skipped', reason: 'already_processed' };
       }
       if (this.isRecentlySentToSender(email.senderEmail, email.scopeAccount, nowMs)) {
@@ -714,7 +756,7 @@ export class HeldEmailAutoResponder {
       this.db.prepare(`INSERT INTO held_email_auto_reply
         (scope_account, mail_key, sender_email, rfc_message_id, reply_message_id, status, sent_at_ms, raw_rfc822)
         VALUES (?, ?, ?, ?, ?, 'submitting', ?, ?)`)
-        .run(email.scopeAccount.toLowerCase(), email.mailKey.toLowerCase(),
+        .run(email.scopeAccount.toLowerCase(), recordKey,
           email.senderEmail.toLowerCase(), email.rfcMessageId, replyMessageId, nowMs, rendered.rawRfc822);
     } finally {
       this.db.exec('COMMIT');
@@ -731,13 +773,13 @@ export class HeldEmailAutoResponder {
     } catch (error) {
       this.db.prepare(`UPDATE held_email_auto_reply SET status = 'uncertain', reason = ?
         WHERE scope_account = ? AND mail_key = ?`)
-        .run(error instanceof Error ? error.message : String(error), email.scopeAccount.toLowerCase(), email.mailKey.toLowerCase());
+        .run(error instanceof Error ? error.message : String(error), email.scopeAccount.toLowerCase(), recordKey);
       throw error;
     }
 
     this.recordOutcome({
       scopeAccount: email.scopeAccount,
-      mailKey: email.mailKey,
+      mailKey: recordKey,
       senderEmail: email.senderEmail,
       rfcMessageId: email.rfcMessageId,
       replyMessageId,
@@ -749,7 +791,7 @@ export class HeldEmailAutoResponder {
   }
 
   /**
-   * Scans held inbound emails in the journal and dispatches any pending challenge auto-replies.
+   * Revisits held challenges and first accepted deliveries using bounded journal pages.
    */
   async processHeldEmails(limit = 100): Promise<{
     readonly sent: number;
@@ -760,14 +802,21 @@ export class HeldEmailAutoResponder {
     const heldList = this.journal.listHeldInboundEmails(limit, this.heldAfter);
     const last = heldList.at(-1);
     this.heldAfter = last ? { scopeAccount: last.scopeAccount, mailKey: last.mailKey } : undefined;
+    const introductory = this.journal.listFirstDeliveredInboundEmails?.(limit, this.introductoryAfterSlotId) ?? [];
+    this.introductoryAfterSlotId = introductory.at(-1)?.slotId ?? 0;
     let sent = 0;
     let suppressed = 0;
     let skipped = 0;
     const errors: Array<{ scopeAccount: string; mailKey: string; error: string }> = [];
 
-    for (const email of heldList) {
+    const notices = heldList.map((email) => ({ email, balance: undefined as number | undefined }));
+    for (const { email } of introductory) {
+      const balance = this.introductoryPostageBalance?.(email.senderEmail);
+      if (balance !== undefined) notices.push({ email, balance });
+    }
+    for (const { email, balance } of notices) {
       try {
-        const res = await this.processHeldEmail(email);
+        const res = balance === undefined ? await this.processHeldEmail(email) : await this.processEmail(email, balance);
         if (res.status === 'sent') sent += 1;
         else if (res.status === 'suppressed') suppressed += 1;
         else skipped += 1;

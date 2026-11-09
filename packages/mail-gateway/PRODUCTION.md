@@ -101,3 +101,12 @@ and visibly distinct from the relay default. Remove the compiled
 `0x1111111111111111111111111111111111111111` fallback from production
 resolution when this discovery path lands. Profile-owned
 `emailBridgeGatewayAddress` is not an operator advertisement.
+
+
+### First-email postage introduction
+
+A normalized, transport-authenticated sender's first inbound email to an issued user mailbox receives three ordinary postage credits, once across all recipients. The existing credit ledger provider transaction records the one-time grant; grant, credit consumption and original send-slot admission commit together. Existing inbound history prevents retroactive introductions to returning senders. The configured inbound stamp amount remains unchanged. Reply allowances retain priority over ordinary credits.
+
+After the first send is accepted by the relay, the normal recovery pass prepares one welcome receipt. Its balance is ordinary postage (including any purchased credits), measured when the receipt is composed. The existing responder stores the raw receipt before SMTP submission and fences uncertain acceptance; a restart never authorizes another welcome submission. Automated/list/backscatter and rate suppression still apply. This authenticates a sender address; it does not establish one unique human across multiple addresses or create a global promotion budget.
+
+The receipt links to the journal-backed delivery/postage page. Pending delivery is reported as pending, accepted mail never asks for payment to deliver it again, and verified purchases add configured postage without creating a second send. Card top-up is offered only when both a configured tier link and webhook verification are available; otherwise the page says payment is unavailable and offers existing account onboarding.

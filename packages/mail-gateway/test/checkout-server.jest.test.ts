@@ -177,11 +177,11 @@ describe('CheckoutServer', () => {
     const payRes = await fetch(`http://127.0.0.1:${testPort}/pay/held_999`);
     expect(payRes.status).toBe(200);
     const confirmedHtml = await payRes.text();
-    expect(confirmedHtml).toContain('Payment Confirmed');
-    expect(confirmedHtml).toContain('Delivered to Frank Relay');
+    expect(confirmedHtml).toContain('Delivery Accepted');
+    expect(confirmedHtml).toContain('Accepted by Frank relay');
     expect(confirmedHtml).toContain('Credit Account Balance');
     expect(confirmedHtml).toContain('4 Credits Remaining');
-    expect(confirmedHtml).toContain('1 credit');
+    expect(confirmedHtml).toContain('ordinary postage balance');
     expect(confirmedHtml).toContain('Leftover credits (4) remain tied to <code>recruiter@hiring.com</code>');
   });
 

@@ -4,6 +4,7 @@ import type { MessageItem } from '@frank/cashweb/types/messages';
 import { CreditLedger } from '../ledger/credit-ledger';
 import { MailJournal } from '../ledger/mail-journal';
 import { isOperatorMailboxLocalPart } from '../mailbox/operational-local-parts';
+import { isEnvelopeAddress } from '../mta/mx-transport';
 import { mailKey } from '../rfc/mail-keys';
 import { readThreadHeaders } from '../rfc/message-headers';
 import { parseRawRfc822 } from '../smtp/smtp-listener';
@@ -89,6 +90,7 @@ export class JournaledInboundSend {
     const scope = scopeAccount.toLowerCase();
     if (!this.chain.parseAddress(scope)) throw new Error('Invalid Frank recipient');
     const sender = mail.authenticatedSenderEmail.toLowerCase().trim();
+    if (!isEnvelopeAddress(sender)) throw new Error('Invalid authenticated sender');
     const parsedSender = parseRawRfc822(mail.email.rawRfc822).fromAddress;
     if (sender !== mail.email.fromAddress.toLowerCase().trim() || sender !== parsedSender) {
       throw new Error('Authenticated sender and mail From header differ');
@@ -110,6 +112,9 @@ export class JournaledInboundSend {
         });
       const isOperatorMailbox =
         mailboxLocalPart !== undefined && isOperatorMailboxLocalPart(mailboxLocalPart);
+      const issued = mailboxLocalPart === undefined ? undefined : this.journal.issuedMailbox(mailboxLocalPart);
+      const introductory = !isOperatorMailbox && issued?.scopeAccount === scope &&
+        issued.conversationId === conversationId && !this.journal.hasInboundSender(sender);
       const admitted = this.journal.admitInboundEmail({
         scopeAccount: scope,
         mailKey: key,
@@ -123,6 +128,7 @@ export class JournaledInboundSend {
         raw: { kind: 'inline', bytes: mail.email.rawRfc822 },
       });
       if (admitted.kind === 'echo') return { kind: 'echo' };
+      if (introductory) this.ledger.grantIntroductoryPostage(sender);
       if (admitted.email.disposition !== 'held') {
         if (admitted.email.disposition === 'relay' || admitted.email.disposition === 'released') {
           const existing = this.journal.relayInboundEmail({

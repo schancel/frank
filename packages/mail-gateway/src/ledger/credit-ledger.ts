@@ -321,6 +321,21 @@ export class CreditLedger {
     return row ? Number(row.remaining_replies) : 0;
   }
 
+  /** The existing provider transaction is the durable, sender-wide one-time grant marker. */
+  hasIntroductoryPostage(email: string): boolean {
+    return Boolean(this.executeGet(this.db.selectFrom('transactions').select('id')
+      .where('id', '=', this.introductoryPostageId(email)).compile()));
+  }
+
+  grantIntroductoryPostage(email: string): void {
+    this.addCredits(email, 3, this.introductoryPostageId(email), 'introductory-postage');
+  }
+
+  private introductoryPostageId(email: string): string {
+    return `introductory-postage:${crypto.createHash('sha256')
+      .update(email.toLowerCase().trim()).digest('hex')}`;
+  }
+
   addCredits(
     email: string,
     amount: number,

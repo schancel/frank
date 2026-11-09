@@ -169,11 +169,11 @@ describe('journal-backed inbound Frank send', () => {
     expect(second).toMatchObject({ kind: 'queued', slot: { conversationId: bobConversation } });
     if (first.kind !== 'queued' || second.kind !== 'queued') throw new Error('mail was not queued');
     expect(second.slot.slotId).not.toBe(first.slot.slotId);
-    expect(ledger.getBalance(SENDER)).toBe(0);
+    expect(ledger.getBalance(SENDER)).toBe(3);
     sender = restart();
     expect(sender.admit(verified, RECIPIENT, 1000n, aliceConversation, 'alice')).toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: first.slot.slotId } });
     expect(sender.admit(verified, RECIPIENT, 1000n, bobConversation, 'bob')).toMatchObject({ kind: 'queued', duplicate: true, slot: { slotId: second.slot.slotId } });
-    expect(ledger.getBalance(SENDER)).toBe(0);
+    expect(ledger.getBalance(SENDER)).toBe(3);
   });
 
   it('preserves the assigned alias conversation while mail is held for credit', () => {

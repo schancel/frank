@@ -1,13 +1,15 @@
-//! Group ciphertext over 64 KiB in a real S3 (MinIO), referenced from a real FoundationDB.
+//! Large-value contracts: local S3/FDB phases and separately admitted GCS negatives.
 //!
-//! Every test here is a phase of `backend/labs/large-values-acceptance.sh`, which runs each one
-//! in its own container (relay A and relay B are separate processes and machines) and stops
-//! and restarts MinIO between phases. The phases share state only through the cluster: the
-//! script passes one `FRANK_LAB_RUN_ID`, from which the group keys, the messages, the FDB
-//! subspace and the bucket prefix are derived.
+//! `backend/labs/large-values-acceptance.sh` runs the local S3/FDB phases in separate
+//! containers and stops/restarts MinIO between phases. Those phases share state through
+//! the cluster and derive their keys, messages, FDB subspace and object prefix from one
+//! `FRANK_LAB_RUN_ID`. They require `FRANK_FDB_CLUSTER_FILE`, `FRANK_LAB_S3_ENDPOINT`,
+//! `FRANK_LAB_S3_BUCKET`, `FRANK_S3_ACCESS_KEY_ID` and `FRANK_S3_SECRET_ACCESS_KEY`.
 //!
-//! Required environment: `FRANK_FDB_CLUSTER_FILE`, `FRANK_LAB_RUN_ID`, `FRANK_LAB_S3_ENDPOINT`,
-//! `FRANK_LAB_S3_BUCKET`, `FRANK_S3_ACCESS_KEY_ID`, `FRANK_S3_SECRET_ACCESS_KEY`.
+//! The ignored GCS negative cases run separately with the explicit API/endpoint/run-prefix
+//! guards below; they do not boot FDB or use the MinIO restart script. This target still
+//! links the FDB native client. Ordinary configuration tests use fake environment readers
+//! and open no stores or services.
 #![cfg(feature = "foundationdb")]
 
 use std::{sync::Arc, time::Duration};
@@ -186,7 +188,10 @@ fn gcs_positive_control(objects: &dyn ObjectStore, key: &str) {
     let replacement = b"different control bytes";
     let replacement_hash: [u8; 32] = Sha256::digest(replacement).into();
     assert!(
-        matches!(objects.put_if_absent(key, replacement, &replacement_hash), Ok(false)),
+        matches!(
+            objects.put_if_absent(key, replacement, &replacement_hash),
+            Ok(false)
+        ),
         "GCS conditional collision admitted"
     );
     assert!(
@@ -217,8 +222,8 @@ fn gcs_xml_wrong_secret_conditional_put_is_refused_without_object() {
     let bytes = b"\x00wrong-secret attempt\xff";
     let hash: [u8; 32] = Sha256::digest(bytes).into();
     let refused = wrong.put_if_absent("attempt", bytes, &hash).is_err();
-    let absent = matches!(valid.get("attempt"), Ok(None))
-        && matches!(valid.contains("attempt"), Ok(false));
+    let absent =
+        matches!(valid.get("attempt"), Ok(None)) && matches!(valid.contains("attempt"), Ok(false));
     gcs_positive_control(&valid, "control-after");
     for key in ["control-before", "control-after"] {
         assert!(valid.delete(key).is_ok(), "GCS control cleanup refused");
@@ -240,19 +245,19 @@ fn gcs_xml_wrong_payload_hash_conditional_put_is_refused_without_object() {
     let bytes = b"\x00payload-hash attempt\xff";
     let actual_hash: [u8; 32] = Sha256::digest(bytes).into();
     let wrong_hash: [u8; 32] = Sha256::digest(b"different declared payload").into();
-    assert!(actual_hash != wrong_hash, "negative payload hash must differ");
+    assert!(
+        actual_hash != wrong_hash,
+        "negative payload hash must differ"
+    );
     let refused = valid.put_if_absent("attempt", bytes, &wrong_hash).is_err();
-    let absent = matches!(valid.get("attempt"), Ok(None))
-        && matches!(valid.contains("attempt"), Ok(false));
+    let absent =
+        matches!(valid.get("attempt"), Ok(None)) && matches!(valid.contains("attempt"), Ok(false));
     gcs_positive_control(&valid, "control-after");
     for key in ["control-before", "control-after"] {
         assert!(valid.delete(key).is_ok(), "GCS control cleanup refused");
         gcs_absent(&valid, key);
     }
-    assert!(
-        refused,
-        "GCS payload-hash mismatch request was not refused"
-    );
+    assert!(refused, "GCS payload-hash mismatch request was not refused");
     assert!(
         absent,
         "GCS payload-hash mismatch left an object or absence was unconfirmed"

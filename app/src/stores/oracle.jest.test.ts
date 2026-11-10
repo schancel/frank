@@ -13,7 +13,7 @@ import {
   formatAge,
   retryDelayMs,
 } from './oracle'
-import { mergeFeed, oracleInputs, saveOracleCache } from './oracle-series'
+import { oracleInputs } from './oracle-series'
 import { recordingSource, testFeed } from './oracle-test-feed'
 import * as oracleSdk from '@frank/wallet/oracle'
 import type { FeedRequest, OracleFeed } from '@frank/wallet/oracle'
@@ -462,38 +462,41 @@ describe('across a restart', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
-  it('reopens and rehydrates exact derived snapshots without retaining unavailable or obsolete facts', async () => {
+  it('retains captured valid provenance across an overwritten point and a real Level close/reopen without hydration writes', async () => {
     const first = open()
     await first.restored
-    first.useFeedSource(async () => testFeed([seconds()], {
-      electricity: [[seconds(), 0.2]],
+    const validFeed = testFeed([seconds()], {
       prices: { 'solana-mainnet': 110 },
-    }))
+      electricity: [[seconds(), 0.2]],
+    })
+    first.useFeedSource(async () => validFeed)
     await first.fetchLatest()
     await first.flushPersistence()
+    const valid = JSON.parse(JSON.stringify(first.current))
+    const invalid = testFeed([seconds()], {
+      prices: { 'solana-mainnet': 0 }, electricity: [[seconds(), 0]],
+    })
+    invalid.basket = { ...invalid.basket, entries: [] }
+    first.useFeedSource(async () => invalid)
+    await first.fetchLatest()
+    await first.flushPersistence()
+    const held = JSON.parse(JSON.stringify(first.current))
+    expect(held.rates).toEqual(valid.rates)
+    expect(held.avuHash).toEqual({ ...valid.avuHash, stale: true })
+    expect(first.cache.series['electricity/aggregate'].points).toEqual([[seconds(), 0]])
     first.$dispose()
     await storage.close()
     storage = level(directory)
-    const second = open()
-    await second.restored
-    expect(second.current).toStrictEqual(
-      realSdk.computeOracleRates(oracleInputs(second.cache)!, seconds()),
-    )
-    expect(second.current.avuSpot).not.toHaveProperty('unavailable')
-    jest.setSystemTime(START + MINUTE)
-    const feed = testFeed([seconds()], { electricity: [[seconds(), 0]] })
-    feed.basket = { ...feed.basket, entries: [] }
-    const persisted = mergeFeed(second.cache, feed, seconds())
-    await saveOracleCache(storage, persisted)
     const batch = jest.spyOn(storage, 'batch')
     const put = jest.spyOn(storage, 'put')
+    const second = open()
+    await second.restored
+    await second.flushPersistence()
+    expect(second.current).toStrictEqual(held)
+    expect(second.valueStaleAgeMs('solana')).toBe(0)
     await second.rehydrate()
     await second.flushPersistence()
-    expect(second.current).toStrictEqual(
-      realSdk.computeOracleRates(oracleInputs(second.cache)!, seconds()),
-    )
-    expect(second.current).not.toHaveProperty('avuHash')
-    expect(second.current.avuSpot).not.toHaveProperty('kwhPerValue')
+    expect(second.current).toStrictEqual(held)
     expect(batch).not.toHaveBeenCalled()
     expect(put).not.toHaveBeenCalled()
     second.$dispose()
@@ -585,63 +588,92 @@ describe('without Pinia', () => {
 })
 
 
-describe('complete derived snapshots', () => {
-  it.each([0, -0.05])('replaces a positive spot valuation with a non-positive price: %s', async price => {
-    const store = useOracleStore()
-    store.useFeedSource(async () => testFeed([seconds()], {
+describe('last valid valuation publication', () => {
+  function positive() {
+    return testFeed([seconds()], {
       prices: { 'solana-mainnet': 110 },
       electricity: [[seconds(), 0.2]],
-    }))
-    await store.fetchLatest()
-    expect(store.current.avuSpot.kwhPerValue).toBe(5)
-    jest.setSystemTime(START + MINUTE)
-    store.useFeedSource(async () => testFeed([seconds()], {
-      prices: { 'solana-mainnet': 0 },
-      electricity: [[seconds(), price]],
-    }))
-    await store.fetchLatest()
-    const expected = realSdk.computeOracleRates(oracleInputs(store.cache)!, seconds())
-    expect(expected.avuSpot.unavailable).toBe('not-positive')
-    expect(expected.avuSpot).not.toHaveProperty('kwhPerValue')
-    expect(expected.rates).not.toHaveProperty('solana')
-    expect(store.current).toStrictEqual(expected)
-    expect(store.cache.series['electricity/aggregate'].points).toHaveLength(2)
-  })
+    })
+  }
 
-  it('removes hash and rate facts when the latest basket no longer provides a valuation', async () => {
+  it.each([0, -0.05])('holds one coherent hash/rates bundle and spot with original provenance after invalid data: %s', async price => {
     const store = useOracleStore()
-    store.useFeedSource(async () => latestNow())
+    store.useFeedSource(async () => positive())
     await store.fetchLatest()
-    expect(store.current.avuHash).toBeDefined()
-    expect(store.current.rates.solana).toBeGreaterThan(0)
+    const valid = JSON.parse(JSON.stringify(store.current))
+    expect(valid.avuSpot).not.toHaveProperty('unavailable')
     jest.setSystemTime(START + MINUTE)
     store.useFeedSource(async () => {
-      const feed = latestNow()
+      const feed = testFeed([seconds()], {
+        prices: { 'solana-mainnet': 0 },
+        electricity: [[seconds(), price]],
+      })
       return { ...feed, basket: { ...feed.basket, entries: [] } }
     })
     await store.fetchLatest()
-    const expected = realSdk.computeOracleRates(oracleInputs(store.cache)!, seconds())
-    expect(expected).not.toHaveProperty('avuHash')
-    expect(expected.rates).toEqual({})
-    expect(expected.priceAt).toEqual({})
-    expect(expected.priceStale).toEqual({})
-    expect(store.current).toStrictEqual(expected)
-    expect(store.cache.series['price/solana-mainnet'].points).toHaveLength(2)
+    expect(store.current).toStrictEqual({
+      ...valid,
+      avuHash: { ...valid.avuHash, stale: true },
+      priceStale: Object.fromEntries(Object.keys(valid.rates).map(asset => [asset, true])),
+      avuSpot: { ...valid.avuSpot, stale: true },
+    })
+    expect(store.formatUnitRate('solana')).toContain('old')
+    store.useFeedSource(async () => positive())
+    await store.fetchLatest()
+    expect(store.current).toStrictEqual(
+      realSdk.computeOracleRates(oracleInputs(store.cache)!, seconds()),
+    )
+    expect(store.current.avuSpot).not.toHaveProperty('unavailable')
   })
 
-  it('initializes history with an exact snapshot and preserves established current valuation afterward', async () => {
+  it('holds every rate under its original hash when only one asset loses its price, while spot advances independently', async () => {
     const store = useOracleStore()
+    store.useFeedSource(async () => positive())
+    await store.fetchLatest()
+    const valid = JSON.parse(JSON.stringify(store.current))
+    jest.setSystemTime(START + MINUTE)
     store.useFeedSource(async () => testFeed([seconds()], {
-      electricity: [[seconds(), 0.2]],
-      prices: { 'solana-mainnet': 110 },
+      kwhPerValue: 20,
+      prices: { 'solana-mainnet': 0 },
+      electricity: [[seconds(), 0.1]],
     }))
+    await store.fetchLatest()
+    expect(store.current.rates).toEqual(valid.rates)
+    expect(store.current.priceAt).toEqual(valid.priceAt)
+    expect(store.current.at).toBe(valid.at)
+    expect(store.current.avuHash).toEqual({ ...valid.avuHash, stale: true })
+    expect(store.current.avuSpot).toEqual({ kwhPerValue: 10, pricePerKwh: 0.1, at: seconds(), stale: false })
+    expect(store.priceAgeMs('solana')).toBe(MINUTE)
+    expect(store.valueStaleAgeMs('solana')).toBe(MINUTE)
+  })
+
+  it('keeps failed refresh freshness and timestamps unchanged rather than prematurely forcing stale', async () => {
+    const store = useOracleStore()
+    store.useFeedSource(async () => positive())
+    await store.fetchLatest()
+    const valid = JSON.parse(JSON.stringify(store.current))
+    jest.setSystemTime(START + MINUTE)
+    store.useFeedSource(async () => { throw new Error('offline') })
+    await store.fetchLatest()
+    expect(store.current).toStrictEqual(valid)
+    expect(store.valueStaleAgeMs('solana')).toBeUndefined()
+    expect(store.nextFetchAt()).toBeGreaterThan(Date.now())
+  })
+
+  it('does not invent a valuation before any valid feed and initializes history without obsolete unavailable flags', async () => {
+    const store = useOracleStore()
+    store.useFeedSource(async () => {
+      const feed = testFeed([seconds()], { electricity: [[seconds(), 0]] })
+      return { ...feed, basket: { ...feed.basket, entries: [] } }
+    })
+    await store.fetchLatest()
+    expect(store.current.rates).toEqual({})
+    expect(store.current.avuHash).toBeUndefined()
+    expect(store.current.avuSpot.kwhPerValue).toBeUndefined()
+    store.useFeedSource(async () => positive())
     await store.ensureHistory(seconds() - 60, 60)
     expect(store.current).toStrictEqual(
       realSdk.computeOracleRates(oracleInputs(store.cache)!, seconds()),
     )
-    const established = store.current
-    jest.setSystemTime(START + MINUTE)
-    await store.ensureHistory(seconds() - 120, 60)
-    expect(store.current).toBe(established)
   })
 })

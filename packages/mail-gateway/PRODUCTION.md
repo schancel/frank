@@ -14,7 +14,7 @@ acceptance on the intended runtime before deployment or routing MX/webhooks to i
 The executable selects [createJournaledMailHost](src/host/journaled-mail-host.ts).
 `MailJournal` owns durable
 inbound admission, Frank send slots, thread identity, mailbox position and
-outbound jobs, including exact signed bytes persisted before submission.
+outbound jobs, including exact outbound MIME bytes persisted before submission.
 `CreditLedger` owns credit balances; its debit joins the journal's SQLite
 admission transaction.
 

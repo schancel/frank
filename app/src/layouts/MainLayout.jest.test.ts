@@ -1080,12 +1080,61 @@ describe('MainLayout extension full-page rail action', () => {
     },
   )
 
-  it('does not offer the extension action in the web app', async () => {
-    Reflect.deleteProperty(globalThis, 'chrome')
-    const { wrapper } = await mountLayout(390)
-    expect(wrapper.find('[data-test="rail-open-full-page"]').exists()).toBe(
-      false,
-    )
-    wrapper.unmount()
-  })
+  it.each(['chrome-extension:', 'safari-web-extension:', 'moz-extension:'])(
+    'offers only the full-page rail action before setup on %s',
+    async protocol => {
+      const create = jest.fn(async () => ({ id: 7 }))
+      Object.defineProperty(globalThis, 'chrome', {
+        configurable: true,
+        value: {
+          runtime: {
+            id: 'frank-ext',
+            getURL: (path: string) => `${protocol}//frank-ext/${path}`,
+          },
+          tabs: { create },
+        },
+      })
+      const { wrapper, router } = await mountLayout(
+        390,
+        undefined,
+        false,
+        '/welcome',
+      )
+      const action = wrapper.get('[data-test="rail-open-full-page"]')
+      expect(action.attributes('aria-label')).toBe('Open full page')
+      expect(wrapper.findAll('[data-test="rail-open-full-page"]')).toHaveLength(
+        1,
+      )
+      expect(wrapper.find('[data-testid="icon-rail"]').exists()).toBe(false)
+      for (const accountOnlyAction of [
+        '#rail-tab-chats',
+        '#rail-tab-wallet',
+        '#rail-tab-settings',
+        '#rail-tab-dapp-bridge',
+        '[data-test="rail-open-profile"]',
+      ])
+        expect(wrapper.find(accountOnlyAction).exists()).toBe(false)
+      await action.trigger('click')
+      await flushPromises()
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(create).toHaveBeenCalledWith({
+        url: `${protocol}//frank-ext/index.html?extMode=tab#/welcome`,
+      })
+      expect(router.push).not.toHaveBeenCalled()
+      expect(mockSetActiveConversation).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
+  it.each([true, false])(
+    'does not offer the extension action in the web app (setup: %s)',
+    async setup => {
+      Reflect.deleteProperty(globalThis, 'chrome')
+      const { wrapper } = await mountLayout(390, undefined, setup)
+      expect(wrapper.find('[data-test="rail-open-full-page"]').exists()).toBe(
+        false,
+      )
+      wrapper.unmount()
+    },
+  )
 })

@@ -80,6 +80,9 @@ export async function configuredStealthAssets(
       )
     : undefined
   for (const [index, entry] of chainEntries.entries()) {
+    // Generic payment review acquires a native-transfer context. Token-only wallets have
+    // their own composition and cannot supply that owner, even when their relay route exists.
+    if (entry.nativeDecimals === null) continue
     if (served && !served[index]) {
       unavailable.push({
         chainIdentifier: entry.id,

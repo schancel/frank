@@ -401,12 +401,15 @@ it('reads only the captured operation ID without opening custody, enumerating hi
   expect(mockOpenEvmWallet).not.toHaveBeenCalled()
 })
 
-it.each(['tempo-testnet', 'tempo-mainnet'])('refuses a no-native-coin context before acquiring an owner: %s', async chainIdentifier => {
-  await expect(createNativeTransferContext(chainIdentifier)).rejects.toThrow(
-    `Native Send is unavailable for ${chainIdentifier}`,
-  )
-  expect(mockOpenEvmWallet).not.toHaveBeenCalled()
-  expect(mockGetWallet).not.toHaveBeenCalled()
-  expect(mockGetRoot).not.toHaveBeenCalled()
-  expect(mockRpcUrl).not.toHaveBeenCalled()
-})
+it.each(['tempo-testnet', 'tempo-mainnet'])(
+  'refuses a no-native-coin context before acquiring an owner: %s',
+  async chainIdentifier => {
+    await expect(createNativeTransferContext(chainIdentifier)).rejects.toThrow(
+      `Native Send is unavailable for ${chainIdentifier}`,
+    )
+    expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+    expect(mockGetWallet).not.toHaveBeenCalled()
+    expect(mockGetRoot).not.toHaveBeenCalled()
+    expect(mockRpcUrl).not.toHaveBeenCalled()
+  },
+)

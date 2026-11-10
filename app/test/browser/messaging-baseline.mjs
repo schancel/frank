@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import ts from 'typescript'
 import { runPairing } from './messaging-baseline/pairing.mjs'
 import { runHistory } from './messaging-baseline/history.mjs'
+import { runTyping } from './messaging-baseline/typing.mjs'
 import { OwnedProcesses } from './messaging-baseline/processes.mjs'
 import { execFileSync } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
@@ -33,9 +34,13 @@ const option = (name, fallback) =>
 const ref = option('source-ref', 'HEAD')
 const scenario = option('scenario', 'queue-route')
 assert.ok(
-  ['queue-route', 'history-desktop', 'history-narrow', 'pairing-pin'].includes(
-    scenario,
-  ),
+  [
+    'queue-route',
+    'history-desktop',
+    'history-narrow',
+    'pairing-pin',
+    'typing',
+  ].includes(scenario),
   'Unknown scenario',
 )
 const out = resolve(
@@ -185,6 +190,7 @@ try {
   hash.update(await readFile(join(fixture, 'processes.mjs')))
   hash.update(await readFile(join(fixture, 'history.mjs')))
   hash.update(await readFile(join(fixture, 'pairing.mjs')))
+  hash.update(await readFile(join(fixture, 'typing.mjs')))
   for (const name of names) hash.update(await readFile(join(fixture, name)))
   report.fixtureHash = hash.digest('hex')
   await cp(fixture, join(tree, 'app/test/browser/messaging-baseline'), {
@@ -398,8 +404,9 @@ return fs.readFileSync(path.join(root,'test/browser/messaging-baseline',name),'u
   for (const domain of ['Runtime', 'Page', 'Network', 'Fetch'])
     await call(domain + '.enable')
   await call('Emulation.setDeviceMetricsOverride', {
-    width: scenario === 'history-narrow' ? 390 : 1280,
-    height: 860,
+    width:
+      scenario === 'typing' ? 400 : scenario === 'history-narrow' ? 390 : 1280,
+    height: scenario === 'typing' ? 600 : 860,
     deviceScaleFactor: 1,
     mobile: false,
   })
@@ -616,6 +623,8 @@ document.addEventListener('keydown',e=>{if(e.key==='Enter')window.__baselineMetr
     report.metrics = await evaluate(
       `(()=>{const m=window.__baselineMetrics;const enter=m.marks.find(x=>x.kind==='enter').time;return {enterToQueuedDomMs:m.queuedDom-enter,enterToQueuedFrameMs:m.queuedFrame-enter,conversationRouteFrameMs:${conversationRouteMs},forumRouteFrameMs:${forumRouteMs},maxInteractionLongTaskMs:Math.max(0,...m.longtasks.filter(t=>t.start+t.duration>=enter).map(t=>t.duration)),longtasks:m.longtasks.filter(t=>t.start+t.duration>=enter),startupLongtasks:m.longtasks.filter(t=>t.start+t.duration<enter),syntheticService:window.__messagingBaseline.state.sends}})()`,
     )
+  } else if (scenario === 'typing') {
+    await runTyping({ evaluate, call, until, report })
   } else if (scenario.startsWith('history-')) {
     try {
       await runHistory({ evaluate, call, report })

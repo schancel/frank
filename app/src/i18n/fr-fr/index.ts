@@ -593,6 +593,7 @@ export const rawFrFR = {
     formatting: 'Mise en forme',
   },
   leftDrawer: {
+    openFullPage: 'Ouvrir en pleine page',
     noForums: 'Aucun forum découvert pour le moment.',
     settings: 'Paramètres',
     chats: 'Messages directs',

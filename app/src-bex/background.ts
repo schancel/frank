@@ -411,7 +411,13 @@ async function forwardReadOnlyRpc(
 
 export function createBackgroundBridgeState(
   overrides: Partial<BackgroundBridgeState> = {},
+  runtimeScope?: Record<string, any>,
 ): BackgroundBridgeState {
+  const runtime = getExtensionRuntime(runtimeScope)
+  const defaultLaunchMode =
+    runtime.kind === 'chrome-extension' && runtime.hasSidePanel
+      ? 'sidepanel'
+      : 'popup'
   const originPersonas: Record<string, OriginPersonaBinding> = {
     ...(overrides.originPersonas ?? {}),
   }
@@ -459,7 +465,7 @@ export function createBackgroundBridgeState(
       senderOfferId: null,
       offerTab: null,
     },
-    launchMode: overrides.launchMode ?? 'popup',
+    launchMode: overrides.launchMode ?? defaultLaunchMode,
   }
 }
 
@@ -2538,7 +2544,7 @@ export async function restoreStoredBridgeState(
 
 export function installBackgroundBridge(
   runtimeScope?: Record<string, any>,
-  state: BackgroundBridgeState = createBackgroundBridgeState(),
+  state: BackgroundBridgeState = createBackgroundBridgeState({}, runtimeScope),
 ): {
   state: BackgroundBridgeState
   dispose: () => void

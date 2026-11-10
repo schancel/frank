@@ -150,7 +150,9 @@ describe('toolbar click choice', () => {
     const got = await b.send({ type: 'get-launch-mode' })
     const manifest = buildExtensionManifest('chrome')
     expect(manifest.permissions).toContain('sidePanel')
-    expect(manifest.side_panel.default_path).toBe('index.html?extMode=sidepanel')
+    expect(manifest.side_panel.default_path).toBe(
+      'index.html?extMode=sidepanel',
+    )
     expect(got.result.launchMode).toBe('sidepanel')
     expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({ popup: '' })
     expect(b.chrome.sidePanel.setPanelBehavior).toHaveBeenLastCalledWith({
@@ -171,7 +173,9 @@ describe('toolbar click choice', () => {
       storage.data[FRANK_EXT_LAUNCH_MODE_KEY] = mode
       for (let restart = 0; restart < 2; restart++) {
         const b = startBrowser(storage)
-        expect((await b.send({ type: 'get-launch-mode' })).result.launchMode).toBe(mode)
+        expect(
+          (await b.send({ type: 'get-launch-mode' })).result.launchMode,
+        ).toBe(mode)
         b.fire('startup')
         b.fire('installed')
         await settle()
@@ -185,20 +189,25 @@ describe('toolbar click choice', () => {
   )
 
   it.each([
-    ['safari-web-extension://frank-ext/', 'popup.html'],
-    ['moz-extension://frank-ext/', 'index.html'],
-    ['chrome-extension://frank-ext/', 'index.html'],
-  ])('keeps the existing popup default without Chrome sidePanel capability: %s', async (origin, popup) => {
-    const storage = makeStorage()
-    const b = startBrowser(storage, scope => {
-      scope.chrome.runtime.getURL = (path: string) => origin + path
-      delete scope.chrome.sidePanel
-    })
-    expect((await b.send({ type: 'get-launch-mode' })).result.launchMode).toBe('popup')
-    expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({ popup })
-    expect(storage.set).not.toHaveBeenCalled()
-    b.bg.dispose()
-  })
+    ['safari-web-extension://frank-ext/', 'popup.html', true],
+    ['moz-extension://frank-ext/', 'index.html', true],
+    ['chrome-extension://frank-ext/', 'index.html', false],
+  ])(
+    'keeps the existing popup default outside capable Chrome: %s',
+    async (origin, popup, hasSidePanel) => {
+      const storage = makeStorage()
+      const b = startBrowser(storage, scope => {
+        scope.chrome.runtime.getURL = (path: string) => origin + path
+        if (!hasSidePanel) delete scope.chrome.sidePanel
+      })
+      expect(
+        (await b.send({ type: 'get-launch-mode' })).result.launchMode,
+      ).toBe('popup')
+      expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({ popup })
+      expect(storage.set).not.toHaveBeenCalled()
+      b.bg.dispose()
+    },
+  )
 
   it('rejects an unknown mode and keeps the stored choice', async () => {
     const storage = makeStorage()

@@ -1030,11 +1030,11 @@ it('retains the mobile list and closes the current dApp route at 150% UI scale',
   }
 })
 
-
 describe('MainLayout extension full-page rail action', () => {
   const originalChrome = Object.getOwnPropertyDescriptor(globalThis, 'chrome')
   afterEach(() => {
-    if (originalChrome) Object.defineProperty(globalThis, 'chrome', originalChrome)
+    if (originalChrome)
+      Object.defineProperty(globalThis, 'chrome', originalChrome)
     else Reflect.deleteProperty(globalThis, 'chrome')
   })
 
@@ -1045,16 +1045,28 @@ describe('MainLayout extension full-page rail action', () => {
       Object.defineProperty(globalThis, 'chrome', {
         configurable: true,
         value: {
-          runtime: { id: 'frank-ext', getURL: (path: string) => `${protocol}//frank-ext/${path}` },
+          runtime: {
+            id: 'frank-ext',
+            getURL: (path: string) => `${protocol}//frank-ext/${path}`,
+          },
           tabs: { create },
         },
       })
-      const { wrapper, router } = await mountLayout(390, undefined, true, '/wallet')
-      Object.assign(router.currentRoute.value, { fullPath: '/wallet?chain=solana#assets' })
+      const { wrapper, router } = await mountLayout(
+        390,
+        undefined,
+        true,
+        '/wallet',
+      )
+      Object.assign(router.currentRoute.value, {
+        fullPath: '/wallet?chain=solana#assets',
+      })
       const action = wrapper.get('[data-test="rail-open-full-page"]')
       expect(action.element.tagName).toBe('BUTTON')
       expect(action.attributes('aria-label')).toBe('Open full page')
-      expect(action.get('[data-testid="tooltip"]').text()).toBe('Open full page')
+      expect(action.get('[data-testid="tooltip"]').text()).toBe(
+        'Open full page',
+      )
       expect(action.element.nextElementSibling?.id).toBe('rail-tab-dapp-bridge')
       await action.trigger('click')
       await flushPromises()
@@ -1071,7 +1083,9 @@ describe('MainLayout extension full-page rail action', () => {
   it('does not offer the extension action in the web app', async () => {
     Reflect.deleteProperty(globalThis, 'chrome')
     const { wrapper } = await mountLayout(390)
-    expect(wrapper.find('[data-test="rail-open-full-page"]').exists()).toBe(false)
+    expect(wrapper.find('[data-test="rail-open-full-page"]').exists()).toBe(
+      false,
+    )
     wrapper.unmount()
   })
 })

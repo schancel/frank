@@ -86,10 +86,19 @@ export function trailingMean(
   windowSeconds: number,
 ): { mean: number; count: number; latest: number } | undefined {
   if (!series) return undefined
+  // Skip future points without rescanning their tail for every historical window.
+  // Keep the original > comparison (also when t is NaN) and descending addition order.
+  let low = 0
+  let high = series.length
+  while (low < high) {
+    const middle = low + Math.floor((high - low) / 2)
+    if (series[middle][0] > t) high = middle
+    else low = middle + 1
+  }
   let sum = 0
   let count = 0
   let latest = 0
-  for (let i = series.length - 1; i >= 0; i--) {
+  for (let i = low - 1; i >= 0; i--) {
     const [time, value] = series[i]
     if (time > t) continue
     if (time <= t - windowSeconds) break

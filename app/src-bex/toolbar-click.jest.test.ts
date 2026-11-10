@@ -16,6 +16,7 @@ import {
   handleToolbarClick,
   installBackgroundBridge,
 } from './background'
+import { buildExtensionManifest } from './manifests'
 import { execFileSync } from 'node:child_process'
 import path from 'node:path'
 
@@ -36,7 +37,10 @@ function makeStorage() {
 }
 
 /** One background start: fresh browser toolbar state and event listeners. */
-function startBrowser(storage: ReturnType<typeof makeStorage>) {
+function startBrowser(
+  storage: ReturnType<typeof makeStorage>,
+  configureScope?: (scope: Record<string, any>) => void,
+) {
   const listeners: Record<string, Listener[]> = {}
   const event = (name: string) => ({
     addListener: (fn: Listener) => {
@@ -65,7 +69,8 @@ function startBrowser(storage: ReturnType<typeof makeStorage>) {
     storage: { local: storage },
   }
   const scope = { chrome }
-  const bg = installBackgroundBridge(scope, createBackgroundBridgeState())
+  configureScope?.(scope)
+  const bg = installBackgroundBridge(scope)
   const send = (message: Record<string, unknown>) =>
     new Promise<any>(resolve => {
       const ret = listeners.message[0](
@@ -139,18 +144,60 @@ describe('toolbar click choice', () => {
     expect(storage.set).not.toHaveBeenCalled()
   })
 
-  it('applies the popup when nothing is stored, without writing a default', async () => {
+  it('defaults capable Chrome to its configured side panel without writing a preference', async () => {
     const storage = makeStorage()
     const b = startBrowser(storage)
     const got = await b.send({ type: 'get-launch-mode' })
-    expect(got.result.launchMode).toBe('popup')
-    expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({
-      popup: 'index.html',
-    })
+    const manifest = buildExtensionManifest('chrome')
+    expect(manifest.permissions).toContain('sidePanel')
+    expect(manifest.side_panel.default_path).toBe('index.html?extMode=sidepanel')
+    expect(got.result.launchMode).toBe('sidepanel')
+    expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({ popup: '' })
     expect(b.chrome.sidePanel.setPanelBehavior).toHaveBeenLastCalledWith({
-      openPanelOnActionClick: false,
+      openPanelOnActionClick: true,
     })
+    b.fire('clicked', { windowId: 3 })
+    await settle()
+    expect(b.chrome.sidePanel.open).toHaveBeenCalledWith({ windowId: 3 })
+    expect(b.chrome.windows.create).not.toHaveBeenCalled()
     expect(storage.set).not.toHaveBeenCalled()
+    b.bg.dispose()
+  })
+
+  it.each(['popup', 'window', 'sidepanel'] as const)(
+    'restores an explicit %s preference across restarts without writing it',
+    async mode => {
+      const storage = makeStorage()
+      storage.data[FRANK_EXT_LAUNCH_MODE_KEY] = mode
+      for (let restart = 0; restart < 2; restart++) {
+        const b = startBrowser(storage)
+        expect((await b.send({ type: 'get-launch-mode' })).result.launchMode).toBe(mode)
+        b.fire('startup')
+        b.fire('installed')
+        await settle()
+        expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({
+          popup: mode === 'popup' ? 'index.html' : '',
+        })
+        expect(storage.set).not.toHaveBeenCalled()
+        b.bg.dispose()
+      }
+    },
+  )
+
+  it.each([
+    ['safari-web-extension://frank-ext/', 'popup.html'],
+    ['moz-extension://frank-ext/', 'index.html'],
+    ['chrome-extension://frank-ext/', 'index.html'],
+  ])('keeps the existing popup default without Chrome sidePanel capability: %s', async (origin, popup) => {
+    const storage = makeStorage()
+    const b = startBrowser(storage, scope => {
+      scope.chrome.runtime.getURL = (path: string) => origin + path
+      delete scope.chrome.sidePanel
+    })
+    expect((await b.send({ type: 'get-launch-mode' })).result.launchMode).toBe('popup')
+    expect(b.chrome.action.setPopup).toHaveBeenLastCalledWith({ popup })
+    expect(storage.set).not.toHaveBeenCalled()
+    b.bg.dispose()
   })
 
   it('rejects an unknown mode and keeps the stored choice', async () => {

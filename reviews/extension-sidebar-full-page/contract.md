@@ -1,0 +1,13 @@
+# Extension sidebar default and full-page navigation — Tier 2
+
+Outcome: Chrome with its existing sidePanel capability defaults to the sidebar when no toolbar preference is stored. Safari and Firefox retain their existing popup defaults. Explicit popup/window/sidepanel choices survive worker restart, browser startup and extension updates without restoration writing defaults.
+
+Current ownership: background state and storage.local own toolbar preference; runtime-adapter detects browser capabilities and opens extension tabs. MainLayout renders LeftDrawer, which owns the left navigation rail and plug entry. Target ownership stays the same: capability-based default enters background state before stored preference restoration; a localized extension-only action immediately above the plug entry calls existing openExtensionTab with packaged index.html?extMode=tab and the current hash route. Existing account/session storage and owners remain authoritative across views.
+
+Failure/example: an unconfigured capable Chrome installation currently chooses popup. There is no full-page action in the rail, requiring users to find other view controls. The new action opens the same extension origin and account; it never opens a web app or starts pairing/setup. It is a button, not a navigation tab, because it does not select a drawer panel.
+
+Scope: background.ts runtime-aware default; LeftDrawer.vue rail/action; English/French locale strings; existing toolbar, manifest and real MainLayout tests. Existing runtime-adapter tab opening, manifest sidePanel permission/default path, pop-out window behavior, wallet/session/Pinia composition, persistent and wire formats are unchanged. No new permissions, migrations, custody/financial changes or remote origins. Panel/popup need not close when the new tab opens.
+
+Proof: fail-before/pass-after tests at actual background startup and real MainLayout rail. Verify capable Chrome no-preference default, explicit saved popup/window/sidepanel restored across restarts without writes, Safari/Firefox/no-sidePanel defaults unchanged, existing native manifest capability/path, extension button ordering/accessibility and tabs.create URL retaining current route; PWA button absent. Focused tests and typecheck require coordinator slot; changed source/test files must pass existing Prettier. Independent review precedes publication/integration.
+
+No replacement stages, temporary coexistence, new durable shape or framework. Root owns unresolved decisions, runtime scheduling, review and integration. Rollback reverts code; it never deletes account data or stored launch preferences.

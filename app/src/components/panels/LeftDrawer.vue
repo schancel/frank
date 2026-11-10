@@ -5,6 +5,24 @@
       <relay-connect-dialog />
     </q-dialog>
 
+    <div
+      v-if="isExtension && !$status.setup"
+      class="column items-center icon-rail"
+      data-testid="onboarding-icon-rail"
+    >
+      <q-btn
+        flat
+        round
+        icon="open_in_new"
+        class="q-my-xs"
+        data-test="rail-open-full-page"
+        :aria-label="$t('leftDrawer.openFullPage')"
+        @click="openFullPage"
+      >
+        <q-tooltip>{{ $t('leftDrawer.openFullPage') }}</q-tooltip>
+      </q-btn>
+    </div>
+
     <!-- Icon rail (ticket #123): a dedicated narrow column, not tabs laid out horizontally inside
     the same drawer as the chat list -- matches Telegram/WhatsApp/Signal's own left-hand nav
     strip. `q-tabs`' own `vertical` prop does the layout work; the tab names/click handlers below

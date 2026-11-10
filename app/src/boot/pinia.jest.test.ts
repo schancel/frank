@@ -27,6 +27,7 @@ import type { LevelDB } from 'level'
 
 import {
   createStoragePlugin,
+  readStoreJson,
   resolveStoreMetadata,
   STORE_SCHEMA_VERSION,
   StoreMetadata,
@@ -615,4 +616,67 @@ describe('real Level metadata compatibility', () => {
       }
     },
   )
+})
+
+
+describe('real Level top-level restoration snapshots', () => {
+  const level = jest.requireActual('level/level.js') as typeof import('level').default
+
+  it('replaces provided maps on restore, rehydrate and restart while retaining omitted defaults without writes', async () => {
+    const directory = mkdtempSync(join(tmpdir(), 'frank-top-level-restore-'))
+    let db = level(directory)
+    const initial = () => ({
+      current: { rates: { obsolete: 3 } as Record<string, number> },
+      pendingOperations: { old: { signed: 'old-bytes' } } as Record<string, { signed: string }>,
+      reservations: { old: 'old-operation' } as Record<string, string>,
+      omittedDefault: { retained: true },
+    })
+    type State = ReturnType<typeof initial>
+    const save = jest.fn(async (storage: LevelDB, _mutation: unknown, state: State) => {
+      await storage.put('snapshot', JSON.stringify(state))
+    })
+    const open = async () => {
+      const { pinia } = installPinia(db)
+      const useStore = defineStore(`top-level-restore-${nextStoreId++}`, {
+        state: initial,
+        storage: {
+          save,
+          restore: async storage => (await readStoreJson<Partial<State>>(storage, 'snapshot')) ?? {},
+        },
+      })
+      const store = useStore(pinia)
+      await store.restored
+      await store.flushPersistence()
+      return store
+    }
+    const persisted = {
+      current: { rates: { fresh: 7 } },
+      pendingOperations: { pending: { signed: 'original-signed-bytes' } },
+      reservations: { input: 'pending' },
+    }
+    try {
+      await db.put('snapshot', JSON.stringify(persisted))
+      const first = await open()
+      expect(first.$state).toStrictEqual({ ...persisted, omittedDefault: { retained: true } })
+      expect(save).not.toHaveBeenCalled()
+      const next = { current: { rates: {} }, pendingOperations: {}, reservations: {} }
+      await db.put('snapshot', JSON.stringify(next))
+      await first.rehydrate()
+      await first.flushPersistence()
+      expect(first.$state).toStrictEqual({ ...next, omittedDefault: { retained: true } })
+      expect(save).not.toHaveBeenCalled()
+      first.$dispose()
+      await db.close()
+      db = level(directory)
+      const put = jest.spyOn(db, 'put')
+      const restarted = await open()
+      expect(restarted.$state).toStrictEqual({ ...next, omittedDefault: { retained: true } })
+      expect(put).not.toHaveBeenCalled()
+      expect(save).not.toHaveBeenCalled()
+      restarted.$dispose()
+    } finally {
+      await db.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
+  })
 })

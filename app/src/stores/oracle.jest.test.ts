@@ -13,7 +13,7 @@ import {
   formatAge,
   retryDelayMs,
 } from './oracle'
-import { oracleInputs } from './oracle-series'
+import { mergeFeed, oracleInputs, saveOracleCache } from './oracle-series'
 import { recordingSource, testFeed } from './oracle-test-feed'
 import * as oracleSdk from '@frank/wallet/oracle'
 import type { FeedRequest, OracleFeed } from '@frank/wallet/oracle'
@@ -462,6 +462,43 @@ describe('across a restart', () => {
     rmSync(directory, { recursive: true, force: true })
   })
 
+  it('reopens and rehydrates exact derived snapshots without retaining unavailable or obsolete facts', async () => {
+    const first = open()
+    await first.restored
+    first.useFeedSource(async () => testFeed([seconds()], {
+      electricity: [[seconds(), 0.2]],
+      prices: { 'solana-mainnet': 110 },
+    }))
+    await first.fetchLatest()
+    await first.flushPersistence()
+    first.$dispose()
+    await storage.close()
+    storage = level(directory)
+    const second = open()
+    await second.restored
+    expect(second.current).toStrictEqual(
+      realSdk.computeOracleRates(oracleInputs(second.cache)!, seconds()),
+    )
+    expect(second.current.avuSpot).not.toHaveProperty('unavailable')
+    jest.setSystemTime(START + MINUTE)
+    const feed = testFeed([seconds()], { electricity: [[seconds(), 0]] })
+    feed.basket = { ...feed.basket, entries: [] }
+    const persisted = mergeFeed(second.cache, feed, seconds())
+    await saveOracleCache(storage, persisted)
+    const batch = jest.spyOn(storage, 'batch')
+    const put = jest.spyOn(storage, 'put')
+    await second.rehydrate()
+    await second.flushPersistence()
+    expect(second.current).toStrictEqual(
+      realSdk.computeOracleRates(oracleInputs(second.cache)!, seconds()),
+    )
+    expect(second.current).not.toHaveProperty('avuHash')
+    expect(second.current.avuSpot).not.toHaveProperty('kwhPerValue')
+    expect(batch).not.toHaveBeenCalled()
+    expect(put).not.toHaveBeenCalled()
+    second.$dispose()
+  })
+
   it('a launch with a fresh saved cache makes zero requests, then asks when the interval is up', async () => {
     const first = open()
     await first.restored
@@ -544,5 +581,67 @@ describe('without Pinia', () => {
     expect(store.getAvu('solana', ONE_SOL)).toBe(0)
     expect(store.avuHash).toBeUndefined()
     store.acquire()()
+  })
+})
+
+
+describe('complete derived snapshots', () => {
+  it.each([0, -0.05])('replaces a positive spot valuation with a non-positive price: %s', async price => {
+    const store = useOracleStore()
+    store.useFeedSource(async () => testFeed([seconds()], {
+      prices: { 'solana-mainnet': 110 },
+      electricity: [[seconds(), 0.2]],
+    }))
+    await store.fetchLatest()
+    expect(store.current.avuSpot.kwhPerValue).toBe(5)
+    jest.setSystemTime(START + MINUTE)
+    store.useFeedSource(async () => testFeed([seconds()], {
+      prices: { 'solana-mainnet': 0 },
+      electricity: [[seconds(), price]],
+    }))
+    await store.fetchLatest()
+    const expected = realSdk.computeOracleRates(oracleInputs(store.cache)!, seconds())
+    expect(expected.avuSpot.unavailable).toBe('not-positive')
+    expect(expected.avuSpot).not.toHaveProperty('kwhPerValue')
+    expect(expected.rates).not.toHaveProperty('solana')
+    expect(store.current).toStrictEqual(expected)
+    expect(store.cache.series['electricity/aggregate'].points).toHaveLength(2)
+  })
+
+  it('removes hash and rate facts when the latest basket no longer provides a valuation', async () => {
+    const store = useOracleStore()
+    store.useFeedSource(async () => latestNow())
+    await store.fetchLatest()
+    expect(store.current.avuHash).toBeDefined()
+    expect(store.current.rates.solana).toBeGreaterThan(0)
+    jest.setSystemTime(START + MINUTE)
+    store.useFeedSource(async () => {
+      const feed = latestNow()
+      return { ...feed, basket: { ...feed.basket, entries: [] } }
+    })
+    await store.fetchLatest()
+    const expected = realSdk.computeOracleRates(oracleInputs(store.cache)!, seconds())
+    expect(expected).not.toHaveProperty('avuHash')
+    expect(expected.rates).toEqual({})
+    expect(expected.priceAt).toEqual({})
+    expect(expected.priceStale).toEqual({})
+    expect(store.current).toStrictEqual(expected)
+    expect(store.cache.series['price/solana-mainnet'].points).toHaveLength(2)
+  })
+
+  it('initializes history with an exact snapshot and preserves established current valuation afterward', async () => {
+    const store = useOracleStore()
+    store.useFeedSource(async () => testFeed([seconds()], {
+      electricity: [[seconds(), 0.2]],
+      prices: { 'solana-mainnet': 110 },
+    }))
+    await store.ensureHistory(seconds() - 60, 60)
+    expect(store.current).toStrictEqual(
+      realSdk.computeOracleRates(oracleInputs(store.cache)!, seconds()),
+    )
+    const established = store.current
+    jest.setSystemTime(START + MINUTE)
+    await store.ensureHistory(seconds() - 120, 60)
+    expect(store.current).toBe(established)
   })
 })

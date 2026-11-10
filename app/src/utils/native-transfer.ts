@@ -7,7 +7,7 @@ import { walletNetworkMetadata } from './wallet-support'
 
 /**
  * The canonical chain a wallet row can send on, or undefined when the app has no wallet there.
- * Decided by the registry's wallet setting, not by a list of names. Wallet-page aliases are
+ * Requires a configured wallet with a native coin. Wallet-page aliases are
  * resolved here once; Send's route carries only canonical identifiers.
  */
 export function nativeSendChainIdentifier(
@@ -20,7 +20,7 @@ export function nativeSendChainIdentifier(
     isTestnet,
     configuredChainIdentifier,
   )
-  if (!entry?.wallet) return undefined
+  if (!entry?.wallet || entry.nativeDecimals === null) return undefined
   return entry.id
 }
 

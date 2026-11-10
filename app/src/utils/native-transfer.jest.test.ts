@@ -18,7 +18,10 @@ it.each([
   // Multi-chain wallets enabled in registry.
   ['dogecoin', true, 'doge-testnet'],
   ['ethereum', true, 'ethereum-sepolia'],
-  ['tempo', true, 'tempo-testnet'],
+  ['tempo', true, undefined],
+  ['tempo', false, undefined],
+  ['tempo-testnet', true, undefined],
+  ['tempo-mainnet', false, undefined],
   ['hyperliquid', true, 'hyperliquid-testnet'],
   ['bitcoin', false, 'btc-mainnet'],
 ])(

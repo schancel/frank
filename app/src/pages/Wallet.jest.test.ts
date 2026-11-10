@@ -1072,6 +1072,13 @@ describe('Wallet detail page (#570)', () => {
     expect(wrapper.findComponent({ name: 'TempoPathUsdPanel' }).exists()).toBe(
       true,
     )
+    // The dedicated token panel owns Tempo; the native wallet panel is absent.
+    expect(wrapper.find('[data-testid="wallet-tab-panels"]').exists()).toBe(
+      false,
+    )
+    expect(wrapper.find('[data-testid="wallet-send-action"]').exists()).toBe(
+      false,
+    )
     wrapper.unmount()
   })
 

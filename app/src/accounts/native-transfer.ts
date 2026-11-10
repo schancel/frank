@@ -98,6 +98,8 @@ export async function createNativeTransferContext(
 ): Promise<NativeTransferContext> {
   const entry = getChainRegistryEntry(chainIdentifier)
   if (!entry) throw new Error(`Unknown native Send network: ${chainIdentifier}`)
+  if (entry.nativeDecimals === null)
+    throw new Error(`Native Send is unavailable for ${chainIdentifier}`)
 
   // activeChain is mutated in place on UI network changes. Never retain that object.
   const primaryChain = { ...activeChain }

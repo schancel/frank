@@ -1,4 +1,5 @@
 /** @jest-environment jsdom */
+/* eslint-disable @typescript-eslint/no-var-requires -- This module-evaluation regression deliberately defers CommonJS loads until counters are installed; static imports would invalidate the boundary assertions. */
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'

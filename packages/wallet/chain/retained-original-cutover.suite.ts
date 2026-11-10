@@ -2,7 +2,7 @@
  * Historical STORAGE writers, current typed construction/crypto/chain dependencies.
  * This is not a historical sender/codec or deployed-artifact compatibility assertion.
  */
-import { fixture, mockBalances, mockFunded, mailboxes, offlineChain, type Fixture } from './canonical-two-wallets.testutil'
+import { fixture, mockBalances, mockFunded, mailboxes, offlineChain, START_BALANCE, type Fixture } from './canonical-two-wallets.testutil'
 import { createHash } from 'node:crypto'
 import { readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -175,7 +175,11 @@ describe('historical1a storage writers -> current retained original graph (synth
     installCanonicalDirectory(alice, directory)
     await currentStore()
   }
-  async function produce(cut: typeof cuts[number]) {
+  async function produce(cut: typeof cuts[number], shape: 'change-first' | 'payment-first' = 'change-first') {
+    // Construction shuffles own moves and payments. Recovery retention needs an own
+    // predecessor to leave first; a payment-first semantic refusal is a different contract.
+    // The existing afterEach restores this spy only after both fixture wallets close.
+    jest.spyOn(Math, 'random').mockReturnValue(shape === 'change-first' ? 0.01 : 0.99)
     f = await fixture(); alice = f.alice
     f.setPhase('delivered')
     let durableCallbacks = 0
@@ -220,14 +224,22 @@ describe('historical1a storage writers -> current retained original graph (synth
     expect(prepares).toHaveLength(1)
     const graph = native.list()
     expect(graph).toHaveLength(1)
+    const carried = graph[0].members.filter(member => member.transactionSet?.role === 'payment')
+    expect(carried.length).toBeGreaterThan(0)
+    if (shape === 'change-first') {
+      expect(graph[0].members[0].transactionSet?.role).toBe('change')
+      expect(carried.every(member => member.dependencies.some(index =>
+        graph[0].members[index].transactionSet?.role === 'change'))).toBe(true)
+    } else {
+      expect(graph[0].members[0].transactionSet?.role).toBe('payment')
+      expect(carried.every(member => member.dependencies.length === 0)).toBe(true)
+    }
     const claims = reservations()
     expect(claims.length).toBeGreaterThan(0)
     expect(claims.every(claim => !claim.selectable && claim.holder === OPERATION)).toBe(true)
     // Witness the named cut independently of the later reconciliation. An arbitrary earlier
     // failure must never collapse handoff/stored cases into the durable-held case.
     expect(durableCallbacks).toBeGreaterThan(0)
-    const carried = graph[0].members.filter(member => member.transactionSet?.role === 'payment')
-    expect(carried.length).toBeGreaterThan(0)
     expect(carried.every(member => member.exposed)).toBe(cut !== 'durable-held')
     expect(carried.every(member => !offlineChain.mined.has(member.signed!.transactionHash))).toBe(true)
     if (cut === 'durable-held') {
@@ -299,6 +311,10 @@ describe('historical1a storage writers -> current retained original graph (synth
     const before = requests.length
     const statuses = await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [row.digest], messageIds: [MESSAGE],
       onEnvelopeDurable: async () => undefined })
+    const reconciled = await alice.transactionSetPreparer!.readOperation(OPERATION)
+    expect(reconciled?.members.some(member => member.transactionSet?.role === 'payment' &&
+      member.dependencies.some(index => reconciled.members[index].transactionSet?.role === 'change' &&
+        reconciled.members[index].exposed))).toBe(true)
     expect(statuses[row.digest]).toBe(row.outcome === 'delivered' ? 'delivered' : 'live')
     expect(prepareSpy.mock.calls.length).toBe(signedCount)
     expect(reservations()).toEqual(claims)
@@ -313,6 +329,57 @@ describe('historical1a storage writers -> current retained original graph (synth
     } else {
       expect(row.outcome).toBe('delivered')
     }
+  })
+
+  it('cancels a payment-first original only on its first semantic refusal before any broadcast', async () => {
+    const { row, original, claims } = await produce('durable-held', 'payment-first')
+    const signedCount = prepareSpy.mock.calls.length
+    await reopen()
+    expect(store.all()).toEqual([row])
+    expect(originalGraph((await alice.transactionSetPreparer!.readOperation(OPERATION))!)).toEqual(original)
+    expect(reservations()).toEqual(claims)
+    expect(requests).toHaveLength(0)
+    expect(f.requests).toHaveLength(0)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    expect(offlineChain.mined.size).toBe(0)
+    expect(offlineChain.relayStored.size).toBe(0)
+
+    mode = 'missing-recipient'
+    const statuses = await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [row.digest], messageIds: [MESSAGE],
+      onEnvelopeDurable: async () => undefined })
+    expect(statuses[row.digest]).toBe('dead')
+    const ended = store.all()[0]
+    expect(ended.reason).toBe('undeliverable')
+    expect(ended.request).toBeUndefined()
+    expect(ended.payments).toEqual([])
+    // Signed bytes reached only this fixture's refusing in-process mock. It returns
+    // before base.fetch: neither the relay stand-in nor the offline node gets a copy.
+    expect(requests).toEqual([{ body: row.request!.body, contentType: row.request!.contentType }])
+    expect(f.requests).toHaveLength(0)
+    expect(offlineChain.walletBroadcasts).toHaveLength(0)
+    expect(offlineChain.mined.size).toBe(0)
+    expect(offlineChain.relayStored.size).toBe(0)
+
+    const assertCancelled = async () => {
+      const cancelled = await alice.transactionSetPreparer!.readOperation(OPERATION)
+      expect(cancelled?.cancelled).toBe(true)
+      expect(cancelled?.members.every(member => member.signed === null && !member.exposed)).toBe(true)
+      expect(native.list()).toEqual([])
+      const coins = evmWalletInternals(alice).coinList!.all()
+      for (const claim of claims) {
+        expect(native.canSelect(claim.account, claim.nonce)).toBe(true)
+        const coin = coins.find(candidate => candidate.account === claim.account && candidate.nonce === claim.nonce)
+        expect(coin?.state).toBe('unspent')
+        expect(coin?.holder).toBeUndefined()
+        expect(coin?.valueWei).toBe(START_BALANCE)
+      }
+      expect(prepareSpy.mock.calls.length).toBe(signedCount)
+    }
+    await assertCancelled()
+    await alice.close()
+    await reopen()
+    expect(store.all()).toEqual([ended])
+    await assertCancelled()
   })
 
   it('fails visibly on a missing durable financial graph instead of replacing its original', async () => {

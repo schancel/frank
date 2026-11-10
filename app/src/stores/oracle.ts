@@ -1,5 +1,5 @@
 import { defineStore, getActivePinia } from 'pinia'
-import { toRaw } from 'vue'
+import { shallowReactive, toRaw } from 'vue'
 import {
   type AvuHash,
   STALE_AFTER_MS,
@@ -24,6 +24,7 @@ import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain'
 import { translateMessage } from 'src/i18n'
 import { UNIT_RATE_ASSET_METRICS, formatAvu } from 'src/utils/avu-units'
 import { useSettingsStore } from './settings'
+import { retainOracleView } from './oracle-view'
 import {
   type OracleCache,
   coverLatest,
@@ -228,6 +229,8 @@ export const useOracleStore = defineStore('oracle', {
     valueStaleAgeMs() {
       return (asset: SupportedAsset, now = Date.now()): number | undefined => {
         const priceAge = this.priceAgeMs(asset, now)
+        if (this.current.priceStale[asset] || this.current.avuHash?.stale)
+          return Math.max(priceAge ?? 0, this.avuHashStaleAgeMs(now) ?? 0)
         const stale = [
           priceAge !== undefined && priceAge > STALE_AFTER_MS ? priceAge : 0,
           this.avuHashStaleAgeMs(now) ?? 0,
@@ -438,8 +441,13 @@ export const useOracleStore = defineStore('oracle', {
           schedule.lastLatestAt = now
           const nowSeconds = Math.floor(now / 1000)
           const merged = mergeFeed(this.cache, feed, nowSeconds)
-          this.$patch({
-            cache: {
+          const current = ratesAt(
+            merged,
+            nowSeconds,
+            this.cache.lastValid ?? this.current,
+          )
+          this.$patch(state => {
+            state.cache = {
               ...merged,
               refreshMs,
               coverage: coverLatest(
@@ -448,8 +456,9 @@ export const useOracleStore = defineStore('oracle', {
                 POLL_SECONDS,
                 (3 * refreshMs) / 1000,
               ),
-            },
-            current: ratesAt(merged, nowSeconds),
+              ...(hasValuation(current) ? { lastValid: current } : {}),
+            }
+            state.current = current
           })
         })
       schedule.latestInFlight = request
@@ -497,17 +506,24 @@ export const useOracleStore = defineStore('oracle', {
               if (!feed) return
               const mergedNow = Math.floor(Date.now() / 1000)
               const merged = mergeFeed(this.cache, feed, mergedNow)
-              this.$patch({
-                cache: {
+              const initializeCurrent = !this.current.avuHash
+              const current = initializeCurrent
+                ? ratesAt(
+                    merged,
+                    mergedNow,
+                    this.cache.lastValid ?? this.current,
+                  )
+                : this.current
+              this.$patch(state => {
+                state.cache = {
                   ...merged,
                   coverage: retainedCoverage(
                     coverRange(merged.coverage, range.since, range.until, step),
                     mergedNow,
                   ),
-                },
-                ...(this.current.avuHash
-                  ? {}
-                  : { current: ratesAt(merged, mergedNow) }),
+                  ...(hasValuation(current) ? { lastValid: current } : {}),
+                }
+                if (initializeCurrent) state.current = current
               })
               // The active view may use unthinned detail; persistence remains bounded.
               return feed
@@ -526,16 +542,31 @@ export const useOracleStore = defineStore('oracle', {
     },
     async restore(storage): Promise<Partial<OracleState>> {
       const cache = await restoreOracleCache(storage)
-      return { cache, current: ratesAt(cache, Math.floor(Date.now() / 1000)) }
+      // Current is an atomically replaced view, never a recursively patched object.
+      // Vue's shallow reactive object expresses that ownership at Pinia's patch boundary;
+      // nested provenance is read-only by convention and changes only with a new view.
+      return {
+        cache: shallowReactive(cache),
+        current: shallowReactive(ratesAt(cache, Math.floor(Date.now() / 1000))),
+      }
     },
   },
 })
 
-function ratesAt(cache: OracleCache, nowSeconds: number): OracleRates {
+function hasValuation(rates: OracleRates): boolean {
+  return Boolean(rates.avuHash || isPositive(rates.avuSpot.kwhPerValue))
+}
+
+function ratesAt(
+  cache: OracleCache,
+  nowSeconds: number,
+  previous = cache.lastValid,
+): OracleRates {
   const inputs = oracleInputs(cache)
-  return inputs
+  const computed = inputs
     ? computeOracleRates(inputs, nowSeconds)
     : unavailableOracleRates(nowSeconds)
+  return retainOracleView(computed, previous, nowSeconds)
 }
 
 export type OracleStore = ReturnType<typeof useOracleStore>

@@ -19,8 +19,10 @@ import {
   type FeedElectricity,
   type OracleFeed,
   type OracleInputs,
+  type OracleRates,
   type SeriesPoint,
 } from '@frank/wallet/oracle'
+import { validateOracleView } from './oracle-view'
 
 /** One local series: the feed's metadata as last received, and every point held. */
 export interface LocalSeries {
@@ -51,6 +53,8 @@ export interface OracleCache {
    * Saved so that a restart inside that interval asks for nothing.
    */
   refreshMs?: number
+  /** One historical valid valuation, preserved when corrections overwrite its source points. */
+  lastValid?: OracleRates
 }
 
 export function emptyOracleCache(): OracleCache {
@@ -140,6 +144,7 @@ export function mergeFeed(
     series,
     coverage: retainedCoverage(cache.coverage, nowSeconds),
     ...(cache.refreshMs === undefined ? {} : { refreshMs: cache.refreshMs }),
+    ...(cache.lastValid === undefined ? {} : { lastValid: cache.lastValid }),
   }
 }
 
@@ -255,6 +260,7 @@ interface StoredMeta {
   coverage: Coverage[]
   refreshMs?: number
   series: Record<string, Omit<LocalSeries, 'points'>>
+  lastValid?: OracleRates
 }
 
 function metaOf(cache: OracleCache): string {
@@ -263,6 +269,14 @@ function metaOf(cache: OracleCache): string {
     electricity: cache.electricity,
     coverage: cache.coverage,
     refreshMs: cache.refreshMs,
+    ...(cache.lastValid === undefined
+      ? {}
+      : {
+          lastValid: validateOracleView(
+            cache.lastValid,
+            Math.floor(Date.now() / 1000),
+          ),
+        }),
     series: Object.fromEntries(
       Object.entries(cache.series).map(([name, one]) => {
         const { points: _points, ...rest } = one
@@ -353,6 +367,11 @@ export async function restoreOracleCache(
   if (!meta || typeof meta !== 'object' || typeof meta.series !== 'object') {
     return cache
   }
+  if (meta.lastValid !== undefined)
+    cache.lastValid = validateOracleView(
+      meta.lastValid,
+      Math.floor(Date.now() / 1000),
+    )
   cache.basket = meta.basket
   cache.electricity = meta.electricity
   cache.coverage = Array.isArray(meta.coverage) ? meta.coverage : []

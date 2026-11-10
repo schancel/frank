@@ -2,7 +2,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import level, { type LevelDB } from 'level'
-import { at, type SeriesPoint } from '@frank/wallet/oracle'
+import { at, computeOracleRates, type SeriesPoint } from '@frank/wallet/oracle'
 import {
   FULL_RESOLUTION_SECONDS,
   coverLatest,
@@ -160,5 +160,37 @@ describe('on the device', () => {
 
   it('restores nothing from an empty database', async () => {
     expect(await restoreOracleCache(storage)).toEqual(emptyOracleCache())
+  })
+})
+
+describe('retained valuation metadata validation', () => {
+  it('rejects corrupt captured provenance on read without changing persisted bytes', async () => {
+    const directory = mkdtempSync(
+      join(tmpdir(), 'frank-oracle-view-validation-'),
+    )
+    const storage = level(directory)
+    const now = Math.floor(Date.now() / 1000)
+    try {
+      const feed = testFeed([now], { electricity: [[now, 0.2]] })
+      const cache = mergeFeed(emptyOracleCache(), feed, now)
+      cache.lastValid = computeOracleRates(feed, now)
+      await saveOracleCache(storage, cache)
+      const key = 'oracle:v2:meta'
+      const metadata = JSON.parse(await storage.get(key))
+      metadata.lastValid.avuHash.oldestInputAt = now + 60
+      const corrupt = JSON.stringify(metadata)
+      await storage.put(key, corrupt)
+      const put = jest.spyOn(storage, 'put')
+      const batch = jest.spyOn(storage, 'batch')
+      await expect(restoreOracleCache(storage)).rejects.toThrow(
+        'Invalid retained oracle valuation',
+      )
+      expect(await storage.get(key)).toBe(corrupt)
+      expect(put).not.toHaveBeenCalled()
+      expect(batch).not.toHaveBeenCalled()
+    } finally {
+      await storage.close()
+      rmSync(directory, { recursive: true, force: true })
+    }
   })
 })

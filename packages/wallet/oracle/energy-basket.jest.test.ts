@@ -10,8 +10,8 @@ import {
   DIRECT_BASKET,
   DIRECT_ELECTRICITY,
   bundledSeries,
-  type SeriesPoint,
-} from '@frank/price-feeds'
+} from '@frank/price-feeds/temporary-direct-feed'
+import type { SeriesPoint } from '@frank/price-feeds'
 
 const T = 1_000_000
 const TWO_32 = 2 ** 32

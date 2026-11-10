@@ -17,7 +17,6 @@ import {
   computeOracleRates,
   convertRawToAvu,
   fetchOracleFeed,
-  temporaryDirectFeed,
   unavailableOracleRates,
 } from '@frank/wallet/oracle'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain'
@@ -101,6 +100,11 @@ async function relayThenDirect(
   // so it is asked less often than a relay, and it is told what the saved series
   // already hold so a restart does not repeat a chain reading taken this hour.
   if (answer.status === 'not-served') {
+    // Loading the optional adapter evaluates its bundled history; relay/cache readers
+    // must not pay that initialization cost merely by importing the oracle store.
+    const { temporaryDirectFeed } = await import(
+      '@frank/price-feeds/temporary-direct-feed'
+    )
     return {
       feed: await temporaryDirectFeed(request, { heldAt }),
       refreshMs: DIRECT_FEED_REFRESH_INTERVAL_MS,

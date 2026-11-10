@@ -5,18 +5,20 @@ jest.mock('../src/providers/chainlink', () => ({
 }))
 import {
   CHAIN_STATS_REFRESH_INTERVAL_MS,
+  at,
+  parseOracleFeed,
+  type MiningStats,
+} from '../src'
+import {
   DIRECT_ASSETS,
   DIRECT_BASKET,
-  at,
   bundledFeed,
   bundledSeries,
   directLatestFeed,
-  hashesPerKwh,
   multiplySeries,
-  parseOracleFeed,
   resetDirectFeedCache,
-  type MiningStats,
-} from '../src'
+} from '../src/temporary-direct-feed'
+import { hashesPerKwh } from '../src/historical'
 
 const seconds = (date: string) => Date.parse(`${date}T00:00:00Z`) / 1000
 

@@ -25,7 +25,9 @@ jest.mock('@frank/price-feeds/electricity-aggregate', () => {
   return {
     ...actual,
     windowedElectricityAggregate: (
-      ...args: Parameters<typeof actual.windowedElectricityAggregate>
+      ...args: Parameters<
+        typeof import('@frank/price-feeds').windowedElectricityAggregate
+      >
     ) => {
       mockEvaluated.aggregate++
       return actual.windowedElectricityAggregate(...args)
@@ -39,14 +41,19 @@ jest.mock('@frank/price-feeds/temporary-direct-feed', () => {
   ) as typeof import('@frank/price-feeds/temporary-direct-feed')
   return {
     ...actual,
-    temporaryDirectFeed: jest.fn((request, options) => {
-      mockHeldAt.push(options.heldAt('hashrate/btc-mainnet'))
-      // Keep the real adapter and replace only its external-provider option seams.
-      return actual.temporaryDirectFeed(request, {
-        ...options,
-        ...mockProviders,
-      })
-    }),
+    temporaryDirectFeed: jest.fn(
+      (
+        request: Parameters<typeof actual.temporaryDirectFeed>[0],
+        options: DirectFeedOptions,
+      ) => {
+        mockHeldAt.push(options.heldAt?.('hashrate/btc-mainnet'))
+        // Keep the real adapter and replace only its external-provider option seams.
+        return actual.temporaryDirectFeed(request, {
+          ...options,
+          ...mockProviders,
+        })
+      },
+    ),
   }
 })
 jest.mock('@frank/wallet/oracle', () => ({
@@ -133,10 +140,12 @@ it('loads optional history exactly once after a real store request receives 404'
         { latest: true },
         {
           ...mockProviders,
-          heldAt: name =>
-            before.series[name]?.stale
-              ? undefined
-              : before.series[name]?.points.at(-1)?.[0],
+          heldAt: name => {
+            const one = before.series[name]
+            return one && !one.stale
+              ? one.points[one.points.length - 1]?.[0]
+              : undefined
+          },
         },
       )
     const merged = mergeFeed(before, expected, at)

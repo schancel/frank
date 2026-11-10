@@ -21,18 +21,21 @@ import {
 } from './oracle-series'
 import { recordingSource, testFeed } from './oracle-test-feed'
 import * as oracleSdk from '@frank/wallet/oracle'
+import { temporaryDirectFeed as directFeed } from '@frank/price-feeds/temporary-direct-feed'
 import type { FeedRequest, OracleFeed } from '@frank/wallet/oracle'
 
 // The two ways the app can get a feed: its relay, and the temporary direct adapter.
 jest.mock('@frank/wallet/oracle', () => ({
   ...jest.requireActual('@frank/wallet/oracle'),
   fetchOracleFeed: jest.fn(),
-  temporaryDirectFeed: jest.fn(),
   computeOracleRates: jest.fn(),
+}))
+jest.mock('@frank/price-feeds/temporary-direct-feed', () => ({
+  temporaryDirectFeed: jest.fn(),
 }))
 
 const fetchOracleFeed = oracleSdk.fetchOracleFeed as jest.Mock
-const temporaryDirectFeed = oracleSdk.temporaryDirectFeed as jest.Mock
+const temporaryDirectFeed = directFeed as jest.Mock
 const computeOracleRates = oracleSdk.computeOracleRates as jest.Mock
 const realSdk = jest.requireActual('@frank/wallet/oracle') as typeof oracleSdk
 const MINUTE = 60_000

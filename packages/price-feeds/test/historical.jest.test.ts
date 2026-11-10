@@ -8,7 +8,7 @@ import {
   US_ANNUAL_ELECTRICITY_AND_GOLD,
   US_MONTHLY_INDUSTRIAL_ELECTRICITY,
   kwhPerDollar,
-} from '../src'
+} from '../src/historical'
 
 const file = JSON.parse(
   readFileSync(
@@ -164,7 +164,7 @@ import {
   MINER_SHARE_STEPS,
   WHOLESALE_ELECTRICITY,
   hashesPerKwh,
-} from '../src'
+} from '../src/historical'
 
 describe('curated hardware efficiency steps', () => {
   it('cites a source and the date it was read for every step', () => {

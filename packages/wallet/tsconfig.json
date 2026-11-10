@@ -21,6 +21,7 @@
       "@frank/nakamoto": ["../nakamoto/src/index.ts"],
       "@frank/nakamoto/*": ["../nakamoto/src/*"],
       "@frank/price-feeds": ["../price-feeds/src/index.ts"],
+      "@frank/price-feeds/*": ["../price-feeds/src/*"],
       "@frank/cashweb/*": ["../cashweb/*"],
       "@frank/wallet/*": ["./*"]
     }

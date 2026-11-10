@@ -4,6 +4,11 @@
   "description": "Multi-provider cryptocurrency and commodity price feeds client with sampling and failover (Chainlink, Pyth, Coinbase, Kraken, CoinGecko, Binance)",
   "private": true,
   "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./temporary-direct-feed": "./src/temporary-direct-feed.ts",
+    "./historical": "./src/historical/index.ts"
+  },
   "scripts": {
     "test": "jest",
     "typecheck": "tsc -p tsconfig.json"

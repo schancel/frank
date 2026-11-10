@@ -132,18 +132,27 @@ test.each([true, false])(
     const originalMode = activeChain.isTestnet
     try {
       activeChain.isTestnet = isTestnet
-      activeChain.chainIdentifier = isTestnet ? 'monad-testnet' : 'monad-mainnet'
+      activeChain.chainIdentifier = isTestnet
+        ? 'monad-testnet'
+        : 'monad-mainnet'
       const { options } = await configuredStealthAssets({
         relayServes: async () => true,
       })
-      expect(options.map(option => option.chainIdentifier)).not.toContain('tempo-testnet')
-      expect(options.map(option => option.chainIdentifier)).not.toContain('tempo-mainnet')
+      expect(options.map(option => option.chainIdentifier)).not.toContain(
+        'tempo-testnet',
+      )
+      expect(options.map(option => option.chainIdentifier)).not.toContain(
+        'tempo-mainnet',
+      )
       const supportedChains = isTestnet
         ? ['monad-testnet', 'ethereum-sepolia', 'solana-devnet', 'btc-testnet']
         : ['monad-mainnet', 'ethereum-mainnet', 'solana-mainnet', 'btc-mainnet']
       for (const chainIdentifier of supportedChains) {
         expect(options).toContainEqual(
-          expect.objectContaining({ chainIdentifier, asset: { kind: 'native' } }),
+          expect.objectContaining({
+            chainIdentifier,
+            asset: { kind: 'native' },
+          }),
         )
       }
       expect(mockContext).not.toHaveBeenCalled()

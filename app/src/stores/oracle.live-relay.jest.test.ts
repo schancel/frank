@@ -11,11 +11,11 @@
  */
 import { setActivePinia, createPinia } from 'pinia'
 import { useOracleStore } from './oracle'
-import * as oracleSdk from '@frank/wallet/oracle'
+import { temporaryDirectFeed as directFeed } from '@frank/price-feeds/temporary-direct-feed'
 
 // Everything real; the temporary direct adapter is only watched, and must stay unused.
-jest.mock('@frank/wallet/oracle', () => {
-  const real = jest.requireActual('@frank/wallet/oracle')
+jest.mock('@frank/price-feeds/temporary-direct-feed', () => {
+  const real = jest.requireActual('@frank/price-feeds/temporary-direct-feed')
   return { ...real, temporaryDirectFeed: jest.fn(real.temporaryDirectFeed) }
 })
 
@@ -23,7 +23,7 @@ const RELAY = process.env.FRANK_ORACLE_LIVE_RELAY_URL
 const live = RELAY ? describe : describe.skip
 
 live('the oracle store against a real relay', () => {
-  const temporaryDirectFeed = oracleSdk.temporaryDirectFeed as jest.Mock
+  const temporaryDirectFeed = directFeed as jest.Mock
   let requests: string[]
   const realFetch = globalThis.fetch
 

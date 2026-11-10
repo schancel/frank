@@ -6,7 +6,10 @@ import {
   unavailableOracleRates,
 } from './price-oracle'
 import { avuHashAt, type OracleInputs } from './energy-basket'
-import { DIRECT_BASKET, DIRECT_ELECTRICITY } from '@frank/price-feeds'
+import {
+  DIRECT_BASKET,
+  DIRECT_ELECTRICITY,
+} from '@frank/price-feeds/temporary-direct-feed'
 
 const T = 2_000_000
 

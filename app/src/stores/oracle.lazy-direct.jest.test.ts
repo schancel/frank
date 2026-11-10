@@ -5,7 +5,6 @@ import { tmpdir } from 'os'
 import { join } from 'path'
 import level from 'level'
 import type { DirectFeedOptions } from '@frank/price-feeds/temporary-direct-feed'
-import type { OracleRates } from '@frank/wallet/oracle'
 
 const NOW = Date.UTC(2026, 9, 10, 12)
 const mockEvaluated = { direct: 0, history: 0, aggregate: 0 }
@@ -63,23 +62,6 @@ jest.mock('@frank/wallet/oracle', () => ({
   fetchOracleFeed: jest.fn(),
 }))
 
-function expectComputedRates(actual: OracleRates, expected: OracleRates): void {
-  const { avuSpot: actualSpot, ...actualRates } = actual
-  const { avuSpot: expectedSpot, ...expectedRates } = expected
-  expect(actualRates).toEqual(expectedRates)
-  expect(actualSpot.kwhPerValue).toBe(expectedSpot.kwhPerValue)
-  expect(actualSpot.pricePerKwh).toBe(expectedSpot.pricePerKwh)
-  expect(actualSpot.at).toBe(expectedSpot.at)
-  expect(actualSpot.stale).toBe(expectedSpot.stale)
-  // Held finding: .git/review-evidence/oracle-derived-current-merge-independent-86f7fa41/REVIEW.json
-  // "Replace derived OracleRates snapshots instead of recursively merging them" is
-  // separate from this import boundary. Do not assert absence of avuSpot.unavailable
-  // here; retain exact checks for every computed numeric and metadata field above.
-  if (expectedSpot.unavailable !== undefined) {
-    expect(actualSpot.unavailable).toBe(expectedSpot.unavailable)
-  }
-}
-
 it('loads optional history exactly once after a real store request receives 404', async () => {
   const sdk =
     require('@frank/wallet/oracle') as typeof import('@frank/wallet/oracle')
@@ -95,6 +77,8 @@ it('loads optional history exactly once after a real store request receives 404'
     require('./oracle-test-feed') as typeof import('./oracle-test-feed')
   const { emptyOracleCache, mergeFeed, coverLatest, saveOracleCache } =
     require('./oracle-series') as typeof import('./oracle-series')
+  const { retainOracleView } =
+    require('./oracle-view') as typeof import('./oracle-view')
   const at = NOW / 1000
   const feed = testFeed([at], { prices: { 'solana-mainnet': 110 } })
   const directory = mkdtempSync(join(tmpdir(), 'frank-oracle-lazy-direct-'))
@@ -118,14 +102,17 @@ it('loads optional history exactly once after a real store request receives 404'
     setActivePinia(pinia)
     store = useOracleStore()
     await store.restored
-    expectComputedRates(
-      store.current,
-      sdk.computeOracleRates(
-        {
-          basket: feed.basket,
-          electricity: feed.electricity,
-          series: feed.series,
-        },
+    expect(store.current).toEqual(
+      retainOracleView(
+        sdk.computeOracleRates(
+          {
+            basket: feed.basket,
+            electricity: feed.electricity,
+            series: feed.series,
+          },
+          at,
+        ),
+        undefined,
         at,
       ),
     )
@@ -143,6 +130,7 @@ it('loads optional history exactly once after a real store request receives 404'
 
     fetchRelay.mockResolvedValue({ status: 'not-served' })
     const before = store.cache
+    const previousView = before.lastValid ?? store.current
     const first = store.fetchLatest()
     const concurrent = store.fetchLatest()
     await Promise.all([first, concurrent])
@@ -172,8 +160,7 @@ it('loads optional history exactly once after a real store request receives 404'
     expect(store.cache.basket).toEqual(expected.basket)
     expect(store.cache.electricity).toEqual(expected.electricity)
     expect(store.cache.series).toEqual(merged.series)
-    expectComputedRates(
-      store.current,
+    const expectedView = retainOracleView(
       sdk.computeOracleRates(
         {
           basket: expected.basket,
@@ -182,7 +169,11 @@ it('loads optional history exactly once after a real store request receives 404'
         },
         at,
       ),
+      previousView,
+      at,
     )
+    expect(store.current).toEqual(expectedView)
+    expect(store.cache.lastValid).toEqual(expectedView)
     expect(store.refreshIntervalMs()).toBe(sdk.DIRECT_FEED_REFRESH_INTERVAL_MS)
 
     const since = Date.UTC(2024, 0, 1) / 1000

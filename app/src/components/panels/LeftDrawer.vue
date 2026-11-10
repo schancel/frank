@@ -5,6 +5,24 @@
       <relay-connect-dialog />
     </q-dialog>
 
+    <div
+      v-if="isExtension && !$status.setup"
+      class="column items-center icon-rail"
+      data-testid="onboarding-icon-rail"
+    >
+      <q-btn
+        flat
+        round
+        icon="open_in_new"
+        class="q-my-xs"
+        data-test="rail-open-full-page"
+        :aria-label="$t('leftDrawer.openFullPage')"
+        @click="openFullPage"
+      >
+        <q-tooltip>{{ $t('leftDrawer.openFullPage') }}</q-tooltip>
+      </q-btn>
+    </div>
+
     <!-- Icon rail (ticket #123): a dedicated narrow column, not tabs laid out horizontally inside
     the same drawer as the chat list -- matches Telegram/WhatsApp/Signal's own left-hand nav
     strip. `q-tabs`' own `vertical` prop does the layout work; the tab names/click handlers below
@@ -80,6 +98,19 @@
         >
           <q-tooltip>{{ $t('leftDrawer.wallet') }}</q-tooltip>
         </q-tab>
+
+        <q-btn
+          v-if="isExtension"
+          flat
+          round
+          icon="open_in_new"
+          class="q-my-xs"
+          data-test="rail-open-full-page"
+          :aria-label="$t('leftDrawer.openFullPage')"
+          @click="openFullPage"
+        >
+          <q-tooltip>{{ $t('leftDrawer.openFullPage') }}</q-tooltip>
+        </q-btn>
 
         <q-tab
           name="dapp-bridge"
@@ -422,6 +453,10 @@ import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 import { accountStatus } from '../../accounts/session'
 import { isAccountBackedUp } from '../../accounts/backup-status'
 import { FA_PLUG_CIRCLE_PLUS_ICON } from '../../utils/extension-download'
+import {
+  isBrowserExtensionRuntime,
+  openExtensionTab,
+} from '../../../src-bex/runtime-adapter'
 
 const compactCutoff = 325
 
@@ -440,6 +475,13 @@ export default defineComponent({
     const { totalUnread } = storeToRefs(chats)
     const route = useRoute()
     const router = useRouter()
+    const isExtension = isBrowserExtensionRuntime()
+    async function openFullPage() {
+      if (!isExtension) return
+      await openExtensionTab({
+        path: `index.html?extMode=tab#${route.fullPath ?? route.path}`,
+      })
+    }
     const plugIcon = FA_PLUG_CIRCLE_PLUS_ICON
     const dappBridgeDrawerUi = {
       openBridgeTitle: 'Browser Extension & dApp Connect',
@@ -696,6 +738,8 @@ export default defineComponent({
       chatListRef,
       tab,
       plugIcon,
+      isExtension,
+      openFullPage,
       dappBridgeDrawerUi,
       isWelcomeActive,
       isDappBridgeActive,

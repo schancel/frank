@@ -1029,3 +1029,112 @@ it('retains the mobile list and closes the current dApp route at 150% UI scale',
     document.documentElement.style.removeProperty('zoom')
   }
 })
+
+describe('MainLayout extension full-page rail action', () => {
+  const originalChrome = Object.getOwnPropertyDescriptor(globalThis, 'chrome')
+  afterEach(() => {
+    if (originalChrome)
+      Object.defineProperty(globalThis, 'chrome', originalChrome)
+    else Reflect.deleteProperty(globalThis, 'chrome')
+  })
+
+  it.each(['chrome-extension:', 'safari-web-extension:', 'moz-extension:'])(
+    'opens the current route on the same packaged extension origin: %s',
+    async protocol => {
+      const create = jest.fn(async () => ({ id: 7 }))
+      Object.defineProperty(globalThis, 'chrome', {
+        configurable: true,
+        value: {
+          runtime: {
+            id: 'frank-ext',
+            getURL: (path: string) => `${protocol}//frank-ext/${path}`,
+          },
+          tabs: { create },
+        },
+      })
+      const { wrapper, router } = await mountLayout(
+        390,
+        undefined,
+        true,
+        '/wallet',
+      )
+      Object.assign(router.currentRoute.value, {
+        fullPath: '/wallet?chain=solana#assets',
+      })
+      const action = wrapper.get('[data-test="rail-open-full-page"]')
+      expect(action.element.tagName).toBe('BUTTON')
+      expect(action.attributes('aria-label')).toBe('Open full page')
+      expect(action.get('[data-testid="tooltip"]').text()).toBe(
+        'Open full page',
+      )
+      expect(action.element.nextElementSibling?.id).toBe('rail-tab-dapp-bridge')
+      await action.trigger('click')
+      await flushPromises()
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(create).toHaveBeenCalledWith({
+        url: `${protocol}//frank-ext/index.html?extMode=tab#/wallet?chain=solana#assets`,
+      })
+      expect(router.push).not.toHaveBeenCalled()
+      expect(mockSetActiveConversation).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
+  it.each(['chrome-extension:', 'safari-web-extension:', 'moz-extension:'])(
+    'offers only the full-page rail action before setup on %s',
+    async protocol => {
+      const create = jest.fn(async () => ({ id: 7 }))
+      Object.defineProperty(globalThis, 'chrome', {
+        configurable: true,
+        value: {
+          runtime: {
+            id: 'frank-ext',
+            getURL: (path: string) => `${protocol}//frank-ext/${path}`,
+          },
+          tabs: { create },
+        },
+      })
+      const { wrapper, router } = await mountLayout(
+        390,
+        undefined,
+        false,
+        '/welcome',
+      )
+      const action = wrapper.get('[data-test="rail-open-full-page"]')
+      expect(action.attributes('aria-label')).toBe('Open full page')
+      expect(wrapper.findAll('[data-test="rail-open-full-page"]')).toHaveLength(
+        1,
+      )
+      expect(wrapper.find('[data-testid="icon-rail"]').exists()).toBe(false)
+      for (const accountOnlyAction of [
+        '#rail-tab-chats',
+        '#rail-tab-wallet',
+        '#rail-tab-settings',
+        '#rail-tab-dapp-bridge',
+        '[data-test="rail-open-profile"]',
+      ])
+        expect(wrapper.find(accountOnlyAction).exists()).toBe(false)
+      await action.trigger('click')
+      await flushPromises()
+      expect(create).toHaveBeenCalledTimes(1)
+      expect(create).toHaveBeenCalledWith({
+        url: `${protocol}//frank-ext/index.html?extMode=tab#/welcome`,
+      })
+      expect(router.push).not.toHaveBeenCalled()
+      expect(mockSetActiveConversation).not.toHaveBeenCalled()
+      wrapper.unmount()
+    },
+  )
+
+  it.each([true, false])(
+    'does not offer the extension action in the web app (setup: %s)',
+    async setup => {
+      Reflect.deleteProperty(globalThis, 'chrome')
+      const { wrapper } = await mountLayout(390, undefined, setup)
+      expect(wrapper.find('[data-test="rail-open-full-page"]').exists()).toBe(
+        false,
+      )
+      wrapper.unmount()
+    },
+  )
+})

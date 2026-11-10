@@ -580,6 +580,7 @@ export const rawEnUS = {
     formatting: 'Formatting',
   },
   leftDrawer: {
+    openFullPage: 'Open full page',
     noForums: 'No forums discovered yet.',
     settings: 'Settings',
     chats: 'Direct Messages',

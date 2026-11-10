@@ -124,3 +124,23 @@ test('a relay that cannot be asked does not hide a network', async () => {
     unasked.options.map(option => option.key),
   )
 })
+
+test.each([true, false])('generic payment choices exclude no-native-owner assets in testnet mode %s', async isTestnet => {
+  const originalChain = activeChain.chainIdentifier
+  const originalMode = activeChain.isTestnet
+  try {
+    activeChain.isTestnet = isTestnet
+    activeChain.chainIdentifier = isTestnet ? 'monad-testnet' : 'monad-mainnet'
+    const { options } = await configuredStealthAssets({ relayServes: async () => true })
+    expect(options.some(option => option.chainIdentifier.startsWith('tempo-'))).toBe(false)
+    for (const chainIdentifier of isTestnet
+      ? ['monad-testnet', 'ethereum-sepolia', 'solana-devnet', 'btc-testnet']
+      : ['monad-mainnet', 'ethereum-mainnet', 'solana-mainnet', 'btc-mainnet']) {
+      expect(options).toContainEqual(expect.objectContaining({ chainIdentifier, asset: { kind: 'native' } }))
+    }
+    expect(mockContext).not.toHaveBeenCalled()
+  } finally {
+    activeChain.chainIdentifier = originalChain
+    activeChain.isTestnet = originalMode
+  }
+})

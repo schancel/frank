@@ -716,7 +716,7 @@ export async function onboard({
   results,
   captureScreenshot,
 }) {
-  const { evaluate, until, call, click, key, getValue, typeInput } = page
+  const { evaluate, until, call, click, typeInput } = page
   if (profile.account) {
     // The profile already holds an account: open it, do not create another.
     console.log(`\n--- SCENARIO 1: reusing the account in ${directory} ---`)
@@ -738,65 +738,20 @@ export async function onboard({
     )
     console.log('✅ Setup page mounted')
 
-    // Click New Account
+    // Current setup creates and activates directly; backups are an optional later action.
     await click('[data-test="new-account"]')
     await until(
-      `document.querySelector('[data-test="backup-policy"]')`,
+      `document.querySelector('[data-test="display-name"] input, input[data-test="display-name"]')`,
       10000,
-      'backup policy choice',
-    )
-
-    // Focus radio and press Space to select default policy
-    await evaluate(
-      `document.querySelector('[data-test="backup-policy"] [role="radio"]').focus()`,
-    )
-    await key(' ', 'Space', 32)
-    await until(
-      `!document.querySelector('[data-test="generate-backups"]').disabled`,
-      5000,
-      'generate button enabled',
-    )
-
-    // Double click to trigger form submit
-    await evaluate(`(() => {
-    document.querySelector('[data-test="generate-backups"]').click();
-    document.querySelector('[data-test="generate-backups"]').click();
-  })()`)
-
-    // Collect 3 shares
-    await until(
-      `document.querySelector('[data-test="backup-share"]')`,
-      10000,
-      'backup shares presented',
-    )
-    const shares = []
-    for (let i = 0; i < 3; i++) {
-      const shareVal = await getValue('[data-test="backup-share"]')
-      shares.push(shareVal)
-      await click('[data-test="next-share"]')
-    }
-    console.log(`✅ Generated ${shares.length} Codex32 backup shares`)
-
-    // Confirm shares and enter display name
-    await until(
-      `document.querySelector('[data-test="confirm-shares"]')`,
-      10000,
-      'confirm shares view',
-    )
-    await typeInput(
-      '[data-test="confirm-shares"]',
-      shares.slice(0, 2).join('\n'),
+      'account display name form',
     )
     await typeInput('[data-test="display-name"]', 'Autonomous Tester')
-    await click('[data-test="verify-backups"]')
-
     await until(
-      `document.querySelector('[data-test="activate-account"]')`,
-      15000,
-      'activate account ready',
+      `document.querySelector('[data-test="generate-backups"]') && !document.querySelector('[data-test="generate-backups"]').disabled`,
+      5000,
+      'create account enabled',
     )
-    console.log('✅ Backups verified successfully. Activating account...')
-    await click('[data-test="activate-account"]')
+    await click('[data-test="generate-backups"]')
 
     await until(
       `location.hash !== '#/setup'`,
@@ -806,7 +761,7 @@ export async function onboard({
     console.log(
       `✅ Account activated! Landed on ${await evaluate('location.hash')}`,
     )
-    await new Promise(r => setTimeout(r, 2000))
+    await profile.recordAccount(await readPublicAccount({ evaluate, until }))
     await captureScreenshot('01_account_created.png')
 
     results.push([
@@ -814,8 +769,6 @@ export async function onboard({
       'PASS',
       'landed on ' + (await evaluate('location.hash')),
     ])
-
-    await profile.recordAccount(await readPublicAccount({ evaluate, until }))
   }
 }
 

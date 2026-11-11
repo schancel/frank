@@ -239,6 +239,17 @@ test('ordinary DOM exposes identity and receive address without a session import
   })
 })
 
+test('public identity is read from the actual Quasar native input attribute', async () => {
+  const { helper } = fixture()
+  const page = domPage()
+  document.body.innerHTML = `<input data-test="identity-address-input" value="${recipient}">
+    <div class="q-field"><input value="${address}"><button data-testid="wallet-copy-address"></button></div>`
+  await expect(helper.readPublicAccount(page)).resolves.toEqual({
+    profile: recipient,
+    receive: address,
+  })
+})
+
 test('exact available differs from gross and abbreviated display is never used as an amount', async () => {
   const { helper } = fixture()
   walletHtml({ gross: '1234.000000000000000001 MONT', display: '1.23k' })

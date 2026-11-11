@@ -304,6 +304,121 @@ test('import has no profile, filesystem, browser or financial side effects', () 
   expect(f.forbidden).not.toHaveBeenCalled()
 })
 
+function directOnboardingPage({
+  pending = false,
+  missingIdentity = false,
+} = {}) {
+  const location = { hash: '#/setup' }
+  const steps = []
+  let submitted = false
+  const page = {
+    evaluate: jest.fn(async expression =>
+      new Function('document', 'location', `return (${expression})`)(
+        document,
+        location,
+      ),
+    ),
+    call: jest.fn(async (method, params) => {
+      expect(method).toBe('Page.navigate')
+      location.hash = new URL(params.url).hash
+      document.body.innerHTML =
+        '<button data-test="new-account">New account</button>'
+    }),
+    click: jest.fn(async selector => {
+      const button = document.querySelector(selector)
+      if (!button || button.disabled) throw new Error('Control unavailable')
+      steps.push(selector)
+      if (selector === '[data-test="new-account"]') {
+        document.body.innerHTML = `<input data-test="display-name"><button data-test="generate-backups">Create account</button>`
+      } else if (selector === '[data-test="generate-backups"]') {
+        expect(document.querySelector('[data-test="display-name"]').value).toBe(
+          'Autonomous Tester',
+        )
+        if (submitted) throw new Error('Creation submitted twice')
+        submitted = true
+        button.disabled = true
+      } else throw new Error('Unexpected click')
+    }),
+    typeInput: jest.fn(async (selector, value) => {
+      const input = document.querySelector(selector)
+      if (!input) throw new Error('Input unavailable')
+      input.value = value
+    }),
+    until: jest.fn(async (expression, _timeout, label) => {
+      if (submitted && label === 'navigated away from setup' && !pending) {
+        // Account creation acknowledges first; activation completes asynchronously.
+        await Promise.resolve()
+        location.hash = '#/wallet/monad'
+        document.body.innerHTML = `<div data-test="identity-address-input"><input value="${
+          missingIdentity ? '' : identity
+        }"></div>
+          <div class="q-field"><input value="${receive}"><button data-testid="wallet-copy-address"></button></div>`
+      }
+      if (!(await page.evaluate(expression)))
+        throw new Error('Not ready: ' + label)
+    }),
+  }
+  return { page, steps }
+}
+
+test('fresh onboarding uses the current direct form once and records public identity after activation', async () => {
+  const f = loadRunner()
+  f.profile.account = null
+  const driver = directOnboardingPage()
+  const results = []
+  const captureScreenshot = jest.fn(async () => {})
+  await f.runner.onboard({
+    profile: f.profile,
+    directory: f.profile.directory,
+    origin: 'https://signet.mx',
+    page: driver.page,
+    results,
+    captureScreenshot,
+  })
+  expect(driver.steps).toEqual([
+    '[data-test="new-account"]',
+    '[data-test="generate-backups"]',
+  ])
+  expect(f.profile.recordAccount).toHaveBeenCalledWith({
+    profile: identity,
+    receive,
+  })
+  expect(results.find(row => row[0] === '1 onboarding')?.[1]).toBe('PASS')
+  expect(captureScreenshot).toHaveBeenCalledTimes(1)
+  expect(f.forbidden).not.toHaveBeenCalled()
+})
+
+test.each([
+  [{ pending: true }, 'navigated away from setup'],
+  [{ missingIdentity: true }, 'public identity ready'],
+])(
+  'unfinished direct creation never reports onboarding success or retries creation: %j',
+  async (options, failure) => {
+    const f = loadRunner()
+    f.profile.account = null
+    const driver = directOnboardingPage(options)
+    const results = []
+    await expect(
+      f.runner.onboard({
+        profile: f.profile,
+        directory: f.profile.directory,
+        origin: 'https://signet.mx',
+        page: driver.page,
+        results,
+        captureScreenshot: jest.fn(async () => {}),
+      }),
+    ).rejects.toThrow(failure)
+    expect(
+      driver.steps.filter(step => step === '[data-test="generate-backups"]'),
+    ).toHaveLength(1)
+    expect(
+      results.some(row => row[0] === '1 onboarding' && row[1] === 'PASS'),
+    ).toBe(false)
+    expect(f.profile.recordAccount).not.toHaveBeenCalled()
+    expect(f.forbidden).not.toHaveBeenCalled()
+  },
+)
+
 test.each([
   ['--scenario=payments'],
   ['--scenario=nonfinancial', '--scenario=full'],

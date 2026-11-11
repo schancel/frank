@@ -356,12 +356,12 @@ export async function scanBackendLog(path, offset) {
 export async function readPublicAccount(page) {
   await page.evaluate(`location.hash = '#/qr'`)
   await page.until(
-    `!!document.querySelector('[data-test="identity-address-input"] input')?.value`,
+    `!!document.querySelector('input[data-test="identity-address-input"], [data-test="identity-address-input"] input')?.value`,
     60000,
     'public identity ready',
   )
   const profile = await page.evaluate(
-    `document.querySelector('[data-test="identity-address-input"] input').value`,
+    `document.querySelector('input[data-test="identity-address-input"], [data-test="identity-address-input"] input').value`,
   )
   await page.evaluate(`location.hash = '#/wallet/monad'`)
   await page.until(

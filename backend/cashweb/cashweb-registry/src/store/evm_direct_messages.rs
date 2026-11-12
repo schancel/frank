@@ -2167,8 +2167,31 @@ mod large_request_tests {
             std::env::var(name).unwrap_or_else(|_| panic!("{name} is required"))
         }
 
+        fn fixture_s3_config(
+            read_env: impl Fn(&str) -> Result<String, std::env::VarError>,
+            run: &str,
+        ) -> Result<S3BlobStoreConfig, String> {
+            let required = |name: &str| {
+                read_env(name).map_err(|_| format!("{name} is required and must be valid Unicode"))
+            };
+            let config = S3BlobStoreConfig {
+                api: cashweb_config::S3Api::S3,
+                endpoint: required("FRANK_LAB_S3_ENDPOINT")?,
+                region: "us-east-1".into(),
+                bucket: required("FRANK_LAB_S3_BUCKET")?,
+                prefix: format!("lab-{run}/dm"),
+                access_key_id: required("FRANK_S3_ACCESS_KEY_ID")?,
+                secret_access_key: required("FRANK_S3_SECRET_ACCESS_KEY")?,
+                force_path_style: true,
+            };
+            config.validate()?;
+            Ok(config)
+        }
+
         fn open() -> (Owner, Arc<S3ObjectStore>) {
             let run = env("FRANK_LAB_RUN_ID");
+            let config = fixture_s3_config(|name| std::env::var(name), &run)
+                .expect("invalid large-request fixture configuration");
             let kv = Arc::new(
                 FoundationDbKvStore::open(
                     &env("FRANK_FDB_CLUSTER_FILE"),
@@ -2176,20 +2199,139 @@ mod large_request_tests {
                 )
                 .unwrap(),
             );
-            let objects = Arc::new(
-                S3ObjectStore::new(S3BlobStoreConfig {
-                    api: cashweb_config::S3Api::S3,
-                    endpoint: env("FRANK_LAB_S3_ENDPOINT"),
-                    region: "us-east-1".into(),
-                    bucket: env("FRANK_LAB_S3_BUCKET"),
-                    prefix: format!("lab-{run}/dm"),
-                    access_key_id: env("FRANK_S3_ACCESS_KEY_ID"),
-                    secret_access_key: env("FRANK_S3_SECRET_ACCESS_KEY"),
-                    force_path_style: true,
-                })
-                .unwrap(),
-            );
+            let objects = Arc::new(S3ObjectStore::new(config).unwrap());
             (Owner::with_store(kv, objects.clone()), objects)
+        }
+
+        #[cfg(test)]
+        mod fixture_config_tests {
+            use super::*;
+            use std::{collections::BTreeMap, env::VarError};
+
+            fn values() -> BTreeMap<&'static str, String> {
+                BTreeMap::from([
+                    (
+                        "FRANK_LAB_S3_ENDPOINT",
+                        "https://storage.googleapis.com".into(),
+                    ),
+                    ("FRANK_LAB_S3_BUCKET", "fixture-bucket".into()),
+                    ("FRANK_S3_ACCESS_KEY_ID", "fixture-access".into()),
+                    ("FRANK_S3_SECRET_ACCESS_KEY", "fixture-secret".into()),
+                ])
+            }
+
+            fn config(values: &BTreeMap<&str, String>) -> Result<S3BlobStoreConfig, String> {
+                fixture_s3_config(
+                    |name| values.get(name).cloned().ok_or(VarError::NotPresent),
+                    "fixture-run",
+                )
+            }
+
+            #[test]
+            fn absent_inputs_preserve_s3_defaults_and_required_fields() {
+                let mut inputs = values();
+                for api in [None, Some("s3")] {
+                    if let Some(api) = api {
+                        inputs.insert("FRANK_LAB_S3_API", api.into());
+                    }
+                    let actual = config(&inputs).unwrap();
+                    assert_eq!(actual.api, cashweb_config::S3Api::S3);
+                    assert_eq!(actual.prefix, "lab-fixture-run/dm");
+                    assert_eq!(actual.endpoint, "https://storage.googleapis.com");
+                    assert_eq!(actual.bucket, "fixture-bucket");
+                    assert_eq!(actual.region, "us-east-1");
+                    assert!(actual.force_path_style);
+                    assert_eq!(actual.access_key_id, "fixture-access");
+                    assert_eq!(actual.secret_access_key, "fixture-secret");
+                }
+            }
+
+            #[test]
+            fn explicit_gcs_api_and_prefix_reach_the_owner_fixture() {
+                let mut inputs = values();
+                inputs.insert("FRANK_LAB_S3_API", "gcs_xml".into());
+                inputs.insert("FRANK_LAB_S3_PREFIX", "contract/fixture-run".into());
+                let actual = config(&inputs).unwrap();
+                assert_eq!(actual.api, cashweb_config::S3Api::GcsXml);
+                assert_eq!(actual.prefix, "contract/fixture-run/dm");
+            }
+
+            #[test]
+            fn prefix_override_preserves_default_api() {
+                let mut inputs = values();
+                inputs.insert("FRANK_LAB_S3_PREFIX", "contract/fixture-run".into());
+                let actual = config(&inputs).unwrap();
+                assert_eq!(actual.api, cashweb_config::S3Api::S3);
+                assert_eq!(actual.prefix, "contract/fixture-run/dm");
+            }
+
+            #[test]
+            fn invalid_api_is_refused() {
+                for api in ["", "auto", "GcsXml", " gcs_xml "] {
+                    let mut inputs = values();
+                    inputs.insert("FRANK_LAB_S3_API", api.into());
+                    assert!(config(&inputs).is_err());
+                }
+            }
+
+            #[test]
+            fn empty_or_invalid_prefix_is_refused() {
+                for prefix in [
+                    "",
+                    "/",
+                    "///",
+                    "contract//run",
+                    "contract/../run",
+                    "contract/a.b",
+                ] {
+                    let mut inputs = values();
+                    inputs.insert("FRANK_LAB_S3_PREFIX", prefix.into());
+                    assert!(config(&inputs).is_err());
+                }
+            }
+
+            #[test]
+            fn non_unicode_optional_inputs_are_refused() {
+                for invalid in ["FRANK_LAB_S3_API", "FRANK_LAB_S3_PREFIX"] {
+                    let inputs = values();
+                    let actual = fixture_s3_config(
+                        |name| {
+                            if name == invalid {
+                                Err(VarError::NotUnicode("fixture".into()))
+                            } else {
+                                inputs.get(name).cloned().ok_or(VarError::NotPresent)
+                            }
+                        },
+                        "fixture-run",
+                    );
+                    assert!(actual.is_err());
+                }
+            }
+
+            #[test]
+            fn required_inputs_and_production_validation_are_preserved() {
+                for missing in [
+                    "FRANK_LAB_S3_ENDPOINT",
+                    "FRANK_LAB_S3_BUCKET",
+                    "FRANK_S3_ACCESS_KEY_ID",
+                    "FRANK_S3_SECRET_ACCESS_KEY",
+                ] {
+                    let mut inputs = values();
+                    inputs.remove(missing);
+                    assert!(config(&inputs).is_err());
+                }
+                for (field, value) in [
+                    (
+                        "FRANK_LAB_S3_ENDPOINT",
+                        "https://storage.googleapis.com/path",
+                    ),
+                    ("FRANK_LAB_S3_BUCKET", "INVALID_BUCKET"),
+                ] {
+                    let mut inputs = values();
+                    inputs.insert(field, value.into());
+                    assert!(config(&inputs).is_err());
+                }
+            }
         }
 
         #[test]

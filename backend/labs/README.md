@@ -731,5 +731,31 @@ The existing live group and private-DM fixtures also accept
 fixture auth preserves HMAC. Metadata mode forbids HMAC credentials and metadata
 host overrides. The two `gcs_xml_wrong_secret...`/`gcs_xml_wrong_payload_hash...`
 selectors remain HMAC-specific evidence; do not run or relabel them as OAuth
-qualification. A future admitted GCS run must adapt those negatives and validate
-actual OAuth/checksum behavior; loopback mocks do not qualify the service.
+qualification. A future admitted GCS run must select the metadata counterparts
+below and validate actual OAuth/checksum behavior; loopback mocks do not qualify
+the service.
+
+
+The separately named ignored metadata-mode counterparts are:
+
+- `gcs_xml_metadata_invalid_bearer_put_is_refused_without_object`
+- `gcs_xml_metadata_wrong_md5_put_is_refused_without_object`
+
+They require explicit `FRANK_LAB_S3_AUTH=google_metadata`, `gcs_xml`, the exact
+trusted GCS HTTPS endpoint and `contract/${FRANK_LAB_RUN_ID}` prefix, with no HMAC
+credentials or metadata-host override. Their scopes are
+`gcs-negative-metadata-invalid-bearer` and `gcs-negative-metadata-wrong-md5`;
+only the same three control/attempt keys are used. Production ObjectStore
+controls and GET/HEAD absence checks bracket a single deliberately malformed
+raw PUT. The invalid bearer is fixed synthetic text with a correct MD5; the
+wrong-MD5 request uses the official metadata provider and an incorrect valid
+16-byte checksum. It requires HTTP 400 with a bounded internal `BadDigest`
+classification; provider bodies and tokens are never printed.
+
+Each case has a 55-second deadline inside the existing 60-second profile
+budget. Every production operation reserves its existing 20-second bound before
+starting; token acquisition, raw PUT and bounded response reading share the
+remaining request budget. These ignored cases are preparation only: compile,
+inventory and pure guard tests do not qualify GCS. Their execution requires
+separate ROOT cloud admission, verified metadata identity/permissions and owned
+cleanup. The HMAC negatives retain their original meaning and behavior.

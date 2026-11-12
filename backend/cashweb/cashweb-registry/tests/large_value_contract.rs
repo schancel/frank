@@ -12,7 +12,10 @@
 //! and open no stores or services.
 #![cfg(feature = "foundationdb")]
 
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use cashweb_registry::store::{
     blob_store::S3BlobStoreConfig,
@@ -22,7 +25,10 @@ use cashweb_registry::store::{
         GroupStore, GroupWritePaymentFact,
     },
     kv_store::{KvError, RelayKvStore, Transact},
-    large_values::{LargeValueError, LargeValues, ObjectStore, INLINE_LIMIT},
+    large_values::{
+        LargeValueError, LargeValues, ObjectStore, ObjectStoreError, INLINE_LIMIT,
+        MAX_OBJECT_REQUEST,
+    },
     s3_objects::S3ObjectStore,
 };
 use secp256k1_abc::{Message, PublicKey, Secp256k1, SecretKey};
@@ -291,6 +297,262 @@ fn gcs_xml_wrong_payload_hash_conditional_put_is_refused_without_object() {
         "GCS payload-hash mismatch left an object or absence was unconfirmed"
     );
     gcs_absent(&valid, "attempt");
+}
+
+const GCS_METADATA_CASE_BUDGET: Duration = Duration::from_secs(55);
+const GCS_ERROR_BODY_LIMIT: usize = 4096;
+
+#[derive(Clone, Copy)]
+enum MetadataNegative {
+    InvalidBearer,
+    WrongMd5,
+}
+
+impl MetadataNegative {
+    fn scope(self) -> &'static str {
+        match self {
+            Self::InvalidBearer => "gcs-negative-metadata-invalid-bearer",
+            Self::WrongMd5 => "gcs-negative-metadata-wrong-md5",
+        }
+    }
+}
+
+fn gcs_metadata_negative_config(
+    read_env: impl Fn(&str) -> Result<String, std::env::VarError>,
+    case: MetadataNegative,
+) -> Result<S3BlobStoreConfig, String> {
+    let config = fixture_s3_config(&read_env, case.scope())?;
+    let run = read_env("FRANK_LAB_RUN_ID").map_err(|_| "disposable run required")?;
+    let prefix = read_env("FRANK_LAB_S3_PREFIX").map_err(|_| "explicit run prefix required")?;
+    if !matches!(
+        config.auth,
+        cashweb_registry::store::blob_store::S3Authentication::GoogleMetadata
+    ) || config.api != cashweb_config::S3Api::GcsXml
+        || config.endpoint != "https://storage.googleapis.com"
+        || prefix != format!("contract/{run}")
+    {
+        return Err("explicit disposable metadata GCS fixture required".into());
+    }
+    Ok(config)
+}
+
+// Only these metadata cases use this forwarding deadline. The actual production store
+// still owns auth, conditional writes and each complete operation's 20-second bound.
+#[derive(Debug)]
+struct GcsMetadataCaseObjects {
+    objects: S3ObjectStore,
+    deadline: Instant,
+}
+
+impl GcsMetadataCaseObjects {
+    fn can_start(&self) -> Result<(), ObjectStoreError> {
+        if self.deadline.saturating_duration_since(Instant::now()) < MAX_OBJECT_REQUEST {
+            return Err(ObjectStoreError("GCS case deadline exhausted".into()));
+        }
+        Ok(())
+    }
+}
+
+impl ObjectStore for GcsMetadataCaseObjects {
+    fn put(&self, key: &str, bytes: &[u8], sha256: &[u8; 32]) -> Result<(), ObjectStoreError> {
+        self.can_start()?;
+        self.objects.put(key, bytes, sha256)
+    }
+    fn put_if_absent(
+        &self,
+        key: &str,
+        bytes: &[u8],
+        sha256: &[u8; 32],
+    ) -> Result<bool, ObjectStoreError> {
+        self.can_start()?;
+        self.objects.put_if_absent(key, bytes, sha256)
+    }
+    fn get(&self, key: &str) -> Result<Option<Vec<u8>>, ObjectStoreError> {
+        self.can_start()?;
+        self.objects.get(key)
+    }
+    fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        self.can_start()?;
+        self.objects.delete(key)
+    }
+    fn contains(&self, key: &str) -> Result<bool, ObjectStoreError> {
+        self.can_start()?;
+        self.objects.contains(key)
+    }
+}
+
+fn metadata_attempt_url(config: &S3BlobStoreConfig) -> String {
+    // The fixture guard already validated every segment: no escaping or alternate origin.
+    format!(
+        "{}/{}/{}/attempt",
+        config.endpoint, config.bucket, config.prefix
+    )
+}
+
+fn negative_put_headers(
+    bearer: &str,
+    checksum: [u8; 16],
+    len: usize,
+) -> Result<reqwest::header::HeaderMap, ()> {
+    use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_LENGTH};
+    let mut auth = HeaderValue::from_str(&format!("Bearer {bearer}")).map_err(|_| ())?;
+    auth.set_sensitive(true);
+    let mut headers = HeaderMap::new();
+    headers.insert(AUTHORIZATION, auth);
+    headers.insert(
+        "content-md5",
+        base64::encode(checksum).parse().map_err(|_| ())?,
+    );
+    headers.insert(CONTENT_LENGTH, len.to_string().parse().map_err(|_| ())?);
+    headers.insert("x-goog-if-generation-match", HeaderValue::from_static("0"));
+    Ok(headers)
+}
+
+// Deliberately narrow classification of the documented XML error's first direct Code.
+// No body is returned or included in a failure; embedded/duplicate codes do not qualify.
+fn is_bad_digest_response(body: &[u8]) -> bool {
+    if body.len() > GCS_ERROR_BODY_LIMIT {
+        return false;
+    }
+    let Ok(text) = std::str::from_utf8(body) else {
+        return false;
+    };
+    let text = text.trim();
+    let text = if text.starts_with("<?xml ") {
+        let Some((_, rest)) = text.split_once("?>") else {
+            return false;
+        };
+        rest.trim()
+    } else {
+        text
+    };
+    let Some(error) = text
+        .strip_prefix("<Error>")
+        .and_then(|v| v.strip_suffix("</Error>"))
+    else {
+        return false;
+    };
+    let Some(rest) = error.trim_start().strip_prefix("<Code>BadDigest</Code>") else {
+        return false;
+    };
+    !rest.contains("<Code>") && !rest.contains("</Code>")
+}
+
+fn metadata_negative_checksum(case: MetadataNegative, bytes: &[u8]) -> [u8; 16] {
+    let mut checksum: [u8; 16] = md5::Md5::digest(bytes).into();
+    if matches!(case, MetadataNegative::WrongMd5) {
+        checksum[0] ^= 1;
+    }
+    checksum
+}
+
+async fn raw_metadata_negative_put(
+    config: &S3BlobStoreConfig,
+    case: MetadataNegative,
+    budget: Duration,
+) -> Result<bool, ()> {
+    // Only this deliberately malformed request bypasses production's SHA/MD5 computation.
+    let bytes = b"\x00metadata negative attempt\xff";
+    let checksum = metadata_negative_checksum(case, bytes);
+    let bearer = match case {
+        MetadataNegative::InvalidBearer => "frank-gcsq-deliberately-invalid-bearer".to_string(),
+        MetadataNegative::WrongMd5 => {
+            // A successful production control has already initialized the existing ring
+            // provider. This separate official provider owns its token/refresh lifetime.
+            let credentials = google_cloud_auth::credentials::mds::Builder::default()
+                .with_scopes(["https://www.googleapis.com/auth/devstorage.read_write"])
+                .build_access_token_credentials()
+                .map_err(|_| ())?;
+            credentials.access_token().await.map_err(|_| ())?.token
+        }
+    };
+    let headers = negative_put_headers(&bearer, checksum, bytes.len())?;
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .redirect(reqwest::redirect::Policy::none())
+        .connect_timeout(budget.min(Duration::from_secs(5)))
+        .timeout(budget)
+        .build()
+        .map_err(|_| ())?;
+    let mut response = client
+        .put(metadata_attempt_url(config))
+        .headers(headers)
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .map_err(|_| ())?;
+    match case {
+        MetadataNegative::InvalidBearer => Ok(matches!(
+            response.status(),
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        )),
+        MetadataNegative::WrongMd5 => {
+            if response.status() != reqwest::StatusCode::BAD_REQUEST {
+                return Ok(false);
+            }
+            let mut body = Vec::new();
+            while let Some(chunk) = response.chunk().await.map_err(|_| ())? {
+                if chunk.len() > GCS_ERROR_BODY_LIMIT.saturating_sub(body.len()) {
+                    return Err(());
+                }
+                body.extend_from_slice(&chunk);
+            }
+            Ok(is_bad_digest_response(&body))
+        }
+    }
+}
+
+fn gcs_metadata_negative_case(case: MetadataNegative) {
+    let deadline = Instant::now() + GCS_METADATA_CASE_BUDGET;
+    let config = gcs_metadata_negative_config(|name| std::env::var(name), case)
+        .unwrap_or_else(|_| panic!("invalid disposable metadata GCS fixture"));
+    let objects = S3ObjectStore::new(config.clone())
+        .unwrap_or_else(|_| panic!("metadata GCS fixture client unavailable"));
+    let valid = GcsMetadataCaseObjects { objects, deadline };
+    for key in ["control-before", "attempt", "control-after"] {
+        gcs_absent(&valid, key);
+    }
+    gcs_positive_control(&valid, "control-before");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap_or_else(|_| panic!("metadata GCS negative runtime unavailable"));
+    let budget = deadline
+        .saturating_duration_since(Instant::now())
+        .min(MAX_OBJECT_REQUEST);
+    let refused = runtime.block_on(async {
+        matches!(
+            tokio::time::timeout(budget, raw_metadata_negative_put(&config, case, budget)).await,
+            Ok(Ok(true))
+        )
+    });
+    // Do not let a canceled DNS/blocking resolver task extend this case's deadline.
+    // The SDK-owned credentials/refresh task have already left the bounded future.
+    runtime.shutdown_timeout(Duration::ZERO);
+    // Production reads and controls establish actual absence and healthy authorization.
+    gcs_absent(&valid, "attempt");
+    gcs_positive_control(&valid, "control-after");
+    for key in ["control-before", "control-after"] {
+        assert!(
+            valid.delete(key).is_ok(),
+            "metadata GCS control cleanup refused"
+        );
+        gcs_absent(&valid, key);
+    }
+    assert!(refused, "metadata GCS negative refusal unconfirmed");
+    gcs_absent(&valid, "attempt");
+}
+
+#[test]
+#[ignore = "requires explicitly admitted disposable GCS metadata fixture"]
+fn gcs_xml_metadata_invalid_bearer_put_is_refused_without_object() {
+    gcs_metadata_negative_case(MetadataNegative::InvalidBearer);
+}
+
+#[test]
+#[ignore = "requires explicitly admitted disposable GCS metadata fixture"]
+fn gcs_xml_metadata_wrong_md5_put_is_refused_without_object() {
+    gcs_metadata_negative_case(MetadataNegative::WrongMd5);
 }
 
 /// One relay's view: its own FDB client and its own S3 client.
@@ -927,6 +1189,132 @@ mod fixture_config_tests {
             bad.insert(key, value.into());
             assert!(config(&bad, "").is_err());
         }
+    }
+
+    #[test]
+    fn metadata_negative_config_requires_exact_auth_origin_and_run_prefix_without_io() {
+        let mut values = inputs();
+        values.remove("FRANK_S3_ACCESS_KEY_ID");
+        values.remove("FRANK_S3_SECRET_ACCESS_KEY");
+        values.insert("FRANK_LAB_S3_API", "gcs_xml".into());
+        values.insert("FRANK_LAB_S3_AUTH", "google_metadata".into());
+        values.insert(
+            "FRANK_LAB_S3_ENDPOINT",
+            "https://storage.googleapis.com".into(),
+        );
+        values.insert("FRANK_LAB_S3_PREFIX", "contract/fixture-1".into());
+        let read = |map: &HashMap<&str, String>, case| {
+            gcs_metadata_negative_config(
+                |name| map.get(name).cloned().ok_or(VarError::NotPresent),
+                case,
+            )
+        };
+        for case in [MetadataNegative::InvalidBearer, MetadataNegative::WrongMd5] {
+            let config = read(&values, case).unwrap();
+            for mode in [None, Some("hmac")] {
+                let mut hmac = values.clone();
+                if let Some(mode) = mode {
+                    hmac.insert("FRANK_LAB_S3_AUTH", mode.into());
+                } else {
+                    hmac.remove("FRANK_LAB_S3_AUTH");
+                }
+                hmac.insert("FRANK_S3_ACCESS_KEY_ID", "fixture-access".into());
+                hmac.insert("FRANK_S3_SECRET_ACCESS_KEY", "fixture-secret".into());
+                assert!(read(&hmac, case).is_err());
+                assert!(gcs_negative_config(
+                    |name| hmac.get(name).cloned().ok_or(VarError::NotPresent),
+                    case.scope()
+                )
+                .is_ok());
+            }
+            assert_eq!(
+                metadata_attempt_url(&config),
+                format!(
+                    "https://storage.googleapis.com/fixture-bucket/contract/fixture-1/{}/attempt",
+                    case.scope()
+                )
+            );
+            assert!(gcs_negative_config(
+                |name| values.get(name).cloned().ok_or(VarError::NotPresent),
+                case.scope()
+            )
+            .is_err());
+            for (key, value) in [
+                ("FRANK_LAB_S3_AUTH", "hmac"),
+                ("FRANK_LAB_S3_AUTH", "adc"),
+                ("FRANK_LAB_S3_API", "s3"),
+                ("FRANK_LAB_S3_ENDPOINT", "http://storage.googleapis.com"),
+                ("FRANK_LAB_S3_ENDPOINT", "https://example.com"),
+                ("FRANK_LAB_S3_ENDPOINT", "https://storage.googleapis.com/"),
+                ("FRANK_LAB_S3_PREFIX", "contract/other-run"),
+                ("FRANK_LAB_S3_PREFIX", "contract/fixture-1/"),
+                ("FRANK_LAB_S3_PREFIX", "production"),
+                ("FRANK_S3_ACCESS_KEY_ID", "must-not-read"),
+                ("FRANK_S3_SECRET_ACCESS_KEY", "must-not-read"),
+                ("GCE_METADATA_HOST", "must-not-read"),
+            ] {
+                let mut bad = values.clone();
+                bad.insert(key, value.into());
+                assert!(read(&bad, case).is_err());
+            }
+            for key in [
+                "FRANK_LAB_S3_AUTH",
+                "FRANK_LAB_S3_API",
+                "FRANK_LAB_S3_ENDPOINT",
+                "FRANK_LAB_S3_BUCKET",
+                "FRANK_LAB_S3_PREFIX",
+                "FRANK_LAB_RUN_ID",
+            ] {
+                let mut bad = values.clone();
+                bad.remove(key);
+                assert!(read(&bad, case).is_err());
+            }
+        }
+    }
+
+    #[test]
+    fn bad_digest_classification_is_bounded_and_ignores_echoed_codes() {
+        assert!(is_bad_digest_response(b"<?xml version=\"1.0\"?><Error>\n<Code>BadDigest</Code><Message>checksum differs</Message></Error>"));
+        for body in [
+            b"<Error><Code>InvalidDigest</Code><Message>BadDigest</Message></Error>".as_slice(),
+            b"<Error><Message><Code>BadDigest</Code></Message></Error>",
+            b"<Error><Code>BadDigest</Code><Code>Other</Code></Error>",
+            b"<Code>BadDigest</Code>",
+            &[255],
+        ] {
+            assert!(!is_bad_digest_response(body));
+        }
+        assert!(!is_bad_digest_response(&vec![
+            b' ';
+            GCS_ERROR_BODY_LIMIT + 1
+        ]));
+    }
+
+    #[test]
+    fn negative_put_headers_are_sensitive_and_keep_the_raw_request_shape() {
+        let bytes = b"\x00metadata negative attempt\xff";
+        let checksum: [u8; 16] = md5::Md5::digest(bytes).into();
+        assert_eq!(
+            metadata_negative_checksum(MetadataNegative::InvalidBearer, bytes),
+            checksum
+        );
+        let wrong = metadata_negative_checksum(MetadataNegative::WrongMd5, bytes);
+        assert_ne!(wrong, checksum);
+        assert_eq!(base64::decode(base64::encode(wrong)).unwrap().len(), 16);
+        let headers =
+            negative_put_headers("synthetic-not-a-real-token", checksum, bytes.len()).unwrap();
+        assert!(headers.get("authorization").unwrap().is_sensitive());
+        assert!(!format!("{headers:?}").contains("synthetic-not-a-real-token"));
+        assert_eq!(
+            headers.get("content-md5").unwrap(),
+            base64::encode(checksum).as_str()
+        );
+        assert_eq!(
+            headers.get("content-length").unwrap(),
+            bytes.len().to_string().as_str()
+        );
+        assert_eq!(headers.get("x-goog-if-generation-match").unwrap(), "0");
+        assert!(headers.get("if-none-match").is_none());
     }
 
     #[test]

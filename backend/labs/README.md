@@ -541,6 +541,10 @@ including a trailing slash for an empty scope. Empty or slash-only override base
 are rejected, and prefix/endpoint validation uses the existing production
 `S3BlobStoreConfig` rules. Region remains `us-east-1`, with path-style requests.
 
+The existing 8 MiB DM owner phases in `live_fdb_s3` use the same optional API
+and base-prefix inputs, appending `/dm`. Their defaults remain `s3` and
+`lab-${FRANK_LAB_RUN_ID}/dm`; object configuration is validated before opening FDB.
+
 Run ID, endpoint, bucket and the existing access-key/secret-key inputs remain
 required; the FDB cluster-file input is still required by live phases. Set any
 overrides in the **test process's** environment: exporting them in the host shell

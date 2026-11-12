@@ -3946,6 +3946,39 @@ mod tests {
         }
     }
 
+    async fn await_fixture_milestone<T>(
+        notification: &tokio::sync::Notify,
+        operation: &mut tokio::task::JoinHandle<Result<T, BlobError>>,
+    ) -> Result<(), String> {
+        tokio::select! {
+            _ = notification.notified() => Ok(()),
+            result = operation => Err(match result {
+                Ok(Err(error)) => format!("operation failed before fixture milestone: {error}"),
+                Ok(Ok(_)) => "operation completed before fixture milestone".into(),
+                Err(_) => "operation task failed before fixture milestone".into(),
+            }),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) =>
+                Err("fixture milestone timed out".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn google_metadata_fixture_milestone_reports_early_operation_failure() {
+        let fixture = GoogleFixture::new().await;
+        *fixture.state.metadata_status.lock().unwrap() = AxumStatusCode::BAD_REQUEST;
+        let transport = fixture.transport();
+        let mut operation = tokio::spawn(async move { transport.delete_object("object").await });
+        let error = await_fixture_milestone(&fixture.state.head_entered, &mut operation)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Google metadata authentication failed"),
+            "{error}"
+        );
+        assert_eq!(fixture.calls(), 1);
+        assert!(fixture.state.requests.lock().unwrap().is_empty());
+    }
+
     #[tokio::test]
     async fn google_metadata_hanging_auth_bounds_concurrent_object_operations() {
         let fixture = GoogleFixture::new().await;
@@ -3961,7 +3994,9 @@ mod tests {
                 async move { transport.get_object("absent").await },
             ));
         }
-        fixture.state.metadata_entered.notified().await;
+        await_fixture_milestone(&fixture.state.metadata_entered, tasks.first_mut().unwrap())
+            .await
+            .unwrap();
         tokio::time::pause();
         tokio::time::advance(
             crate::store::large_values::MAX_OBJECT_REQUEST + std::time::Duration::from_secs(1),
@@ -3990,12 +4025,16 @@ mod tests {
             .insert("/frank/scope/object".into(), b"x".to_vec());
         *fixture.state.object_delay.lock().unwrap() = std::time::Duration::from_secs(12);
         let transport = fixture.transport();
-        let task = tokio::spawn(async move { transport.delete_object("object").await });
-        fixture.state.head_entered.notified().await;
+        let mut task = tokio::spawn(async move { transport.delete_object("object").await });
+        await_fixture_milestone(&fixture.state.head_entered, &mut task)
+            .await
+            .unwrap();
         tokio::time::pause();
         tokio::time::advance(std::time::Duration::from_secs(12)).await;
         tokio::time::resume();
-        fixture.state.delete_entered.notified().await;
+        await_fixture_milestone(&fixture.state.delete_entered, &mut task)
+            .await
+            .unwrap();
         tokio::time::pause();
         tokio::time::advance(std::time::Duration::from_secs(9)).await;
         assert!(task

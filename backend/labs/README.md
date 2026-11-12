@@ -661,7 +661,9 @@ Metadata auth requires that exact trusted HTTPS GCS origin, rejects
 `GCE_METADATA_HOST`, and disables redirects. It uses the published
 `google-cloud-auth` 1.19.0 metadata provider (MSRV 1.91), not ADC/user credential
 discovery or HMAC fallback. The provider owns token refresh and caching on the
-existing object runtime; the relay persists no tokens. Token acquisition and
+existing object runtime; the relay persists no tokens. It reuses the existing
+NATS ring TLS backend; it does not enable a second Rustls crypto provider.
+Token acquisition and
 all HTTP steps, including HEAD plus DELETE, share the existing 20-second
 operation deadline. Deployment composition must separately bind the intended
 workload identity and grant bucket permissions; this config provisions neither.

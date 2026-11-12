@@ -2600,6 +2600,12 @@ impl ReqwestS3Transport {
                 let credentials = self
                     .google_credentials
                     .get_or_try_init(|| async {
+                        // The auth library's rustls-no-provider client requires an installed
+                        // default. Reuse the existing NATS ring backend, respecting a host's
+                        // already-installed provider and concurrent initialization.
+                        if rustls::crypto::CryptoProvider::get_default().is_none() {
+                            let _ = rustls::crypto::ring::default_provider().install_default();
+                        }
                         let builder = google_cloud_auth::credentials::mds::Builder::default()
                             .with_scopes(["https://www.googleapis.com/auth/devstorage.read_write"]);
                         #[cfg(test)]
@@ -3742,6 +3748,40 @@ mod tests {
                 .metadata_calls
                 .load(std::sync::atomic::Ordering::SeqCst)
         }
+    }
+
+    #[test]
+    fn hmac_nats_tls_builder_works_before_any_metadata_provider_initialization() {
+        const CHILD: &str = "FRANK_TEST_NATS_TLS_PROVIDER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+            // This is the preexisting NATS TLS construction path, without a network request.
+            // It must remain unambiguous even when no metadata store is ever used.
+            let _ = rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth();
+            return;
+        }
+        // Other tests may already have installed a global crypto provider. A fresh process
+        // exercises the real full-feature dependency graph before that can mask ambiguity.
+        let qualified = concat!(
+            module_path!(),
+            "::hmac_nats_tls_builder_works_before_any_metadata_provider_initialization"
+        );
+        // libtest's inventory omits the crate prefix present in module_path!().
+        let name = qualified.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "fresh-process NATS TLS builder failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
     }
 
     #[test]

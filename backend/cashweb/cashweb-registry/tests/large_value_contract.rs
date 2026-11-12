@@ -112,8 +112,27 @@ fn fixture_s3_config(
         region: "us-east-1".into(),
         bucket: required("FRANK_LAB_S3_BUCKET")?,
         prefix: format!("{base}/{scope}"),
-        access_key_id: required("FRANK_S3_ACCESS_KEY_ID")?,
-        secret_access_key: required("FRANK_S3_SECRET_ACCESS_KEY")?,
+        auth: match optional("FRANK_LAB_S3_AUTH")?.as_deref() {
+            None | Some("hmac") => cashweb_registry::store::blob_store::S3Authentication::Hmac(
+                cashweb_config::S3Credentials {
+                    access_key_id: required("FRANK_S3_ACCESS_KEY_ID")?,
+                    secret_access_key: required("FRANK_S3_SECRET_ACCESS_KEY")?,
+                },
+            ),
+            Some("google_metadata") => {
+                if optional("FRANK_S3_ACCESS_KEY_ID")?.is_some()
+                    || optional("FRANK_S3_SECRET_ACCESS_KEY")?.is_some()
+                    || optional("GCE_METADATA_HOST")?.is_some()
+                {
+                    return Err(
+                        "google_metadata forbids HMAC credentials and metadata host overrides"
+                            .into(),
+                    );
+                }
+                cashweb_registry::store::blob_store::S3Authentication::GoogleMetadata
+            }
+            Some(_) => return Err("FRANK_LAB_S3_AUTH must be hmac or google_metadata".into()),
+        },
         force_path_style: true,
     };
     config.validate()?;
@@ -135,7 +154,10 @@ fn gcs_negative_config(
     let config = fixture_s3_config(&read_env, scope)?;
     let run = read_env("FRANK_LAB_RUN_ID").map_err(|_| "disposable run required")?;
     let prefix = read_env("FRANK_LAB_S3_PREFIX").map_err(|_| "explicit run prefix required")?;
-    if config.api != cashweb_config::S3Api::GcsXml
+    if !matches!(
+        config.auth,
+        cashweb_registry::store::blob_store::S3Authentication::Hmac(_)
+    ) || config.api != cashweb_config::S3Api::GcsXml
         || config.endpoint != "https://storage.googleapis.com"
         || prefix != format!("contract/{run}")
     {
@@ -205,16 +227,22 @@ fn gcs_positive_control(objects: &dyn ObjectStore, key: &str) {
 fn gcs_xml_wrong_secret_conditional_put_is_refused_without_object() {
     let (mut config, valid) = gcs_negative_fixture("gcs-negative-wrong-secret");
     gcs_positive_control(&valid, "control-before");
+    let cashweb_registry::store::blob_store::S3Authentication::Hmac(credentials) = &mut config.auth
+    else {
+        panic!("HMAC fixture required")
+    };
     assert!(
-        config.secret_access_key.len() == 40 && config.secret_access_key.is_ascii(),
+        credentials.secret_access_key.len() == 40 && credentials.secret_access_key.is_ascii(),
         "GCS HMAC secret shape invalid"
     );
-    let replacement = if config.secret_access_key.starts_with('A') {
+    let replacement = if credentials.secret_access_key.starts_with('A') {
         "B"
     } else {
         "A"
     };
-    config.secret_access_key.replace_range(..1, replacement);
+    credentials
+        .secret_access_key
+        .replace_range(..1, replacement);
     let wrong = match S3ObjectStore::new(config) {
         Ok(objects) => objects,
         Err(_) => panic!("negative GCS fixture client unavailable"),
@@ -873,6 +901,35 @@ mod fixture_config_tests {
     }
 
     #[test]
+    fn metadata_fixture_is_explicit_and_never_accepts_hmac_or_untrusted_origins() {
+        let mut values = inputs();
+        values.remove("FRANK_S3_ACCESS_KEY_ID");
+        values.remove("FRANK_S3_SECRET_ACCESS_KEY");
+        values.insert("FRANK_LAB_S3_API", "gcs_xml".into());
+        values.insert("FRANK_LAB_S3_AUTH", "google_metadata".into());
+        values.insert(
+            "FRANK_LAB_S3_ENDPOINT",
+            "https://storage.googleapis.com".into(),
+        );
+        assert_eq!(
+            config(&values, "").unwrap().auth,
+            cashweb_registry::store::blob_store::S3Authentication::GoogleMetadata
+        );
+        for (key, value) in [
+            ("FRANK_LAB_S3_AUTH", "adc"),
+            ("FRANK_LAB_S3_API", "s3"),
+            ("FRANK_LAB_S3_ENDPOINT", "https://example.com"),
+            ("FRANK_S3_SECRET_ACCESS_KEY", "ignored"),
+            ("FRANK_S3_ACCESS_KEY_ID", "ignored"),
+            ("GCE_METADATA_HOST", "ignored"),
+        ] {
+            let mut bad = values.clone();
+            bad.insert(key, value.into());
+            assert!(config(&bad, "").is_err());
+        }
+    }
+
+    #[test]
     fn fixture_config_preserves_complete_s3_defaults() {
         let values = inputs();
         assert_eq!(
@@ -883,8 +940,12 @@ mod fixture_config_tests {
                 region: "us-east-1".into(),
                 bucket: "fixture-bucket".into(),
                 prefix: "lab-fixture-1/".into(),
-                access_key_id: "fixture-access".into(),
-                secret_access_key: "fixture-secret".into(),
+                auth: cashweb_registry::store::blob_store::S3Authentication::Hmac(
+                    cashweb_config::S3Credentials {
+                        access_key_id: "fixture-access".into(),
+                        secret_access_key: "fixture-secret".into(),
+                    }
+                ),
                 force_path_style: true,
             }
         );

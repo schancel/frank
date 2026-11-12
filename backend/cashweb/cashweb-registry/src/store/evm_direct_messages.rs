@@ -2199,8 +2199,26 @@ mod large_request_tests {
                 region: "us-east-1".into(),
                 bucket: required("FRANK_LAB_S3_BUCKET")?,
                 prefix: format!("{base}/dm"),
-                access_key_id: required("FRANK_S3_ACCESS_KEY_ID")?,
-                secret_access_key: required("FRANK_S3_SECRET_ACCESS_KEY")?,
+                auth: match optional("FRANK_LAB_S3_AUTH")?.as_deref() {
+                    None | Some("hmac") => crate::store::blob_store::S3Authentication::Hmac(
+                        cashweb_config::S3Credentials {
+                            access_key_id: required("FRANK_S3_ACCESS_KEY_ID")?,
+                            secret_access_key: required("FRANK_S3_SECRET_ACCESS_KEY")?,
+                        },
+                    ),
+                    Some("google_metadata") => {
+                        if optional("FRANK_S3_ACCESS_KEY_ID")?.is_some()
+                            || optional("FRANK_S3_SECRET_ACCESS_KEY")?.is_some()
+                            || optional("GCE_METADATA_HOST")?.is_some()
+                        {
+                            return Err("google_metadata forbids HMAC credentials and metadata host overrides".into());
+                        }
+                        crate::store::blob_store::S3Authentication::GoogleMetadata
+                    }
+                    Some(_) => {
+                        return Err("FRANK_LAB_S3_AUTH must be hmac or google_metadata".into())
+                    }
+                },
                 force_path_style: true,
             };
             config.validate()?;
@@ -2262,8 +2280,40 @@ mod large_request_tests {
                     assert_eq!(actual.bucket, "fixture-bucket");
                     assert_eq!(actual.region, "us-east-1");
                     assert!(actual.force_path_style);
-                    assert_eq!(actual.access_key_id, "fixture-access");
-                    assert_eq!(actual.secret_access_key, "fixture-secret");
+                    assert_eq!(
+                        actual.auth,
+                        crate::store::blob_store::S3Authentication::Hmac(
+                            cashweb_config::S3Credentials {
+                                access_key_id: "fixture-access".into(),
+                                secret_access_key: "fixture-secret".into(),
+                            }
+                        )
+                    );
+                }
+            }
+
+            #[test]
+            fn metadata_auth_reaches_owner_fixture_without_hmac_keys() {
+                let mut inputs = values();
+                inputs.remove("FRANK_S3_ACCESS_KEY_ID");
+                inputs.remove("FRANK_S3_SECRET_ACCESS_KEY");
+                inputs.insert("FRANK_LAB_S3_API", "gcs_xml".into());
+                inputs.insert("FRANK_LAB_S3_AUTH", "google_metadata".into());
+                assert_eq!(
+                    config(&inputs).unwrap().auth,
+                    crate::store::blob_store::S3Authentication::GoogleMetadata
+                );
+                for (key, value) in [
+                    ("FRANK_LAB_S3_AUTH", "adc"),
+                    ("FRANK_LAB_S3_API", "s3"),
+                    ("FRANK_LAB_S3_ENDPOINT", "https://example.com"),
+                    ("FRANK_S3_SECRET_ACCESS_KEY", "ignored"),
+                    ("FRANK_S3_ACCESS_KEY_ID", "ignored"),
+                    ("GCE_METADATA_HOST", "ignored"),
+                ] {
+                    let mut bad = inputs.clone();
+                    bad.insert(key, value.into());
+                    assert!(config(&bad).is_err());
                 }
             }
 

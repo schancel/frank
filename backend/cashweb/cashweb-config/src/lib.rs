@@ -601,7 +601,7 @@ pub struct RegistryConf {
     pub large_values: Option<LargeValuesConf>,
 }
 
-/// HTTP dialect of the existing path-style, HMAC-authenticated object transport.
+/// HTTP dialect of the existing path-style object transport.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum S3Api {
@@ -612,8 +612,19 @@ pub enum S3Api {
     GcsXml,
 }
 
+/// Explicit authentication for the object transport. Metadata never falls back to HMAC or ADC.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum S3Auth {
+    /// Existing S3/GCS interoperability credentials.
+    #[default]
+    Hmac,
+    /// Google metadata service credentials (including GKE workload identity).
+    GoogleMetadata,
+}
+
 /// Object store for large values (`[registry.large_values]`).
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(tag = "driver", rename_all = "snake_case", deny_unknown_fields)]
 pub enum LargeValuesConf {
     /// Files under `path`. Single-replica relays only.
@@ -635,6 +646,9 @@ pub enum LargeValuesConf {
         /// Key prefix inside the bucket, e.g. the cluster name. Empty for none.
         #[serde(default)]
         prefix: String,
+        /// Omitted selects existing HMAC authentication for either HTTP dialect.
+        #[serde(default)]
+        auth: Option<S3Auth>,
         /// File holding `access_key_id = "..."` and `secret_access_key = "..."` (TOML). When
         /// omitted, composition reads `FRANK_S3_ACCESS_KEY_ID` and `FRANK_S3_SECRET_ACCESS_KEY`.
         #[serde(default)]
@@ -642,8 +656,35 @@ pub enum LargeValuesConf {
     },
 }
 
+impl LargeValuesConf {
+    /// Validate auth selection before opening stores or reading credentials.
+    pub fn validate(&self) -> Result<(), String> {
+        if let Self::S3 {
+            api,
+            endpoint,
+            auth,
+            credentials_file,
+            ..
+        } = self
+        {
+            if *auth == Some(S3Auth::GoogleMetadata) {
+                if *api != S3Api::GcsXml || endpoint.as_str() != "https://storage.googleapis.com/" {
+                    return Err(
+                        "google_metadata requires gcs_xml and https://storage.googleapis.com"
+                            .into(),
+                    );
+                }
+                if credentials_file.is_some() {
+                    return Err("google_metadata does not accept credentials_file".into());
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
 /// Credentials for [`LargeValuesConf::S3`], as read by composition.
-#[derive(Clone, Deserialize, Eq, PartialEq)]
+#[derive(Clone, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct S3Credentials {
     /// Access key ID.
@@ -3633,6 +3674,43 @@ continuity_file = "/var/lib/frank/continuity"
     }
 
     #[test]
+    fn object_auth_round_trips_and_rejects_incompatible_metadata_configuration() {
+        use super::*;
+        let section = "driver='s3'\napi='gcs_xml'\nendpoint='https://storage.googleapis.com'\nregion='us-east-1'\nbucket='frank'\n";
+        for choice in ["", "auth='hmac'\n", "auth='google_metadata'\n"] {
+            let value: LargeValuesConf = toml::from_str(&format!("{section}{choice}")).unwrap();
+            value.validate().unwrap();
+            let encoded = toml::to_string(&value).unwrap();
+            assert_eq!(toml::from_str::<LargeValuesConf>(&encoded).unwrap(), value);
+        }
+        for changed in [
+            format!("{section}auth='google_metadata'\ncredentials_file='/must-not-open'\n"),
+            format!(
+                "{}auth='google_metadata'\n",
+                section.replace("gcs_xml", "s3")
+            ),
+            format!(
+                "{}auth='google_metadata'\n",
+                section.replace("https://storage.googleapis.com", "https://example.com")
+            ),
+            format!(
+                "{}auth='google_metadata'\n",
+                section.replace("https://", "http://")
+            ),
+        ] {
+            assert!(toml::from_str::<LargeValuesConf>(&changed)
+                .unwrap()
+                .validate()
+                .is_err());
+        }
+        for auth in ["adc", "auto", "GoogleMetadata", ""] {
+            assert!(
+                toml::from_str::<LargeValuesConf>(&format!("{section}auth='{auth}'\n")).is_err()
+            );
+        }
+    }
+
+    #[test]
     fn large_values_section_selects_a_driver_explicitly() {
         use super::*;
         #[derive(Deserialize)]
@@ -3949,6 +4027,7 @@ continuity_file = "/var/lib/frank/continuity"
             region: "us-east-1".into(),
             bucket: "frank-large-values".into(),
             prefix: "lab".into(),
+            auth: None,
             credentials_file: None,
         });
         conf

@@ -56,11 +56,16 @@ fn large_value_objects(
     registry: &cashweb_config::RegistryConf,
     env: impl Fn(&str) -> Option<String>,
 ) -> Result<Arc<dyn cashweb_registry::store::large_values::ObjectStore>> {
-    use cashweb_config::{LargeValuesConf, S3Credentials};
+    use cashweb_config::{LargeValuesConf, S3Auth, S3Credentials};
     use cashweb_registry::store::{
-        blob_store::S3BlobStoreConfig, large_values::LocalFsObjectStore, s3_objects::S3ObjectStore,
+        blob_store::{S3Authentication, S3BlobStoreConfig},
+        large_values::LocalFsObjectStore,
+        s3_objects::S3ObjectStore,
     };
     let report = |message: String| bitcoinsuite_error::Report::msg(message);
+    if let Some(config) = &registry.large_values {
+        config.validate().map_err(report)?;
+    }
     match &registry.large_values {
         None => {
             let path = Registry::local_large_values_path(&registry.db_path);
@@ -83,9 +88,27 @@ fn large_value_objects(
             region,
             bucket,
             prefix,
+            auth,
             credentials_file,
         }) => {
-            let credentials =
+            let auth = match auth.unwrap_or_default() {
+                S3Auth::GoogleMetadata => {
+                    if env("GCE_METADATA_HOST").is_some() {
+                        return Err(report(
+                            "google_metadata does not accept a metadata host override".into(),
+                        ));
+                    }
+                    if env("FRANK_S3_ACCESS_KEY_ID").is_some()
+                        || env("FRANK_S3_SECRET_ACCESS_KEY").is_some()
+                    {
+                        return Err(report(
+                            "google_metadata does not accept HMAC environment credentials".into(),
+                        ));
+                    }
+                    S3Authentication::GoogleMetadata
+                }
+                S3Auth::Hmac => {
+                    let credentials =
                 match credentials_file {
                     Some(path) => {
                         let text = std::fs::read_to_string(path).wrap_err_with(|| {
@@ -113,6 +136,9 @@ fn large_value_objects(
                         )),
                     },
                 };
+                    S3Authentication::Hmac(credentials)
+                }
+            };
             info!("Large values are stored in S3 bucket {bucket} at {endpoint}");
             let store = S3ObjectStore::new(S3BlobStoreConfig {
                 api: *api,
@@ -120,8 +146,7 @@ fn large_value_objects(
                 region: region.clone(),
                 bucket: bucket.clone(),
                 prefix: prefix.clone(),
-                access_key_id: credentials.access_key_id,
-                secret_access_key: credentials.secret_access_key,
+                auth,
                 force_path_style: true,
             })
             .map_err(|error| report(error.to_string()))?;
@@ -164,6 +189,12 @@ fn read_and_validate_conf_with_env(
     let conf_contents = read_conf_contents(conf_path, stdin)?;
     let conf =
         parse_conf(&conf_contents).wrap_err_with(|| InvalidConfigFail(conf_path.to_owned()))?;
+    if let Some(config) = &conf.registry.large_values {
+        config
+            .validate()
+            .map_err(bitcoinsuite_error::Report::msg)
+            .wrap_err("Invalid registry.large_values configuration")?;
+    }
     conf.registry
         .validate_cluster()
         .wrap_err("Invalid registry.cluster configuration")?;
@@ -1578,7 +1609,7 @@ max_get_logs_range = 10\n\n\
             String::from_utf8(request).unwrap()
         });
         // An arbitrary localhost endpoint proves selection comes from config, not URL sniffing.
-        let config = format!("{LOCAL}\n[registry.large_values]\ndriver = 's3'\napi = 'gcs_xml'\nendpoint = 'http://{addr}'\nregion = 'us-east-1'\nbucket = 'frank'\n");
+        let config = format!("{LOCAL}\n[registry.large_values]\ndriver = 's3'\napi = 'gcs_xml'\nauth = 'hmac'\nendpoint = 'http://{addr}'\nregion = 'us-east-1'\nbucket = 'frank'\n");
         let conf = read_and_validate_conf_with_env("-", &mut Cursor::new(config), env(FULL_ENV))
             .unwrap()
             .0;
@@ -1602,6 +1633,32 @@ max_get_logs_range = 10\n\n\
             "signedheaders=host;x-amz-content-sha256;x-amz-date;x-goog-if-generation-match,"
         ));
         assert!(!request.contains("if-none-match:"));
+    }
+
+    #[test]
+    fn google_metadata_configuration_builds_without_hmac_credentials_or_io() {
+        let metadata = "[registry.large_values]\ndriver='s3'\napi='gcs_xml'\nauth='google_metadata'\nendpoint='https://storage.googleapis.com'\nregion='us-east-1'\nbucket='frank'\n";
+        let text = format!("{LOCAL}\n{metadata}");
+        let conf = read_and_validate_conf_with_env("-", &mut Cursor::new(text), env(FULL_ENV))
+            .unwrap()
+            .0;
+        // Constructor is lazy: no provider task, metadata lookup, bucket request, or credential file.
+        assert!(super::large_value_objects(&conf.registry, |_| None).is_ok());
+        for name in [
+            "FRANK_S3_ACCESS_KEY_ID",
+            "FRANK_S3_SECRET_ACCESS_KEY",
+            "GCE_METADATA_HOST",
+        ] {
+            let error = super::large_value_objects(&conf.registry, |key| {
+                (key == name).then(|| "must-stay-private".into())
+            })
+            .unwrap_err();
+            assert!(!format!("{error:#}").contains("must-stay-private"));
+        }
+        let text = format!("{LOCAL}\n{metadata}credentials_file='/must-not-be-read'\n");
+        assert!(
+            read_and_validate_conf_with_env("-", &mut Cursor::new(text), env(FULL_ENV)).is_err()
+        );
     }
 
     #[test]

@@ -635,15 +635,49 @@ credentials_file = "/run/secrets/object-hmac.toml"
 
 The existing credentials file holds `access_key_id` and `secret_access_key`;
 for GCS these must be Google HMAC credentials, not an RSA service-account JSON
-key or an ADC token. This adds no credential discovery, provisioning or keyless
-authentication. GCS conditional creation signs `x-goog-if-generation-match: 0`
+key or an ADC token. Omitted `auth` or `auth = "hmac"` preserves this existing
+HMAC path for either dialect. GCS conditional creation signs `x-goog-if-generation-match: 0`
 using the existing AWS4 HMAC signer; S3 retains `If-None-Match: *`.
 See Google's [preconditions](https://docs.cloud.google.com/storage/docs/request-preconditions),
 [canonical headers](https://docs.cloud.google.com/storage/docs/authentication/canonical-requests)
 and [HMAC interoperability](https://docs.cloud.google.com/storage/docs/aws-simple-migration).
 
+For standard GKE workload identity or another Google runtime with a metadata
+service, select metadata authentication explicitly instead:
+
+```toml
+[registry.large_values]
+driver = "s3"
+api = "gcs_xml"
+auth = "google_metadata"
+endpoint = "https://storage.googleapis.com"
+region = "us-east-1"
+bucket = "owner-provisioned-isolated-bucket"
+prefix = "owner-selected-application-scope"
+```
+
+Metadata auth requires that exact trusted HTTPS GCS origin, rejects
+`credentials_file`, `FRANK_S3_ACCESS_KEY_ID`, `FRANK_S3_SECRET_ACCESS_KEY` and
+`GCE_METADATA_HOST`, and disables redirects. It uses the published
+`google-cloud-auth` 1.19.0 metadata provider (MSRV 1.91), not ADC/user credential
+discovery or HMAC fallback. The provider owns token refresh and caching on the
+existing object runtime; the relay persists no tokens. It reuses the existing
+NATS ring TLS backend; it does not enable a second Rustls crypto provider.
+Token acquisition and
+all HTTP steps, including HEAD plus DELETE, share the existing 20-second
+operation deadline. Deployment composition must separately bind the intended
+workload identity and grant bucket permissions; this config provisions neither.
+
+OAuth PUT validates the supplied SHA256 against the raw body before any request
+and sends XML `Content-MD5` for provider transport integrity. SHA256 and length
+remain the object identity/read verification. A local SHA256 mismatch is
+separate from a provider's Content-MD5 refusal. See Google's
+[XML PUT integrity contract](https://docs.cloud.google.com/storage/docs/xml-api/put-object-upload).
+
 The HTTP mock tests config forwarding, mixed signature headers, exact binary
-bodies and failures. They do **not** qualify GCS. Actual GCS authentication,
+bodies and failures. Loopback tests run the actual metadata provider through
+cached-token reuse, expiry refresh/failure, concurrent first use, bounded hangs,
+redirect refusal and redacted errors. They do **not** qualify GCS. Actual GCS authentication,
 payload-hash rejection, atomic concurrent namespace claims and LargeValues
 reopen/GC still require a separately authorized isolated service run. No bucket,
 key or IAM creation, deployment, persistent-format change or migration is implied.
@@ -691,3 +725,11 @@ GCS pass. Actual execution still requires a separately admitted hosted image,
 protected credential delivery, exact test inventory/one-pass checks, resource
 bounds and owned cleanup. Do not run these cases through the MinIO stop/restart
 script or interpret their addition as permission to contact GCS.
+
+The existing live group and private-DM fixtures also accept
+`FRANK_LAB_S3_AUTH=google_metadata` with the explicit GCS XML endpoint/API. Omitted
+fixture auth preserves HMAC. Metadata mode forbids HMAC credentials and metadata
+host overrides. The two `gcs_xml_wrong_secret...`/`gcs_xml_wrong_payload_hash...`
+selectors remain HMAC-specific evidence; do not run or relabel them as OAuth
+qualification. A future admitted GCS run must adapt those negatives and validate
+actual OAuth/checksum behavior; loopback mocks do not qualify the service.

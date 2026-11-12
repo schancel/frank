@@ -37,8 +37,10 @@ pub(super) fn open(suffix: &str, read_only: bool) -> (Arc<dyn RelayKvStore>, Arc
             region: "us-east-1".into(),
             bucket: env("FRANK_LAB_S3_BUCKET"),
             prefix: format!("lab-{run}/typed-owners"),
-            access_key_id: env("FRANK_S3_ACCESS_KEY_ID"),
-            secret_access_key: env("FRANK_S3_SECRET_ACCESS_KEY"),
+            auth: crate::store::blob_store::S3Authentication::Hmac(cashweb_config::S3Credentials {
+                access_key_id: env("FRANK_S3_ACCESS_KEY_ID"),
+                secret_access_key: env("FRANK_S3_SECRET_ACCESS_KEY"),
+            }),
             force_path_style: true,
         })
         .unwrap(),

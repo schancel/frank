@@ -2273,6 +2273,15 @@ impl BlobStore for LocalFsBlobStore {
 // 3. S3BlobStore (S3-Compatible Object Store Adapter with AWS SigV4 + Reqwest Transport)
 // =============================================================================================
 
+/// Authentication selected by composition; metadata contains no synthetic HMAC keys.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum S3Authentication {
+    /// Existing AWS4 HMAC authentication (including GCS interoperability).
+    Hmac(cashweb_config::S3Credentials),
+    /// Only the standard Google metadata provider; never user ADC.
+    GoogleMetadata,
+}
+
 /// Configuration for connecting [`S3BlobStore`] to AWS S3, MinIO, Cloudflare R2, or SeaweedFS.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct S3BlobStoreConfig {
@@ -2287,10 +2296,8 @@ pub struct S3BlobStoreConfig {
     pub bucket: String,
     /// Optional key prefix inside the bucket (e.g. `"frank-blobs"`).
     pub prefix: String,
-    /// AWS access key ID.
-    pub access_key_id: String,
-    /// AWS secret access key.
-    pub secret_access_key: String,
+    /// Explicit authentication, with credentials only for HMAC.
+    pub auth: S3Authentication,
     /// Whether to use path-style addressing (`/{bucket}/{key}`).
     pub force_path_style: bool,
 }
@@ -2303,8 +2310,7 @@ impl Debug for S3BlobStoreConfig {
             .field("region", &self.region)
             .field("bucket", &self.bucket)
             .field("prefix", &self.prefix)
-            .field("access_key_id", &self.access_key_id)
-            .field("secret_access_key", &"<redacted>")
+            .field("auth", &self.auth)
             .field("force_path_style", &self.force_path_style)
             .finish()
     }
@@ -2318,6 +2324,14 @@ impl S3BlobStoreConfig {
     ///   ending with a letter or digit.
     /// - The prefix is empty or `/`-separated segments of `a-z`, `0-9`, `-` and `_`.
     pub fn validate(&self) -> Result<(), String> {
+        if matches!(self.auth, S3Authentication::GoogleMetadata)
+            && (self.api != cashweb_config::S3Api::GcsXml
+                || self.endpoint != "https://storage.googleapis.com")
+        {
+            return Err(
+                "google_metadata requires gcs_xml and https://storage.googleapis.com".into(),
+            );
+        }
         let endpoint =
             url::Url::parse(&self.endpoint).map_err(|e| format!("invalid S3 endpoint: {e}"))?;
         if !matches!(endpoint.scheme(), "http" | "https")
@@ -2523,6 +2537,12 @@ pub trait S3ObjectTransport: Send + Sync + Debug {
 pub struct ReqwestS3Transport {
     client: Client,
     config: S3BlobStoreConfig,
+    // Lazy construction keeps the provider's refresh task on the operation's stable runtime.
+    // This cell stores a provider, never tokens; the library owns all token caching/refresh.
+    google_credentials:
+        Arc<tokio::sync::OnceCell<google_cloud_auth::credentials::AccessTokenCredentials>>,
+    #[cfg(test)]
+    metadata_endpoint: Option<String>,
 }
 
 impl Debug for ReqwestS3Transport {
@@ -2536,15 +2556,88 @@ impl Debug for ReqwestS3Transport {
 
 impl ReqwestS3Transport {
     /// Construct a [`ReqwestS3Transport`] from `config`.
-    pub fn new(config: S3BlobStoreConfig) -> Self {
+    pub fn new(config: S3BlobStoreConfig) -> Result<Self, BlobError> {
+        config.validate().map_err(BlobError::Backend)?;
         // An unreachable object store must fail a request promptly, not hang an append. The
         // whole request is bounded below the sweep lease (see `large_values`).
         let client = Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(std::time::Duration::from_secs(5))
             .timeout(crate::store::large_values::MAX_OBJECT_REQUEST)
             .build()
             .expect("build S3 HTTP client");
-        Self { client, config }
+        Ok(Self {
+            client,
+            config,
+            google_credentials: Arc::new(tokio::sync::OnceCell::new()),
+            #[cfg(test)]
+            metadata_endpoint: None,
+        })
+    }
+
+    async fn bounded<T>(
+        &self,
+        operation: impl std::future::Future<Output = Result<T, BlobError>>,
+    ) -> Result<T, BlobError> {
+        tokio::time::timeout(crate::store::large_values::MAX_OBJECT_REQUEST, operation)
+            .await
+            .map_err(|_| BlobError::Backend("object operation timed out".into()))?
+    }
+
+    async fn request_headers(
+        &self,
+        method: &str,
+        host: &str,
+        uri: &str,
+        sha: &str,
+        generation: bool,
+    ) -> Result<HeaderMap, BlobError> {
+        match &self.config.auth {
+            S3Authentication::Hmac(_) => {
+                self.build_signed_headers_with_generation(method, host, uri, sha, generation)
+            }
+            S3Authentication::GoogleMetadata => {
+                let credentials = self
+                    .google_credentials
+                    .get_or_try_init(|| async {
+                        // The auth library's rustls-no-provider client requires an installed
+                        // default. Reuse the existing NATS ring backend, respecting a host's
+                        // already-installed provider and concurrent initialization.
+                        if rustls::crypto::CryptoProvider::get_default().is_none() {
+                            let _ = rustls::crypto::ring::default_provider().install_default();
+                        }
+                        let builder = google_cloud_auth::credentials::mds::Builder::default()
+                            .with_scopes(["https://www.googleapis.com/auth/devstorage.read_write"]);
+                        #[cfg(test)]
+                        let builder = match &self.metadata_endpoint {
+                            Some(endpoint) => builder.with_endpoint(endpoint),
+                            None => builder,
+                        };
+                        builder.build_access_token_credentials().map_err(|_| {
+                            BlobError::Backend("Google metadata credentials unavailable".into())
+                        })
+                    })
+                    .await?;
+                let token = credentials.access_token().await.map_err(|_| {
+                    BlobError::Backend("Google metadata authentication failed".into())
+                })?;
+                let mut headers = HeaderMap::new();
+                let mut authorization =
+                    reqwest::header::HeaderValue::from_str(&format!("Bearer {}", token.token))
+                        .map_err(|_| {
+                            BlobError::Backend("Google metadata authorization invalid".into())
+                        })?;
+                authorization.set_sensitive(true);
+                headers.insert(reqwest::header::AUTHORIZATION, authorization);
+                if generation {
+                    headers.insert(
+                        "x-goog-if-generation-match",
+                        reqwest::header::HeaderValue::from_static("0"),
+                    );
+                }
+                Ok(headers)
+            }
+        }
     }
 
     fn full_key(&self, key: &str) -> String {
@@ -2585,13 +2678,28 @@ impl ReqwestS3Transport {
     ) -> Result<bool, BlobError> {
         let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
         let generation_match_zero = if_absent && self.config.api == cashweb_config::S3Api::GcsXml;
-        let mut headers = self.build_signed_headers_with_generation(
-            "PUT",
-            &host,
-            &canonical_uri,
-            content_sha256_hex,
-            generation_match_zero,
-        )?;
+        if matches!(self.config.auth, S3Authentication::GoogleMetadata)
+            && sha256_hex(&bytes) != content_sha256_hex
+        {
+            return Err(BlobError::Backend("object payload SHA256 mismatch".into()));
+        }
+        let mut headers = self
+            .request_headers(
+                "PUT",
+                &host,
+                &canonical_uri,
+                content_sha256_hex,
+                generation_match_zero,
+            )
+            .await?;
+        if matches!(self.config.auth, S3Authentication::GoogleMetadata) {
+            use md5::Digest;
+            let checksum = base64::encode(md5::Md5::digest(&bytes));
+            headers.insert(
+                "content-md5",
+                checksum.parse().expect("base64 is a valid header"),
+            );
+        }
         if if_absent && !generation_match_zero {
             headers.insert(
                 "if-none-match",
@@ -2605,34 +2713,17 @@ impl ReqwestS3Transport {
             .body(bytes)
             .send()
             .await
-            .map_err(|e| BlobError::Backend(format!("S3 PUT {url} failed: {e}")))?;
+            .map_err(|_| BlobError::Backend("object PUT transport failed".into()))?;
         if if_absent && resp.status() == StatusCode::PRECONDITION_FAILED {
             return Ok(false);
         }
         if !resp.status().is_success() {
             let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
             return Err(BlobError::Backend(format!(
-                "S3 PUT {url} returned HTTP {status}: {text}"
+                "object PUT returned HTTP {status}"
             )));
         }
         Ok(true)
-    }
-
-    fn build_signed_headers(
-        &self,
-        method: &str,
-        host: &str,
-        canonical_uri: &str,
-        content_sha256_hex: &str,
-    ) -> Result<HeaderMap, BlobError> {
-        self.build_signed_headers_with_generation(
-            method,
-            host,
-            canonical_uri,
-            content_sha256_hex,
-            false,
-        )
     }
 
     fn build_signed_headers_with_generation(
@@ -2643,6 +2734,11 @@ impl ReqwestS3Transport {
         content_sha256_hex: &str,
         generation_match_zero: bool,
     ) -> Result<HeaderMap, BlobError> {
+        let S3Authentication::Hmac(credentials) = &self.config.auth else {
+            return Err(BlobError::Backend(
+                "HMAC authentication not selected".into(),
+            ));
+        };
         // S3 rejects a request whose date is more than 15 minutes from its clock.
         let amz_date = amz_date(std::time::SystemTime::now());
         let sig = sign_s3_v4_request_with_generation(
@@ -2650,8 +2746,8 @@ impl ReqwestS3Transport {
             host,
             canonical_uri,
             &self.config.region,
-            &self.config.access_key_id,
-            &self.config.secret_access_key,
+            &credentials.access_key_id,
+            &credentials.secret_access_key,
             &amz_date,
             content_sha256_hex,
             generation_match_zero,
@@ -2693,7 +2789,7 @@ impl S3ObjectTransport for ReqwestS3Transport {
         bytes: Vec<u8>,
         content_sha256_hex: &str,
     ) -> Result<(), BlobError> {
-        self.put(key, bytes, content_sha256_hex, false)
+        self.bounded(self.put(key, bytes, content_sha256_hex, false))
             .await
             .map(|_| ())
     }
@@ -2704,20 +2800,35 @@ impl S3ObjectTransport for ReqwestS3Transport {
         bytes: Vec<u8>,
         content_sha256_hex: &str,
     ) -> Result<bool, BlobError> {
-        self.put(key, bytes, content_sha256_hex, true).await
+        self.bounded(self.put(key, bytes, content_sha256_hex, true))
+            .await
     }
 
     async fn get_object(&self, key: &str) -> Result<Option<Vec<u8>>, BlobError> {
+        self.bounded(self.get(key)).await
+    }
+    async fn head_object(&self, key: &str) -> Result<Option<u64>, BlobError> {
+        self.bounded(self.head(key)).await
+    }
+    async fn delete_object(&self, key: &str) -> Result<bool, BlobError> {
+        self.bounded(self.delete(key)).await
+    }
+}
+
+impl ReqwestS3Transport {
+    async fn get(&self, key: &str) -> Result<Option<Vec<u8>>, BlobError> {
         let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
         let empty_sha = sha256_hex(b"");
-        let headers = self.build_signed_headers("GET", &host, &canonical_uri, &empty_sha)?;
+        let headers = self
+            .request_headers("GET", &host, &canonical_uri, &empty_sha, false)
+            .await?;
         let resp = self
             .client
             .get(&url)
             .headers(headers)
             .send()
             .await
-            .map_err(|e| BlobError::Backend(format!("S3 GET {url} failed: {e}")))?;
+            .map_err(|_| BlobError::Backend("object GET transport failed".into()))?;
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -2730,21 +2841,23 @@ impl S3ObjectTransport for ReqwestS3Transport {
         let bytes = resp
             .bytes()
             .await
-            .map_err(|e| BlobError::Backend(format!("S3 GET body read failed: {e}")))?;
+            .map_err(|_| BlobError::Backend("object GET body read failed".into()))?;
         Ok(Some(bytes.to_vec()))
     }
 
-    async fn head_object(&self, key: &str) -> Result<Option<u64>, BlobError> {
+    async fn head(&self, key: &str) -> Result<Option<u64>, BlobError> {
         let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
         let empty_sha = sha256_hex(b"");
-        let headers = self.build_signed_headers("HEAD", &host, &canonical_uri, &empty_sha)?;
+        let headers = self
+            .request_headers("HEAD", &host, &canonical_uri, &empty_sha, false)
+            .await?;
         let resp = self
             .client
             .head(&url)
             .headers(headers)
             .send()
             .await
-            .map_err(|e| BlobError::Backend(format!("S3 HEAD {url} failed: {e}")))?;
+            .map_err(|_| BlobError::Backend("object HEAD transport failed".into()))?;
         if resp.status() == StatusCode::NOT_FOUND {
             return Ok(None);
         }
@@ -2763,21 +2876,23 @@ impl S3ObjectTransport for ReqwestS3Transport {
         Ok(Some(len))
     }
 
-    async fn delete_object(&self, key: &str) -> Result<bool, BlobError> {
-        let existed = self.head_object(key).await?.is_some();
+    async fn delete(&self, key: &str) -> Result<bool, BlobError> {
+        let existed = self.head(key).await?.is_some();
         if !existed {
             return Ok(false);
         }
         let (url, host, canonical_uri) = self.endpoint_url_and_uri(key)?;
         let empty_sha = sha256_hex(b"");
-        let headers = self.build_signed_headers("DELETE", &host, &canonical_uri, &empty_sha)?;
+        let headers = self
+            .request_headers("DELETE", &host, &canonical_uri, &empty_sha, false)
+            .await?;
         let resp = self
             .client
             .delete(&url)
             .headers(headers)
             .send()
             .await
-            .map_err(|e| BlobError::Backend(format!("S3 DELETE {url} failed: {e}")))?;
+            .map_err(|_| BlobError::Backend("object DELETE transport failed".into()))?;
         if !resp.status().is_success() && resp.status() != StatusCode::NOT_FOUND {
             let status = resp.status();
             return Err(BlobError::Backend(format!(
@@ -2895,9 +3010,9 @@ impl S3BlobStore {
     }
 
     /// Construct an [`S3BlobStore`] using [`ReqwestS3Transport`] and `config`.
-    pub fn new(kv: Arc<dyn RelayKvStore>, config: S3BlobStoreConfig) -> Self {
-        let transport = Arc::new(ReqwestS3Transport::new(config));
-        Self::with_transport(kv, transport)
+    pub fn new(kv: Arc<dyn RelayKvStore>, config: S3BlobStoreConfig) -> Result<Self, BlobError> {
+        let transport = Arc::new(ReqwestS3Transport::new(config)?);
+        Ok(Self::with_transport(kv, transport))
     }
 
     /// Return the relative S3 object key for a published chunk (`chunks/{attachment_id}/{idx}`).
@@ -3032,8 +3147,10 @@ mod tests {
             region: "us-east-1".into(),
             bucket: bucket.into(),
             prefix: prefix.into(),
-            access_key_id: "id".into(),
-            secret_access_key: "hunter2".into(),
+            auth: crate::store::blob_store::S3Authentication::Hmac(cashweb_config::S3Credentials {
+                access_key_id: "id".into(),
+                secret_access_key: "hunter2".into(),
+            }),
             force_path_style: true,
         }
     }
@@ -3071,11 +3188,12 @@ mod tests {
 
     #[test]
     fn canonical_uri_encodes_every_segment() {
-        let transport = ReqwestS3Transport::new(s3_config("http://minio:9000/", "frank", "p~1"));
+        let transport =
+            ReqwestS3Transport::new(s3_config("http://minio:9000/", "frank", "p-1")).unwrap();
         let (url, host, uri) = transport.endpoint_url_and_uri("a b/c+d").unwrap();
         assert_eq!(host, "minio:9000");
-        assert_eq!(uri, "/frank/p~1/a%20b/c%2Bd");
-        assert_eq!(url, "http://minio:9000/frank/p~1/a%20b/c%2Bd");
+        assert_eq!(uri, "/frank/p-1/a%20b/c%2Bd");
+        assert_eq!(url, "http://minio:9000/frank/p-1/a%20b/c%2Bd");
     }
 
     #[test]
@@ -3325,7 +3443,7 @@ mod tests {
             let (addr, state) = spawn_mock_s3_server().await;
             let mut config = s3_config(&format!("http://{addr}"), "frank", "scope");
             config.api = api;
-            let transport = ReqwestS3Transport::new(config);
+            let transport = ReqwestS3Transport::new(config).unwrap();
             let bytes = vec![0, 255, 1, 128, b'\n'];
             let hash = sha256_hex(&bytes);
             assert!(transport
@@ -3400,6 +3518,7 @@ mod tests {
         let mut config = s3_config(&format!("http://{addr}"), "frank", "scope");
         config.api = cashweb_config::S3Api::GcsXml;
         assert!(ReqwestS3Transport::new(config)
+            .unwrap()
             .put_object_if_absent("claim", vec![], &sha256_hex(b""))
             .await
             .is_err());
@@ -3410,7 +3529,7 @@ mod tests {
         let (addr, state) = spawn_mock_s3_server().await;
         let mut config = s3_config(&format!("http://{addr}"), "frank", "scope");
         config.api = cashweb_config::S3Api::GcsXml;
-        let transport = ReqwestS3Transport::new(config);
+        let transport = ReqwestS3Transport::new(config).unwrap();
         let (url, host, uri) = transport.endpoint_url_and_uri("claim").unwrap();
         let hash = sha256_hex(b"claim");
         let signed = transport
@@ -3443,12 +3562,519 @@ mod tests {
             StatusCode::BAD_REQUEST
         );
         let mut wrong_credentials = transport.config.clone();
-        wrong_credentials.secret_access_key = "wrong-fixture-secret".into();
+        let S3Authentication::Hmac(credentials) = &mut wrong_credentials.auth else {
+            unreachable!()
+        };
+        credentials.secret_access_key = "wrong-fixture-secret".into();
         assert!(ReqwestS3Transport::new(wrong_credentials)
+            .unwrap()
             .put_object_if_absent("claim", b"claim".to_vec(), &hash)
             .await
             .is_err());
         assert!(state.object_keys().is_empty());
+    }
+
+    // This server supplies the published metadata provider and the XML object endpoint.
+    // Production cannot select these origins; only this private test constructor bypasses it.
+    struct GoogleFixture {
+        endpoint: String,
+        state: Arc<GoogleState>,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl Drop for GoogleFixture {
+        fn drop(&mut self) {
+            self.server.abort();
+        }
+    }
+
+    struct GoogleState {
+        token: Mutex<(String, u64)>,
+        metadata_status: Mutex<AxumStatusCode>,
+        metadata_hang: std::sync::atomic::AtomicBool,
+        metadata_calls: std::sync::atomic::AtomicUsize,
+        metadata_entered: tokio::sync::Notify,
+        requests: Mutex<Vec<(axum::http::Method, AxumHeaderMap, Vec<u8>)>>,
+        objects: Mutex<HashMap<String, Vec<u8>>>,
+        object_status: Mutex<Option<AxumStatusCode>>,
+        redirect: Mutex<Option<String>>,
+        object_delay: Mutex<std::time::Duration>,
+        head_entered: tokio::sync::Notify,
+        delete_entered: tokio::sync::Notify,
+    }
+
+    async fn google_request(
+        Extension(state): Extension<Arc<GoogleState>>,
+        method: axum::http::Method,
+        uri: axum::http::Uri,
+        headers: AxumHeaderMap,
+        bytes: Bytes,
+    ) -> axum::response::Response {
+        use std::sync::atomic::Ordering::SeqCst;
+        if uri.path() == "/computeMetadata/v1/instance/service-accounts/default/token" {
+            assert_eq!(headers.get("metadata-flavor").unwrap(), "Google");
+            assert!(uri.query().unwrap().contains("devstorage.read_write"));
+            state.metadata_calls.fetch_add(1, SeqCst);
+            state.metadata_entered.notify_one();
+            if state.metadata_hang.load(SeqCst) {
+                std::future::pending::<()>().await;
+            }
+            let status = *state.metadata_status.lock().unwrap();
+            if status != AxumStatusCode::OK {
+                let mut response = (status, "credential-error-must-stay-private").into_response();
+                if let Some(location) = state.redirect.lock().unwrap().as_ref() {
+                    response
+                        .headers_mut()
+                        .insert("location", location.parse().unwrap());
+                }
+                return response;
+            }
+            let (token, expires_in) = state.token.lock().unwrap().clone();
+            return ([("metadata-flavor", "Google"), ("content-type", "application/json")],
+                serde_json::json!({"access_token":token,"token_type":"Bearer","expires_in":expires_in}).to_string()).into_response();
+        }
+        state
+            .requests
+            .lock()
+            .unwrap()
+            .push((method.clone(), headers.clone(), bytes.to_vec()));
+        if method == axum::http::Method::HEAD {
+            state.head_entered.notify_one();
+        }
+        if method == axum::http::Method::DELETE {
+            state.delete_entered.notify_one();
+        }
+        let delay = *state.object_delay.lock().unwrap();
+        tokio::time::sleep(delay).await;
+        let forced = *state.object_status.lock().unwrap();
+        if let Some(status) = forced {
+            let mut response = (
+                status,
+                "response-must-stay-private Bearer first-private-token",
+            )
+                .into_response();
+            if let Some(location) = state.redirect.lock().unwrap().as_ref() {
+                response
+                    .headers_mut()
+                    .insert("location", location.parse().unwrap());
+            }
+            return response;
+        }
+        let mut objects = state.objects.lock().unwrap();
+        match method {
+            axum::http::Method::PUT => {
+                use md5::Digest;
+                let expected = base64::encode(md5::Md5::digest(&bytes));
+                if headers.get("content-md5").and_then(|h| h.to_str().ok())
+                    != Some(expected.as_str())
+                {
+                    return (AxumStatusCode::BAD_REQUEST, "checksum-refused").into_response();
+                }
+                if headers.get("x-goog-if-generation-match").is_some()
+                    && objects.contains_key(uri.path())
+                {
+                    return AxumStatusCode::PRECONDITION_FAILED.into_response();
+                }
+                objects.insert(uri.path().into(), bytes.to_vec());
+                AxumStatusCode::OK.into_response()
+            }
+            axum::http::Method::GET => match objects.get(uri.path()) {
+                Some(bytes) => bytes.clone().into_response(),
+                None => AxumStatusCode::NOT_FOUND.into_response(),
+            },
+            axum::http::Method::HEAD => match objects.get(uri.path()) {
+                Some(bytes) => ([("content-length", bytes.len().to_string())], "").into_response(),
+                None => AxumStatusCode::NOT_FOUND.into_response(),
+            },
+            axum::http::Method::DELETE => {
+                objects.remove(uri.path());
+                AxumStatusCode::NO_CONTENT.into_response()
+            }
+            _ => AxumStatusCode::METHOD_NOT_ALLOWED.into_response(),
+        }
+    }
+
+    impl GoogleFixture {
+        async fn new() -> Self {
+            let state = Arc::new(GoogleState {
+                token: Mutex::new(("first-private-token".into(), 3600)),
+                metadata_status: Mutex::new(AxumStatusCode::OK),
+                metadata_hang: std::sync::atomic::AtomicBool::new(false),
+                metadata_calls: std::sync::atomic::AtomicUsize::new(0),
+                metadata_entered: tokio::sync::Notify::new(),
+                requests: Mutex::new(Vec::new()),
+                objects: Mutex::new(HashMap::new()),
+                object_status: Mutex::new(None),
+                redirect: Mutex::new(None),
+                object_delay: Mutex::new(std::time::Duration::ZERO),
+                head_entered: tokio::sync::Notify::new(),
+                delete_entered: tokio::sync::Notify::new(),
+            });
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let endpoint = format!("http://{}", listener.local_addr().unwrap());
+            let router = Router::new()
+                .fallback(any(google_request))
+                .layer(Extension(state.clone()));
+            let server = tokio::spawn(async move {
+                axum::Server::from_tcp(listener)
+                    .unwrap()
+                    .serve(router.into_make_service())
+                    .await
+                    .unwrap();
+            });
+            Self {
+                endpoint,
+                state,
+                server,
+            }
+        }
+
+        fn transport(&self) -> ReqwestS3Transport {
+            // The library gives this environment variable priority even over Builder::with_endpoint.
+            // Refuse it rather than risk any non-loopback metadata access during a test.
+            assert!(std::env::var_os("GCE_METADATA_HOST").is_none());
+            let mut config = s3_config("https://storage.googleapis.com", "frank", "scope");
+            config.api = cashweb_config::S3Api::GcsXml;
+            config.auth = S3Authentication::GoogleMetadata;
+            let mut transport = ReqwestS3Transport::new(config).unwrap();
+            transport.config.endpoint = self.endpoint.clone();
+            transport.metadata_endpoint = Some(self.endpoint.clone());
+            transport
+        }
+
+        fn calls(&self) -> usize {
+            self.state
+                .metadata_calls
+                .load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    #[test]
+    fn hmac_nats_tls_builder_works_before_any_metadata_provider_initialization() {
+        const CHILD: &str = "FRANK_TEST_NATS_TLS_PROVIDER_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            assert!(rustls::crypto::CryptoProvider::get_default().is_none());
+            // This is the preexisting NATS TLS construction path, without a network request.
+            // It must remain unambiguous even when no metadata store is ever used.
+            let _ = rustls::ClientConfig::builder()
+                .with_root_certificates(rustls::RootCertStore::empty())
+                .with_no_client_auth();
+            return;
+        }
+        // Other tests may already have installed a global crypto provider. A fresh process
+        // exercises the real full-feature dependency graph before that can mask ambiguity.
+        let qualified = concat!(
+            module_path!(),
+            "::hmac_nats_tls_builder_works_before_any_metadata_provider_initialization"
+        );
+        // libtest's inventory omits the crate prefix present in module_path!().
+        let name = qualified.split_once("::").unwrap().1;
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", name, "--nocapture", "--test-threads=1"])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "fresh-process NATS TLS builder failed: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(String::from_utf8_lossy(&output.stdout).contains("1 passed; 0 failed"));
+    }
+
+    #[test]
+    fn google_metadata_rejects_untrusted_origins_and_s3_dialect() {
+        for endpoint in [
+            "http://storage.googleapis.com",
+            "https://example.com",
+            "https://storage.googleapis.com.evil.test",
+            "https://storage.googleapis.com:444",
+            "https://storage.googleapis.com/path",
+            "https://user@storage.googleapis.com",
+        ] {
+            let mut config = s3_config(endpoint, "frank", "scope");
+            config.api = cashweb_config::S3Api::GcsXml;
+            config.auth = S3Authentication::GoogleMetadata;
+            assert!(ReqwestS3Transport::new(config).is_err());
+        }
+        let mut config = s3_config("https://storage.googleapis.com", "frank", "scope");
+        config.auth = S3Authentication::GoogleMetadata;
+        assert!(ReqwestS3Transport::new(config).is_err());
+    }
+
+    #[tokio::test]
+    async fn google_metadata_binary_conditional_integrity_and_redaction() {
+        let fixture = GoogleFixture::new().await;
+        let transport = fixture.transport();
+        let bytes = vec![0, 255, 128, b'\n', b'+'];
+        let hash = sha256_hex(&bytes);
+        assert!(transport
+            .put_object_if_absent("claim", bytes.clone(), &sha256_hex(b"wrong"))
+            .await
+            .is_err());
+        assert_eq!(fixture.calls(), 0);
+        assert!(fixture.state.requests.lock().unwrap().is_empty());
+        assert!(transport
+            .put_object_if_absent("claim", bytes.clone(), &hash)
+            .await
+            .unwrap());
+        assert!(!transport
+            .put_object_if_absent("claim", b"loser".to_vec(), &sha256_hex(b"loser"))
+            .await
+            .unwrap());
+        assert_eq!(
+            transport.get_object("claim").await.unwrap(),
+            Some(bytes.clone())
+        );
+        assert_eq!(
+            transport.head_object("claim").await.unwrap(),
+            Some(bytes.len() as u64)
+        );
+        assert_eq!(fixture.calls(), 1);
+        {
+            let requests = fixture.state.requests.lock().unwrap();
+            let (_, headers, body) = &requests[0];
+            assert_eq!(body, &bytes);
+            assert_eq!(
+                headers.get("authorization").unwrap(),
+                "Bearer first-private-token"
+            );
+            assert_eq!(headers.get("x-goog-if-generation-match").unwrap(), "0");
+            assert_eq!(
+                headers.get("content-md5").unwrap(),
+                base64::encode(md5::Md5::digest(&bytes)).as_str()
+            );
+            assert_eq!(
+                headers.get("content-length").unwrap(),
+                bytes.len().to_string().as_str()
+            );
+            assert!(headers.get("if-none-match").is_none());
+            assert!(headers.get("x-amz-content-sha256").is_none());
+        }
+        // A separate provider-checksum refusal: corrupt the header after local SHA validation.
+        let (url, host, uri) = transport.endpoint_url_and_uri("tampered").unwrap();
+        let mut headers = transport
+            .request_headers("PUT", &host, &uri, &hash, true)
+            .await
+            .unwrap();
+        assert!(headers.get("authorization").unwrap().is_sensitive());
+        assert!(!format!("{headers:?}").contains("first-private-token"));
+        headers.insert("content-md5", "AAAAAAAAAAAAAAAAAAAAAA==".parse().unwrap());
+        assert_eq!(
+            transport
+                .client
+                .put(url)
+                .headers(headers)
+                .body(bytes.clone())
+                .send()
+                .await
+                .unwrap()
+                .status(),
+            StatusCode::BAD_REQUEST
+        );
+        assert!(transport.get_object("tampered").await.unwrap().is_none());
+        for code in [400, 401, 403, 429, 500, 503] {
+            *fixture.state.object_status.lock().unwrap() =
+                Some(AxumStatusCode::from_u16(code).unwrap());
+            let error = transport
+                .put_object_if_absent("other", bytes.clone(), &hash)
+                .await
+                .unwrap_err();
+            let displayed = format!("{error:?} {error} {transport:?}");
+            assert!(displayed.contains(&code.to_string()));
+            assert!(
+                !displayed.contains("private-token")
+                    && !displayed.contains("response-must-stay-private")
+            );
+        }
+        *fixture.state.object_status.lock().unwrap() = Some(AxumStatusCode::PRECONDITION_FAILED);
+        assert!(transport
+            .put_object("claim", bytes.clone(), &hash)
+            .await
+            .is_err());
+        *fixture.state.object_status.lock().unwrap() = None;
+        assert!(transport.delete_object("claim").await.unwrap());
+        assert!(!transport.delete_object("claim").await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn google_metadata_concurrent_first_use_shares_the_provider_and_cached_token() {
+        let fixture = GoogleFixture::new().await;
+        let transport = fixture.transport();
+        let results =
+            futures::future::join_all((0..8).map(|_| transport.get_object("absent"))).await;
+        assert!(results.into_iter().all(|r| matches!(r, Ok(None))));
+        assert_eq!(fixture.calls(), 1);
+        assert_eq!(fixture.state.requests.lock().unwrap().len(), 8);
+    }
+
+    #[tokio::test]
+    async fn google_metadata_expiry_refresh_and_failure_never_reuse_expired_tokens() {
+        for fail in [false, true] {
+            let fixture = GoogleFixture::new().await;
+            fixture.state.token.lock().unwrap().1 = 1;
+            let transport = fixture.transport();
+            assert!(transport.get_object("absent").await.unwrap().is_none());
+            if fail {
+                *fixture.state.metadata_status.lock().unwrap() = AxumStatusCode::BAD_REQUEST;
+            } else {
+                *fixture.state.token.lock().unwrap() = ("second-private-token".into(), 3600);
+            }
+            tokio::time::pause();
+            tokio::time::advance(std::time::Duration::from_secs(11)).await;
+            tokio::time::resume();
+            let result = transport.get_object("absent").await;
+            if fail {
+                let error = result.unwrap_err();
+                assert_eq!(
+                    error.to_string(),
+                    "blob backend error: Google metadata authentication failed"
+                );
+                assert_eq!(fixture.state.requests.lock().unwrap().len(), 1);
+            } else {
+                assert!(result.unwrap().is_none());
+                let requests = fixture.state.requests.lock().unwrap();
+                assert_eq!(
+                    requests.last().unwrap().1.get("authorization").unwrap(),
+                    "Bearer second-private-token"
+                );
+            }
+            assert_eq!(fixture.calls(), 2);
+            assert!(!format!("{transport:?}").contains("private-token"));
+        }
+    }
+
+    async fn await_fixture_milestone<T>(
+        notification: &tokio::sync::Notify,
+        operation: &mut tokio::task::JoinHandle<Result<T, BlobError>>,
+    ) -> Result<(), String> {
+        tokio::select! {
+            _ = notification.notified() => Ok(()),
+            result = operation => Err(match result {
+                Ok(Err(error)) => format!("operation failed before fixture milestone: {error}"),
+                Ok(Ok(_)) => "operation completed before fixture milestone".into(),
+                Err(_) => "operation task failed before fixture milestone".into(),
+            }),
+            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) =>
+                Err("fixture milestone timed out".into()),
+        }
+    }
+
+    #[tokio::test]
+    async fn google_metadata_fixture_milestone_reports_early_operation_failure() {
+        let fixture = GoogleFixture::new().await;
+        *fixture.state.metadata_status.lock().unwrap() = AxumStatusCode::BAD_REQUEST;
+        let transport = fixture.transport();
+        let mut operation = tokio::spawn(async move { transport.delete_object("object").await });
+        let error = await_fixture_milestone(&fixture.state.head_entered, &mut operation)
+            .await
+            .unwrap_err();
+        assert!(
+            error.contains("Google metadata authentication failed"),
+            "{error}"
+        );
+        assert_eq!(fixture.calls(), 1);
+        assert!(fixture.state.requests.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn google_metadata_hanging_auth_bounds_concurrent_object_operations() {
+        let fixture = GoogleFixture::new().await;
+        fixture
+            .state
+            .metadata_hang
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        let transport = Arc::new(fixture.transport());
+        let mut tasks = Vec::new();
+        for _ in 0..4 {
+            let transport = transport.clone();
+            tasks.push(tokio::spawn(
+                async move { transport.get_object("absent").await },
+            ));
+        }
+        await_fixture_milestone(&fixture.state.metadata_entered, tasks.first_mut().unwrap())
+            .await
+            .unwrap();
+        tokio::time::pause();
+        tokio::time::advance(
+            crate::store::large_values::MAX_OBJECT_REQUEST + std::time::Duration::from_secs(1),
+        )
+        .await;
+        for task in tasks {
+            assert!(task
+                .await
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("timed out"));
+        }
+        assert!(fixture.state.requests.lock().unwrap().is_empty());
+        assert_eq!(fixture.calls(), 1);
+    }
+
+    #[tokio::test]
+    async fn google_metadata_delete_head_and_delete_share_one_deadline() {
+        let fixture = GoogleFixture::new().await;
+        fixture
+            .state
+            .objects
+            .lock()
+            .unwrap()
+            .insert("/frank/scope/object".into(), b"x".to_vec());
+        *fixture.state.object_delay.lock().unwrap() = std::time::Duration::from_secs(12);
+        let transport = fixture.transport();
+        let mut task = tokio::spawn(async move { transport.delete_object("object").await });
+        await_fixture_milestone(&fixture.state.head_entered, &mut task)
+            .await
+            .unwrap();
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(12)).await;
+        tokio::time::resume();
+        await_fixture_milestone(&fixture.state.delete_entered, &mut task)
+            .await
+            .unwrap();
+        tokio::time::pause();
+        tokio::time::advance(std::time::Duration::from_secs(9)).await;
+        assert!(task
+            .await
+            .unwrap()
+            .unwrap_err()
+            .to_string()
+            .contains("timed out"));
+        // The deadline does not incorrectly claim that the remote DELETE had no side effect.
+        assert_eq!(fixture.state.requests.lock().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn google_metadata_never_follows_storage_or_metadata_redirects() {
+        let fixture = GoogleFixture::new().await;
+        let destination = GoogleFixture::new().await;
+        let transport = fixture.transport();
+        *fixture.state.object_status.lock().unwrap() = Some(AxumStatusCode::TEMPORARY_REDIRECT);
+        *fixture.state.redirect.lock().unwrap() = Some(destination.endpoint.clone());
+        assert!(transport
+            .get_object("absent")
+            .await
+            .unwrap_err()
+            .to_string()
+            .contains("307"));
+        assert!(destination.state.requests.lock().unwrap().is_empty());
+        assert_eq!(destination.calls(), 0);
+        let second = GoogleFixture::new().await;
+        *second.state.metadata_status.lock().unwrap() = AxumStatusCode::TEMPORARY_REDIRECT;
+        *second.state.redirect.lock().unwrap() = Some(format!(
+            "{}/computeMetadata/v1/instance/service-accounts/default/token",
+            destination.endpoint
+        ));
+        // The published metadata client disables redirects; a redirect is an auth failure.
+        let error = second.transport().get_object("absent").await.unwrap_err();
+        assert!(!error
+            .to_string()
+            .contains("credential-error-must-stay-private"));
+        assert!(second.state.requests.lock().unwrap().is_empty());
+        assert_eq!(destination.calls(), 0);
     }
 
     // -----------------------------------------------------------------------------------------
@@ -3697,11 +4323,13 @@ mod tests {
             region: "us-east-1".to_string(),
             bucket: "frank-test-bucket".to_string(),
             prefix: "v1-blobs".to_string(),
-            access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
-            secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+            auth: crate::store::blob_store::S3Authentication::Hmac(cashweb_config::S3Credentials {
+                access_key_id: "AKIAIOSFODNN7EXAMPLE".to_string(),
+                secret_access_key: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY".to_string(),
+            }),
             force_path_style: true,
         };
-        let store = S3BlobStore::new(kv, config);
+        let store = S3BlobStore::new(kv, config).unwrap();
 
         run_conformance_suite(&store, |attachment_id, chunk_index, bad_bytes| {
             let rel_key = S3BlobStore::published_object_key(attachment_id, chunk_index);

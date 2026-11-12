@@ -117,6 +117,12 @@ sha3 = "0.10"
 # Stamp-payment stealth children (ticket #60) preserve Stamp's BIP32-compatible public/private
 # derivation. HMAC-SHA512 is the BIP32 child PRF; secp256k1-abc is already the workspace's curve
 # implementation and exposes the public/private tweak operations needed for watch-only derivation.
+# Explicit metadata-only credentials; provider owns refresh/cache. MSRV 1.91.
+google-cloud-auth = { version = "=1.19.0", default-features = false }
+# Reuse NATS' existing ring backend; enabling AWS-LC as well makes its TLS builder ambiguous.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+# GCS XML Content-MD5 transport integrity; object identity remains SHA256.
+md-5 = "0.10"
 hmac = "0.12"
 sha2 = "0.10"
 secp256k1-abc = { git = "https://github.com/raipay/secp256k1-abc" }

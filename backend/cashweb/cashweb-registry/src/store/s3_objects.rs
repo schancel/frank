@@ -47,7 +47,8 @@ impl S3ObjectStore {
     pub fn new(config: S3BlobStoreConfig) -> Result<Self, ObjectStoreError> {
         config.validate().map_err(ObjectStoreError)?;
         let (endpoint, bucket) = (config.endpoint.clone(), config.bucket.clone());
-        let transport: Arc<dyn S3ObjectTransport> = Arc::new(ReqwestS3Transport::new(config));
+        let transport: Arc<dyn S3ObjectTransport> =
+            Arc::new(ReqwestS3Transport::new(config).map_err(s3_error)?);
         let (jobs, mut queue) = tokio::sync::mpsc::unbounded_channel::<Job>();
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)

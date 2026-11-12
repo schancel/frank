@@ -2174,12 +2174,31 @@ mod large_request_tests {
             let required = |name: &str| {
                 read_env(name).map_err(|_| format!("{name} is required and must be valid Unicode"))
             };
+            let optional = |name: &str| match read_env(name) {
+                Ok(value) => Ok(Some(value)),
+                Err(std::env::VarError::NotPresent) => Ok(None),
+                Err(std::env::VarError::NotUnicode(_)) => {
+                    Err(format!("{name} must be valid Unicode"))
+                }
+            };
+            let api = match optional("FRANK_LAB_S3_API")? {
+                None => cashweb_config::S3Api::S3,
+                Some(value) => serde_json::from_value(serde_json::Value::String(value))
+                    .map_err(|_| "FRANK_LAB_S3_API must be s3 or gcs_xml".to_string())?,
+            };
+            let base = match optional("FRANK_LAB_S3_PREFIX")? {
+                None => format!("lab-{run}"),
+                Some(value) if value.trim_matches('/').is_empty() => {
+                    return Err("FRANK_LAB_S3_PREFIX must name a nonempty base".into());
+                }
+                Some(value) => value,
+            };
             let config = S3BlobStoreConfig {
-                api: cashweb_config::S3Api::S3,
+                api,
                 endpoint: required("FRANK_LAB_S3_ENDPOINT")?,
                 region: "us-east-1".into(),
                 bucket: required("FRANK_LAB_S3_BUCKET")?,
-                prefix: format!("lab-{run}/dm"),
+                prefix: format!("{base}/dm"),
                 access_key_id: required("FRANK_S3_ACCESS_KEY_ID")?,
                 secret_access_key: required("FRANK_S3_SECRET_ACCESS_KEY")?,
                 force_path_style: true,

@@ -2168,9 +2168,9 @@ mod large_request_tests {
         }
 
         fn fixture_s3_config(
-            read_env: impl Fn(&str) -> Result<String, std::env::VarError>,
+            read_env: impl Fn(&str) -> std::result::Result<String, std::env::VarError>,
             run: &str,
-        ) -> Result<S3BlobStoreConfig, String> {
+        ) -> std::result::Result<S3BlobStoreConfig, String> {
             let required = |name: &str| {
                 read_env(name).map_err(|_| format!("{name} is required and must be valid Unicode"))
             };
@@ -2239,7 +2239,9 @@ mod large_request_tests {
                 ])
             }
 
-            fn config(values: &BTreeMap<&str, String>) -> Result<S3BlobStoreConfig, String> {
+            fn config(
+                values: &BTreeMap<&str, String>,
+            ) -> std::result::Result<S3BlobStoreConfig, String> {
                 fixture_s3_config(
                     |name| values.get(name).cloned().ok_or(VarError::NotPresent),
                     "fixture-run",

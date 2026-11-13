@@ -596,7 +596,6 @@ describe('payments between two wallets on a real EVM node', () => {
       f.chain.directMessages.send({
         wallet: alice,
         recipient: bob.identity.address,
-        paymentOperationId: intent.operationId,
         messageId: '00000000-0000-4000-8000-000000000124',
         items: [recipientAssetPaymentFromPrepared(prepared)],
         stampValue: STAMP,
@@ -607,6 +606,15 @@ describe('payments between two wallets on a real EVM node', () => {
           }),
       }),
     )
+    // ERC20 and its native message stamp are separate operations, as the host composes
+    // them: delivery durably exposes this exact token operation, then the host submits it.
+    expect(await syntheticToken.balanceOf!(prepared.recipientAddress)).toBe(0n)
+    const submitted = await alice.stealthPayments!.submit(intent.operationId)
+    expect(submitted.intendedAmountAtomic).toBe(amountAtomic)
+    expect(await node.getTransaction(signed.hash!)).not.toBeNull()
+    const retained = await alice.stealthPayments!.get(intent.operationId)
+    expect(retained?.members).toEqual(prepared.members)
+    expect(retained!.members[0]!.txHash).toBe(signed.hash)
     await relayBroadcasts(f.requests.length - 1)
     await poll(bob)
     const claim = {

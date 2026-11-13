@@ -26,7 +26,18 @@ import { existsSync, mkdtempSync, rmSync } from 'fs'
 import { createServer } from 'net'
 import { tmpdir } from 'os'
 import { join } from 'path'
-import { JsonRpcProvider, Transaction, Wallet, getBytes, parseEther } from 'ethers'
+import {
+  AbiCoder,
+  Contract,
+  Interface,
+  JsonRpcProvider,
+  Transaction,
+  Wallet,
+  getBytes,
+  keccak256,
+  parseEther,
+  parseUnits,
+} from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
 
@@ -44,6 +55,7 @@ import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { createEvmChain, installCanonicalDirectory } from './evm-chain'
 import { deriveEvmStealthPrivateKey } from '../evm-stealth'
 import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
+import { getEvmDexDeployment } from './dex-deployments'
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import { evmStealthTransactionSetOperationId } from './evm-stealth-payments'
 import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/stealth-asset/from-prepared'
@@ -91,6 +103,23 @@ const DEV_KEY =
   '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 const VALUE = parseEther('0.01')
 const STAMP = parseEther('0.001')
+
+// Same TestToken creation bytecode as evm-deposit-scan.anvil.jest.test.ts: solc0.8.37,
+// optimizer200/paris. Its sole state variable is balanceOf at mapping slot0; constructor
+// stores1e24 at balanceOf[msg.sender]. The bytecode's getter hashes(address,0) before SLOAD.
+// This is synthetic local token code/state at a configured address, NEVER actual USDC.
+const SYNTHETIC_TOKEN_BYTECODE =
+  '0x6080604052348015600f57600080fd5b503360008181526020818152604080832069d3c21bcecceda10000009081905590519081527fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef910160405180910390a36102088061006e6000396000f3fe608060405234801561001057600080fd5b50600436106100365760003560e01c806370a082311461003b578063a9059cbb1461006e575b600080fd5b61005b61004936600461014a565b60006020819052908152604090205481565b6040519081526020015b60405180910390f35b61008161007c36600461016c565b610091565b6040519015158152602001610065565b336000908152602081905260408120805483919083906100b29084906101ac565b90915550506001600160a01b038316600090815260208190526040812080548492906100df9084906101bf565b90915550506040518281526001600160a01b0384169033907fddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef9060200160405180910390a35060015b92915050565b80356001600160a01b038116811461014557600080fd5b919050565b60006020828403121561015c57600080fd5b6101658261012e565b9392505050565b6000806040838503121561017f57600080fd5b6101888361012e565b946020939093013593505050565b634e487b7160e01b600052601160045260246000fd5b8181038181111561012857610128610196565b808201808211156101285761012861019656fea26469706673582212201d2bc45da716cfad41922279632d9b5066992ec2d8436c2aca827c3bf1d4369164736f6c63430008250033'
+const TOKEN_ABI = [
+  'function balanceOf(address) view returns (uint256)',
+  'function transfer(address,uint256) returns (bool)',
+  'event Transfer(address indexed from,address indexed to,uint256 value)',
+]
+const tokenAbi = new Interface(TOKEN_ABI)
+const configuredToken = getEvmDexDeployment('monad-testnet')!.tokens.find(
+  (token) => token.symbol === 'USDC',
+)!
+let syntheticToken: Contract
 
 let anvil: ChildProcess | undefined
 let node: JsonRpcProvider
@@ -153,6 +182,39 @@ beforeAll(async () => {
     block => block >= 0,
   )
   dev = new Wallet(DEV_KEY, node)
+
+  // Install the declared chain fixture BEFORE opening any financial wallet. Copy only
+  // actual constructor state, with its layout/source and public getter checked; no guessed
+  // storage slots, wallet-inventory writes, registry overrides or provider stubs.
+  const deployed = await (
+    await dev.sendTransaction({ data: SYNTHETIC_TOKEN_BYTECODE })
+  ).wait()
+  const naturalAddress = deployed!.contractAddress!
+  const naturalToken = new Contract(naturalAddress, TOKEN_ABI, dev)
+  const runtime = await node.getCode(naturalAddress)
+  const slot = keccak256(
+    AbiCoder.defaultAbiCoder().encode(['address', 'uint256'], [dev.address, 0]),
+  )
+  const constructorWord = await node.getStorage(naturalAddress, slot)
+  expect(runtime).not.toBe('0x')
+  expect(BigInt(constructorWord)).toBe(10n ** 24n)
+  expect(await naturalToken.balanceOf!(dev.address)).toBe(
+    BigInt(constructorWord),
+  )
+  expect(configuredToken.decimals).toBe(6)
+  expect(configuredToken.address).not.toBeNull()
+  const address = configuredToken.address!
+  expect(await node.getCode(address)).toBe('0x')
+  expect(BigInt(await node.getStorage(address, slot))).toBe(0n)
+  expect(await node.getTransactionCount(address)).toBe(0)
+  expect(await node.getBalance(address)).toBe(0n)
+  await node.send('anvil_setCode', [address, runtime])
+  await node.send('anvil_setStorageAt', [address, slot, constructorWord])
+  syntheticToken = new Contract(address, TOKEN_ABI, dev)
+  expect(await node.getCode(address)).toBe(runtime)
+  expect(await syntheticToken.balanceOf!(dev.address)).toBe(
+    BigInt(constructorWord),
+  )
 })
 afterAll(async () => {
   node?.destroy()
@@ -487,6 +549,179 @@ describe('payments between two wallets on a real EVM node', () => {
       await settled(recipient)
       expect(recipient.getReceivedPayments!()).toEqual(seen)
     } finally { await reopened?.close() }
+  })
+
+  it('a synthetic configured ERC20 contact payment is verified in token units after reopen and fresh restore, without native substitution', async () => {
+    const contractAddress = configuredToken.address!.toLowerCase()
+    const asset = { kind: 'erc20' as const, contractAddress }
+    const amountAtomic = parseUnits('1.234567', configuredToken.decimals)
+    const initialTokens = parseUnits('2', configuredToken.decimals)
+    const main = await mainOf(alice)
+    await (await syntheticToken.transfer!(main, initialTokens)).wait()
+    // The token source needs native gas; a separate owned source funds the message stamp.
+    const [stampSource] = alice.pool.ensureSize(1)
+    await alice.pool.flush()
+    await fund(stampSource!.address, parseEther('0.01'))
+    for (let index = 0; index < 5; index++) await node.send('evm_mine', [])
+    const intent = {
+      operationId: 'synthetic-erc20-real-contact',
+      chainIdentifier: 'monad-testnet',
+      asset,
+      recipientSpendPublicKey: bob.identity.compressedPubKey,
+      amountAtomic,
+    }
+    const quote = await alice.stealthPayments!.quote!(intent)
+    expect(quote).toMatchObject({
+      asset,
+      amountAtomic,
+      assetBalanceAtomic: initialTokens,
+    })
+    expect(quote.estimatedNativeFeeAtomic).toBeGreaterThan(0n)
+    const prepared = await alice.stealthPayments!.prepare({
+      ...intent,
+      maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
+    })
+    expect(prepared.members).toHaveLength(1)
+    const signed = Transaction.from(prepared.members[0]!.rawTransaction)
+    expect(signed.to!.toLowerCase()).toBe(contractAddress)
+    expect(signed.value).toBe(0n)
+    const transfer = tokenAbi.decodeFunctionData('transfer', signed.data)
+    expect(String(transfer[0]).toLowerCase()).toBe(
+      prepared.recipientAddress.toLowerCase(),
+    )
+    expect(transfer[1]).toBe(amountAtomic)
+    expect(await syntheticToken.balanceOf!(prepared.recipientAddress)).toBe(0n)
+    const sent = await delivered(
+      alice,
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: bob.identity.address,
+        messageId: '00000000-0000-4000-8000-000000000124',
+        items: [recipientAssetPaymentFromPrepared(prepared)],
+        stampValue: STAMP,
+        onEnvelopeDurable: (payloadDigest) =>
+          alice.stealthPayments!.expose({
+            operationId: intent.operationId,
+            payloadDigest,
+          }),
+      }),
+    )
+    // ERC20 and its native message stamp are separate operations, as the host composes
+    // them: delivery durably exposes this exact token operation, then the host submits it.
+    expect(await syntheticToken.balanceOf!(prepared.recipientAddress)).toBe(0n)
+    const submitted = await alice.stealthPayments!.submit(intent.operationId)
+    expect(submitted.intendedAmountAtomic).toBe(amountAtomic)
+    expect(await node.getTransaction(signed.hash!)).not.toBeNull()
+    const retained = await alice.stealthPayments!.get(intent.operationId)
+    expect(retained?.members).toEqual(prepared.members)
+    expect(retained!.members[0]!.txHash).toBe(signed.hash)
+    await relayBroadcasts(f.requests.length - 1)
+    await poll(bob)
+    const claim = {
+      chainIdentifier: intent.chainIdentifier,
+      asset,
+      recipientDestination: prepared.recipientDestination,
+      ephemeralPublicKey: prepared.ephemeralPublicKey,
+      amountAtomic,
+      rawTransactions: prepared.members.map((member) =>
+        member.rawTransaction.replace(/^0x/, ''),
+      ),
+      payloadDigest: sent.payloadDigest,
+    }
+    const verified = {
+      status: 'succeeded',
+      intendedAmountAtomic: amountAtomic,
+      verifiedReceivedAmountAtomic: amountAtomic,
+      spendability: 'needs-native-gas',
+    }
+    expect(await bob.stealthReceipts!.observe(claim)).toMatchObject(verified)
+    const receipt = (await node.getTransactionReceipt(signed.hash!))!
+    expect(receipt.status).toBe(1)
+    expect(receipt.fee).toBeGreaterThan(0n)
+    expect(receipt.fee).toBeLessThanOrEqual(quote.estimatedNativeFeeAtomic)
+    const logs = receipt.logs.filter(
+      (log) => log.address.toLowerCase() === contractAddress,
+    )
+    expect(logs).toHaveLength(1)
+    expect(
+      tokenAbi.decodeEventLog('Transfer', logs[0]!.data, logs[0]!.topics)[2],
+    ).toBe(amountAtomic)
+    expect(await syntheticToken.balanceOf!(main)).toBe(
+      initialTokens - amountAtomic,
+    )
+    expect(await syntheticToken.balanceOf!(prepared.recipientAddress)).toBe(
+      amountAtomic,
+    )
+    expect(await node.getBalance(prepared.recipientAddress)).toBe(0n)
+    // A gasless token account keeps a pending native projection; only this message's
+    // native stamps must settle before checking the separate native balance.
+    await until(
+      'this token message stamp to be verified on the chain',
+      () => bob.refreshReceivedPayments!(),
+      (coins) => {
+        const stamps = coins.filter(
+          (coin) =>
+            coin.origin === 'stamp' &&
+            coin.payloadDigest === sent.payloadDigest,
+        )
+        return (
+          stamps.length > 0 &&
+          stamps.every((coin) => coin.status === 'received') &&
+          stamps.reduce((sum, coin) => sum + coin.amountWei, 0n) === STAMP
+        )
+      },
+    )
+    bob.invalidateBalanceCache!()
+    // Native stamps are distinct: token atoms must never enter the native balance.
+    expect(await bob.getBalance()).toBe(STAMP)
+    expect(
+      (await alice.stealthPayments!.reconcile(intent.operationId))
+        .verifiedReceivedAmountAtomic,
+    ).toBe(amountAtomic)
+    await bob.close()
+    const reloaded = (await f.chain.createWallet(
+      roots(1),
+    )) as EvmChainWalletHandle
+    try {
+      expect(await reloaded.stealthReceipts!.observe(claim)).toMatchObject(
+        verified,
+      )
+    } finally {
+      await reloaded.close()
+    }
+    const root = mkdtempSync(join(tmpdir(), 'erc20-contact-restore-'))
+    extraRoots.push(root)
+    const freshChain = withDefaultMessageItems(
+      createEvmChain({
+        ...f.config,
+        walletStorageLocation: join(root, 'wallet'),
+      }),
+    )
+    const restored = (await freshChain.createWallet(
+      roots(1),
+    )) as EvmChainWalletHandle
+    try {
+      installCanonicalDirectory(
+        restored,
+        await f.directoryFor('erc20-restored', restored, alice),
+      )
+      await expect(restored.stealthReceipts!.observe(claim)).rejects.toThrow(
+        /durably recorded/,
+      )
+      await poll(restored, freshChain)
+      expect(await restored.stealthReceipts!.observe(claim)).toMatchObject(
+        verified,
+      )
+      await poll(restored, freshChain)
+      expect(await restored.stealthReceipts!.observe(claim)).toMatchObject(
+        verified,
+      )
+      expect(await syntheticToken.balanceOf!(prepared.recipientAddress)).toBe(
+        amountAtomic,
+      )
+    } finally {
+      await restored.close()
+    }
   })
 
   it('a fragmented native stealth quote captures the aggregate stamp fee used by its original prepared operation', async () => {

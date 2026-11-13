@@ -653,7 +653,25 @@ describe('payments between two wallets on a real EVM node', () => {
       amountAtomic,
     )
     expect(await node.getBalance(prepared.recipientAddress)).toBe(0n)
-    await settled(bob)
+    // A gasless token account keeps a pending native projection; only this message's
+    // native stamps must settle before checking the separate native balance.
+    await until(
+      'this token message stamp to be verified on the chain',
+      () => bob.refreshReceivedPayments!(),
+      (coins) => {
+        const stamps = coins.filter(
+          (coin) =>
+            coin.origin === 'stamp' &&
+            coin.payloadDigest === sent.payloadDigest,
+        )
+        return (
+          stamps.length > 0 &&
+          stamps.every((coin) => coin.status === 'received') &&
+          stamps.reduce((sum, coin) => sum + coin.amountWei, 0n) === STAMP
+        )
+      },
+    )
+    bob.invalidateBalanceCache!()
     // Native stamps are distinct: token atoms must never enter the native balance.
     expect(await bob.getBalance()).toBe(STAMP)
     expect(

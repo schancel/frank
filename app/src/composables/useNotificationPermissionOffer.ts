@@ -1,6 +1,4 @@
-import { onUnmounted, watch, type Ref } from 'vue'
-import { Notify } from 'quasar'
-import { translateMessage as t } from 'src/i18n'
+import { computed, readonly, ref, watch, type Ref } from 'vue'
 import {
   NOTIFICATION_PROMPT_DISMISSED_KEY,
   NOTIFICATIONS_ENABLED_KEY,
@@ -43,47 +41,50 @@ function clearDismissal() {
 let offered = false
 
 export function useNotificationPermissionOffer(ready: Readonly<Ref<boolean>>) {
-  const { permission, enable } = useNotificationPermission()
-  let dismiss: (() => void) | undefined
+  const { permission, requesting, enable } = useNotificationPermission()
+  const showing = ref(false)
+  const failed = ref(false)
   watch(
     [ready, permission],
     ([isReady, state]) => {
       if (!isReady || state !== 'default') {
-        dismiss?.()
-        dismiss = undefined
+        showing.value = false
         return
       }
       if (offered || isDismissed()) return
       offered = true
-      dismiss = Notify.create({
-        message: t('notificationPermission.offer'),
-        caption: t('notificationPermission.offerHint'),
-        html: false,
-        timeout: 0,
-        position: 'bottom-right',
-        actions: [
-          {
-            label: t('notificationPermission.enable'),
-            handler: () => {
-              rememberDismissal()
-              void enable().catch(() => {
-                clearDismissal()
-                Notify.create({
-                  type: 'negative',
-                  message: t('notificationPermission.failed'),
-                  html: false,
-                })
-              })
-            },
-          },
-          {
-            label: t('notificationPermission.notNow'),
-            handler: rememberDismissal,
-          },
-        ],
-      })
+      showing.value = true
     },
     { immediate: true },
   )
-  onUnmounted(() => dismiss?.())
+
+  function dismiss() {
+    rememberDismissal()
+    showing.value = false
+  }
+
+  // Do not defer this call: the permission helper must retain the click's activation.
+  async function enableNotifications() {
+    if (!ready.value || permission.value !== 'default' || requesting.value)
+      return
+    failed.value = false
+    rememberDismissal()
+    try {
+      await enable()
+      showing.value = false
+    } catch {
+      clearDismissal()
+      failed.value = true
+    }
+  }
+
+  return {
+    visible: computed(
+      () => showing.value && ready.value && permission.value === 'default',
+    ),
+    requesting,
+    failed: readonly(failed),
+    enableNotifications,
+    dismiss,
+  }
 }

@@ -10,6 +10,8 @@ import {
   diceRoll,
 } from '@frank/wallet/message-item-plugins/dice/fair'
 
+import { createPinia, setActivePinia } from 'pinia'
+
 import ChatPage from './Chat.vue'
 import { saveDiceSecret } from '../utils/p2p-games'
 
@@ -216,6 +218,7 @@ async function settle() {
 describe('a chat on a device that is not the active one', () => {
   let sendFollowUp: jest.SpyInstance
   beforeEach(() => {
+    setActivePinia(createPinia())
     setPointer()
     saveDiceSecret(OWN, PEER, ROLL, SECRET)
     mockLeader.isActiveMaster = false

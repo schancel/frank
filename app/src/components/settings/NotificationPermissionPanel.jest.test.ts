@@ -1,11 +1,6 @@
 /** @jest-environment jsdom */
-jest.mock('quasar', () => ({
-  ...jest.requireActual('quasar'),
-  Notify: { create: jest.fn() },
-}))
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, nextTick, ref } from 'vue'
-import { Notify } from 'quasar'
 import Panel from './NotificationPermissionPanel.vue'
 import { useNotificationPermissionOffer } from 'src/composables/useNotificationPermissionOffer'
 
@@ -112,37 +107,23 @@ it('reports a failed browser request without blocking the settings', async () =>
   wrapper.unmount()
 })
 
-it('offers once after activation without requesting, and only the offer action enables notifications', async () => {
-  const create = jest.spyOn(Notify, 'create').mockReturnValue(jest.fn())
-  const ready = ref(false)
+it('Settings still enables notifications after the in-flow offer is dismissed', async () => {
+  const ready = ref(true)
+  let dismiss!: () => void
   const Host = defineComponent({
     setup() {
-      useNotificationPermissionOffer(ready)
-      return {}
+      dismiss = useNotificationPermissionOffer(ready).dismiss
+      return () => null
     },
-    template: '<div />',
   })
-  const wrapper = mount(Host)
-  expect(create).not.toHaveBeenCalled()
-  ready.value = true
-  await nextTick()
-  expect(create).toHaveBeenCalledTimes(1)
+  const host = mount(Host)
+  dismiss()
+  host.unmount()
+  const panel = mount(Panel, options)
   expect(requestPermission).not.toHaveBeenCalled()
-  ready.value = false
-  await nextTick()
-  ready.value = true
-  await nextTick()
-  expect(create).toHaveBeenCalledTimes(1)
-  const offer = create.mock.calls[0][0] as {
-    actions: { handler?: () => void }[]
-  }
-  offer.actions[0].handler!()
+  panel.get('button').element.click()
   expect(requestPermission).toHaveBeenCalledTimes(1)
   await flushPromises()
-  wrapper.unmount()
-  browserPermission = 'default'
-  const remount = mount(Host)
-  await nextTick()
-  expect(create).toHaveBeenCalledTimes(1)
-  remount.unmount()
+  expect(panel.text()).toContain('notificationPermission.granted')
+  panel.unmount()
 })

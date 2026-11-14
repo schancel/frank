@@ -4,6 +4,7 @@
       <!-- Banners sit inside the page container, which the layout pads below its fixed
       header: outside it they were drawn under the header and hidden on a phone. -->
       <div class="chat-banners">
+        <notification-permission-offer-banner :ready="notificationOfferReady" />
         <q-banner
           v-if="
             conversation?.kind === 'group' &&
@@ -481,7 +482,9 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, ref, onUnmounted, markRaw } from 'vue'
+import { computed, defineComponent, ref, onUnmounted, markRaw } from 'vue'
+import { useTabCoordinatorStore } from '../stores/tab-coordinator'
+import NotificationPermissionOfferBanner from '../components/chat/NotificationPermissionOfferBanner.vue'
 import { accountStatus } from '../accounts/session'
 import { messagingState } from '../utils/messaging-state'
 import { useSafeOracleStore } from '../stores/oracle'
@@ -636,6 +639,7 @@ const scrollDuration = 0
 
 export default defineComponent({
   components: {
+    NotificationPermissionOfferBanner,
     ChatMessageComponent,
     ChatMessageWebRtcCall,
     EmailThreadView,
@@ -758,6 +762,10 @@ export default defineComponent({
     }
   },
   setup() {
+    const tabCoordinator = useTabCoordinatorStore()
+    const notificationOfferReady = computed(
+      () => accountStatus.status === 'ready' && !tabCoordinator.isYielded,
+    )
     const oracle = useSafeOracleStore()
     const releaseOracle = oracle.acquire()
     onUnmounted(releaseOracle)
@@ -768,6 +776,7 @@ export default defineComponent({
       useBalance()
 
     return {
+      notificationOfferReady,
       oracle,
       accountStatus,
       messagingState,

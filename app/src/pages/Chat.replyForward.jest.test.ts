@@ -4,6 +4,8 @@ import { testBlob } from '../../../packages/wallet/message-item-plugins/blob/blo
 import { shallowMount } from '@vue/test-utils'
 import { nextTick } from 'vue'
 
+import { createPinia, setActivePinia } from 'pinia'
+
 import ChatPage from './Chat.vue'
 import { errorNotify } from '../utils/notifications'
 
@@ -90,6 +92,7 @@ const { insufficientStampNotify } = jest.requireMock('../utils/notifications')
 
 describe('Chat Reply and Forward flows', () => {
   beforeEach(() => {
+    setActivePinia(createPinia())
     jest.clearAllMocks()
     mockAcceptancePrice = 0
     mockStampWei = 1n

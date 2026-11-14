@@ -1,6 +1,4 @@
 /** @jest-environment jsdom */
-jest.mock('quasar', () => ({ Notify: { create: jest.fn(() => jest.fn()) } }))
-jest.mock('src/i18n', () => ({ translateMessage: (key: string) => key }))
 
 const original = Object.getOwnPropertyDescriptor(globalThis, 'Notification')
 let browserPermission: NotificationPermission
@@ -13,16 +11,15 @@ function boot(initialReady = true) {
   const { mount, flushPromises } = require('@vue/test-utils')
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const { defineComponent, ref, nextTick } = require('vue')
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  const { Notify } = require('quasar')
   const {
     useNotificationPermissionOffer,
     // eslint-disable-next-line @typescript-eslint/no-var-requires
   } = require('./useNotificationPermissionOffer')
   const ready = ref(initialReady)
+  let offer!: ReturnType<typeof useNotificationPermissionOffer>
   const Host = defineComponent({
     setup() {
-      useNotificationPermissionOffer(ready)
+      offer = useNotificationPermissionOffer(ready)
       return () => null
     },
   })
@@ -32,7 +29,9 @@ function boot(initialReady = true) {
     ready,
     nextTick,
     flushPromises,
-    offer: Notify.create as jest.Mock,
+    get offer() {
+      return offer
+    },
     mountAgain: () => mount(Host),
   }
 }
@@ -60,38 +59,56 @@ afterEach(() => {
   jest.restoreAllMocks()
 })
 
-test('Not now survives a fresh app process without persisting a permission grant', () => {
+test('Not now survives a fresh process without persisting permission', () => {
   const first = boot()
-  expect(first.offer).toHaveBeenCalledTimes(1)
+  expect(first.offer.visible.value).toBe(true)
   expect(localStorage.length).toBe(0)
-  first.offer.mock.calls[0][0].actions[1].handler()
+  first.offer.dismiss()
+  expect(first.offer.visible.value).toBe(false)
   expect(Notification.permission).toBe('default')
+  expect(localStorage.getItem('frank.notification-offer-dismissed.v1')).toBe(
+    '1',
+  )
+  expect(localStorage.getItem('frank:notification-prompt-dismissed')).toBe('1')
   first.wrapper.unmount()
   const restarted = boot()
-  expect(restarted.offer).not.toHaveBeenCalled()
+  expect(restarted.offer.visible.value).toBe(false)
   expect(request).not.toHaveBeenCalled()
   restarted.wrapper.unmount()
 })
 
-test.each(['granted', 'denied'] as const)(
-  '%s permission suppresses offers after restart',
+test.each(['granted', 'denied', 'unsupported'] as const)(
+  '%s permission suppresses the offer without writes or requests',
   state => {
-    browserPermission = state
+    if (state === 'unsupported')
+      Reflect.deleteProperty(globalThis, 'Notification')
+    else browserPermission = state
     const app = boot()
-    expect(app.offer).not.toHaveBeenCalled()
+    expect(app.offer.visible.value).toBe(false)
     expect(localStorage.length).toBe(0)
     expect(request).not.toHaveBeenCalled()
     app.wrapper.unmount()
   },
 )
 
-test('permission changing outside the app dismisses the offer on focus', async () => {
+test.each([
+  'frank.notification-offer-dismissed.v1',
+  'frank:notification-prompt-dismissed',
+  'frank:notifications-enabled',
+])('%s retains its existing suppression meaning', key => {
+  localStorage.setItem(key, '1')
   const app = boot()
-  const dismiss = app.offer.mock.results[0].value
+  expect(app.offer.visible.value).toBe(false)
+  expect(request).not.toHaveBeenCalled()
+  app.wrapper.unmount()
+})
+
+test('permission changing outside the app hides the offer on focus', async () => {
+  const app = boot()
   browserPermission = 'denied'
   window.dispatchEvent(new Event('focus'))
   await app.nextTick()
-  expect(dismiss).toHaveBeenCalled()
+  expect(app.offer.visible.value).toBe(false)
   expect(request).not.toHaveBeenCalled()
   app.wrapper.unmount()
 })
@@ -99,16 +116,17 @@ test('permission changing outside the app dismisses the offer on focus', async (
 test('Enable invokes the browser synchronously only from the action', async () => {
   const app = boot()
   expect(request).not.toHaveBeenCalled()
-  app.offer.mock.calls[0][0].actions[0].handler()
+  const enabling = app.offer.enableNotifications()
   expect(request).toHaveBeenCalledTimes(1)
-  await Promise.resolve()
+  await enabling
+  expect(app.offer.visible.value).toBe(false)
   app.wrapper.unmount()
   const restarted = boot()
-  expect(restarted.offer).not.toHaveBeenCalled()
+  expect(restarted.offer.visible.value).toBe(false)
   restarted.wrapper.unmount()
 })
 
-test('blocked preference storage still allows dismissal and prevents remount spam', () => {
+test('blocked storage permits dismissal without remount spam', () => {
   jest.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
     throw Error('blocked')
   })
@@ -116,64 +134,88 @@ test('blocked preference storage still allows dismissal and prevents remount spa
     throw Error('blocked')
   })
   const app = boot()
-  expect(() => app.offer.mock.calls[0][0].actions[1].handler()).not.toThrow()
+  expect(app.offer.visible.value).toBe(true)
+  expect(() => app.offer.dismiss()).not.toThrow()
   app.wrapper.unmount()
   const remount = app.mountAgain()
-  expect(app.offer).toHaveBeenCalledTimes(1)
+  expect(app.offer.visible.value).toBe(false)
   expect(request).not.toHaveBeenCalled()
   remount.unmount()
 })
 
-test('a failed Enable request reports failure without saving dismissal', async () => {
+test('failed Enable stays visibly retryable and clears dismissal preferences', async () => {
   request.mockRejectedValueOnce(new Error('permission unavailable'))
   const app = boot()
-  app.offer.mock.calls[0][0].actions[0].handler()
-  await app.flushPromises()
-  expect(app.offer).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      type: 'negative',
-      message: 'notificationPermission.failed',
-    }),
-  )
+  await app.offer.enableNotifications()
+  expect(app.offer.visible.value).toBe(true)
+  expect(app.offer.failed.value).toBe(true)
   expect(localStorage.length).toBe(0)
+  const retry = app.offer.enableNotifications()
+  expect(request).toHaveBeenCalledTimes(2)
+  expect(app.offer.failed.value).toBe(false)
+  await retry
+  expect(app.offer.visible.value).toBe(false)
   app.wrapper.unmount()
-  const restarted = boot()
-  expect(restarted.offer).toHaveBeenCalledTimes(1)
-  restarted.wrapper.unmount()
 })
 
-test('account readiness gates the offer without writing storage or requesting permission', async () => {
+test('readiness gates the offer and reactivation does not repeat it', async () => {
   const app = boot(false)
-  expect(app.offer).not.toHaveBeenCalled()
+  expect(app.offer.visible.value).toBe(false)
   expect(localStorage.length).toBe(0)
+  await app.offer.enableNotifications()
+  expect(request).not.toHaveBeenCalled()
   app.ready.value = true
   await app.nextTick()
-  expect(app.offer).toHaveBeenCalledTimes(1)
+  expect(app.offer.visible.value).toBe(true)
   expect(localStorage.length).toBe(0)
+  app.ready.value = false
+  await app.nextTick()
+  expect(app.offer.visible.value).toBe(false)
+  app.ready.value = true
+  await app.nextTick()
+  expect(app.offer.visible.value).toBe(false)
   expect(request).not.toHaveBeenCalled()
   app.wrapper.unmount()
 })
 
-test('Enable in an extension popup persists dismissal and enabled state even if Notification.permission stays default across popup opens', async () => {
-  ;(globalThis as Record<string, any>).chrome = { runtime: { id: 'ext-123' } }
+test('pending Enable cannot issue a second request', async () => {
+  let finish!: (state: NotificationPermission) => void
+  request.mockImplementationOnce(
+    () =>
+      new Promise<NotificationPermission>(resolve => {
+        finish = resolve
+      }),
+  )
+  const app = boot()
+  const first = app.offer.enableNotifications()
+  expect(app.offer.requesting.value).toBe(true)
+  await app.offer.enableNotifications()
+  expect(request).toHaveBeenCalledTimes(1)
+  browserPermission = 'granted'
+  finish('granted')
+  await first
+  expect(app.offer.requesting.value).toBe(false)
+  app.wrapper.unmount()
+})
+
+test('extension Enable retains preferences when native permission stays default', async () => {
+  Object.defineProperty(globalThis, 'chrome', {
+    configurable: true,
+    value: { runtime: { id: 'ext-123' } },
+  })
   try {
-    // Simulate transient extension popup where requestPermission resolves to 'default'
     request.mockImplementation(async () => 'default')
-    const firstPopup = boot()
-    expect(firstPopup.offer).toHaveBeenCalledTimes(1)
-    firstPopup.offer.mock.calls[0][0].actions[0].handler()
-    await firstPopup.flushPromises()
+    const first = boot()
+    await first.offer.enableNotifications()
     expect(localStorage.getItem('frank:notifications-enabled')).toBe('1')
     expect(localStorage.getItem('frank:notification-prompt-dismissed')).toBe(
       '1',
     )
-    firstPopup.wrapper.unmount()
-
-    // Reopening the extension popup (fresh module graph, Notification.permission still 'default')
-    const secondPopup = boot()
-    expect(secondPopup.offer).not.toHaveBeenCalled()
-    secondPopup.wrapper.unmount()
+    first.wrapper.unmount()
+    const reopened = boot()
+    expect(reopened.offer.visible.value).toBe(false)
+    reopened.wrapper.unmount()
   } finally {
-    delete (globalThis as Record<string, any>).chrome
+    Reflect.deleteProperty(globalThis, 'chrome')
   }
 })

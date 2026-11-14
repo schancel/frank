@@ -55,7 +55,6 @@ import {
   ref,
   watch,
 } from 'vue'
-import { useNotificationPermissionOffer } from 'src/composables/useNotificationPermissionOffer'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
 
@@ -236,12 +235,6 @@ export default defineComponent({
     const myProfile = useProfileStore()
     const settings = useSettingsStore()
     const tabCoordinator = useTabCoordinatorStore()
-
-    useNotificationPermissionOffer(
-      computed(
-        () => accountStatus.status === 'ready' && !tabCoordinator.isYielded,
-      ),
-    )
 
     const takeoverHere = async () => {
       await tabCoordinator.requestTakeover()

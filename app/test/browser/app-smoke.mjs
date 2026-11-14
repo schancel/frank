@@ -290,14 +290,22 @@ try {
           return issues;
         }
 
-        document.body.classList.remove('body--dark');
-        document.body.classList.add('body--light');
-        await new Promise(r => setTimeout(r, 100));
+        // Use the existing theme owner so Quasar state and palette variables agree.
+        const appearance = document.querySelector('#q-app').__vue_app__?.config.globalProperties.$pinia?._s.get('appearance');
+        if (!appearance) throw Error('Appearance owner unavailable');
+        async function applyColorScheme(mode) {
+          appearance.setColorScheme(mode);
+          const deadline = performance.now() + 2000;
+          while (document.body.dataset.themeMode !== mode && performance.now() < deadline) {
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+          if (document.body.dataset.themeMode !== mode) throw Error(mode + ' theme not applied');
+          await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        }
+        await applyColorScheme('light');
         const lightIssues = auditVisibleText(false);
 
-        document.body.classList.remove('body--light');
-        document.body.classList.add('body--dark');
-        await new Promise(r => setTimeout(r, 100));
+        await applyColorScheme('dark');
         const darkIssues = auditVisibleText(true);
 
         return { lightIssues, darkIssues };

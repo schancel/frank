@@ -219,6 +219,7 @@ import {
   fetchMonadTopicPostsSince,
 } from "../evm-topic-tally-client";
 import { readViteEnv } from "./vite-env";
+import { primaryRpcChainFromEnv } from "./primary-rpc-chain";
 import {
   CanonicalMessagingPendingError,
   CanonicalRecipientNotPublishedError,
@@ -457,12 +458,7 @@ export function getDefaultRelayBaseUrl(): string {
 export function loadMonadChainConfigFromEnv(overrides?: {
   isTestnet?: boolean;
 }): EvmChainConfig {
-  const rpcChain =
-    overrides?.isTestnet !== undefined
-      ? overrides.isTestnet
-        ? "monad-testnet"
-        : "monad-mainnet"
-      : readEnv("MONAD_RPC_CHAIN") ?? "monad-testnet";
+  const rpcChain = primaryRpcChainFromEnv(overrides);
   const protocolIdentity = monadProtocolIdentity(rpcChain);
   const rawChainId = readEnv("MONAD_CHAIN_ID");
   let chainId: bigint | undefined;

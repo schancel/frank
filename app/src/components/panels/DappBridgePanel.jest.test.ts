@@ -9,6 +9,7 @@ import {
 import { Transaction } from 'ethers'
 import DappBridgePanel from './DappBridgePanel.vue'
 import enUS from '../../i18n/en-us'
+import * as extensionRuntime from '../../../src-bex/runtime-adapter'
 
 // Narrow seam: the session's persona capability, backed by a fixed test account master.
 const testMaster = HDNodeWallet.fromSeed(new Uint8Array(32).fill(7))
@@ -239,6 +240,33 @@ describe('DappBridgePanel (#1708, #1709, #1710)', () => {
     )
     expect(rpcCalls.every(call => call.url === RPC)).toBe(true)
     wrapper.unmount()
+  })
+
+  it('tags persona/balance refreshes as observations without a provider chain command', async () => {
+    const send = jest
+      .spyOn(extensionRuntime, 'sendRuntimeMessage')
+      .mockResolvedValue({ result: {} })
+    const wrapper = mountPanel({ runtimeKindOverride: 'chrome-extension' })
+    try {
+      await flushPromises()
+      const snapshots = send.mock.calls
+        .map(call => call[0] as Record<string, unknown>)
+        .filter(message => message.type === 'set-active-persona')
+      expect(snapshots.length).toBeGreaterThan(0)
+      expect(
+        snapshots.every(
+          message =>
+            message.chainIdentifier === 'monad-regtest' &&
+            message.chainIdHex === '0x' + (20143).toString(16),
+        ),
+      ).toBe(true)
+      expect(
+        send.mock.calls.map(call => (call[0] as Record<string, unknown>).type),
+      ).not.toContain('set-dapp-chain')
+    } finally {
+      wrapper.unmount()
+      send.mockRestore()
+    }
   })
 
   it('renders Browser Extension mode badge without hardcoded demo balances or duplicate view bar', () => {

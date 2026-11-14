@@ -25,9 +25,20 @@ jest.mock('./components/dialogs/ContactBookDialog.vue', () => ({
   template: '<div />',
 }))
 const mockAccountStatus = { status: 'fresh' }
+const mockGetWallet = jest.fn(async () => ({
+  chainIdentifier: 'monad-regtest',
+  getBalance: async () => 50n,
+}))
+const mockPersonaSigner = jest.fn(async () => ({
+  addresses: async () => ['0x' + '11'.repeat(20)],
+}))
 jest.mock('./accounts/session', () => ({
   accountStatus: mockAccountStatus,
-  accountSession: { state: { revision: 0, account: null } },
+  accountSession: {
+    state: { revision: 0, account: null },
+    getWallet: () => mockGetWallet(),
+    createDappPersonaSigner: () => mockPersonaSigner(),
+  },
 }))
 jest.mock('./adapters/level-message-store', () => ({
   store: Promise.resolve({}),
@@ -39,9 +50,8 @@ const {
   startPageSyncSender,
   cancelPageSyncSender,
 } = require('src/utils/extension-account-sync')
-const {
-  FRANK_PWA_EXTENSION_SYNC_CHANNEL,
-} = require('../src-bex/runtime-adapter')
+const extensionAdapter = require('../src-bex/runtime-adapter')
+const { FRANK_PWA_EXTENSION_SYNC_CHANNEL } = extensionAdapter
 /* eslint-enable @typescript-eslint/no-var-requires */
 
 const SHARES = ['ms12frankshareone', 'ms12franksharetwo']
@@ -131,5 +141,52 @@ describe('AppRuntime account sync listener (PIN pairing)', () => {
     expect(target).toBe(window.location.origin)
     expect(reply).toMatchObject({ type: 'pair-reply', result: { ok: true } })
     expect(JSON.stringify(reply)).not.toContain(SHARES[0])
+  })
+})
+
+describe('AppRuntime extension persona observations', () => {
+  it('tags the unlocked wallet network without persisting provider selection', async () => {
+    const adapter = extensionAdapter
+    const set = jest.fn(async (_value: Record<string, unknown>) => undefined)
+    const runtime = jest
+      .spyOn(adapter, 'isBrowserExtensionRuntime')
+      .mockReturnValue(true)
+    const send = jest
+      .spyOn(adapter, 'sendRuntimeMessage')
+      .mockResolvedValue({ result: {} })
+    const api = jest
+      .spyOn(adapter, 'getRawExtensionApi')
+      .mockReturnValue({ storage: { local: { set } } })
+    const priorURL = window.location.href
+    try {
+      window.history.replaceState({}, '', '/?extMode=popup')
+      mockAccountStatus.status = 'ready'
+      AppRuntime.methods.setupConnections.call({
+        $status: {},
+        hasExistingContacts: () => false,
+        loadCuratedDefaults: () => undefined,
+      })
+      for (let i = 0; i < 10; i++) await Promise.resolve()
+      expect(send).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'update-persona-state',
+          chainIdentifier: 'monad-regtest',
+          chainIdHex: '0x' + (20143).toString(16),
+          poolBalanceWeiHex: '0x32',
+        }),
+      )
+      expect(set).toHaveBeenCalledWith({
+        frankDappPersonaAddress: '0x' + '11'.repeat(20),
+      })
+      expect(
+        set.mock.calls.flatMap(call => Object.keys(call[0])),
+      ).not.toContain('frankChainIdHex')
+    } finally {
+      mockAccountStatus.status = 'fresh'
+      window.history.replaceState({}, '', priorURL)
+      runtime.mockRestore()
+      send.mockRestore()
+      api.mockRestore()
+    }
   })
 })

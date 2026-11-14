@@ -301,6 +301,16 @@ try {
           }
           if (document.body.dataset.themeMode !== mode) throw Error(mode + ' theme not applied');
           await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+          // Theme colors transition for 150ms; audit their settled values, not an intermediate frame.
+          // Decorative infinite animations must not prevent the contrast audit from running.
+          while (document.getAnimations().some(animation =>
+            (animation.playState === 'running' || animation.pending) &&
+            animation.effect && Number.isFinite(animation.effect.getComputedTiming().endTime)
+          )) {
+            if (performance.now() >= deadline) throw Error(mode + ' theme animations did not settle');
+            await new Promise(resolve => setTimeout(resolve, 25));
+          }
+          if (performance.now() >= deadline) throw Error(mode + ' theme settle deadline exceeded');
         }
         await applyColorScheme('light');
         const lightIssues = auditVisibleText(false);

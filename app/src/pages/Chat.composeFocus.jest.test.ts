@@ -6,6 +6,8 @@
 import { mount } from '@vue/test-utils'
 import { defineComponent, h, nextTick, reactive } from 'vue'
 
+import { createPinia, setActivePinia } from 'pinia'
+
 import ChatPage from './Chat.vue'
 
 // Chat.vue reads the own address reactively; these tests have no wallet to resolve it from.
@@ -199,6 +201,8 @@ function composeBox(): HTMLTextAreaElement {
 }
 
 describe('opening a chat focuses the compose box (#411)', () => {
+  beforeEach(() => setActivePinia(createPinia()))
+
   afterEach(() => {
     document.body.innerHTML = ''
   })

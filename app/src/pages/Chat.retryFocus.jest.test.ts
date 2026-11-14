@@ -8,6 +8,8 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { defineComponent, h, nextTick, reactive } from 'vue'
 
+import { createPinia, setActivePinia } from 'pinia'
+
 import ChatPage from './Chat.vue'
 
 // Chat.vue reads the own address reactively; these tests have no wallet to resolve it from.
@@ -231,6 +233,7 @@ describe('Retry focus after keyed message replacement (#429)', () => {
   let composerHandoff: jest.SpyInstance
 
   beforeEach(() => {
+    setActivePinia(createPinia())
     jest.clearAllMocks()
     mockDeleteMessage.mockReset()
     mockRetryOutgoing.mockReset()

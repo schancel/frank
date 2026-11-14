@@ -52,7 +52,7 @@
             <q-chip dense outline color="accent" icon="lock">
               {{ $t('about.badgeEncrypted') }}
             </q-chip>
-            <q-chip dense outline color="dark" icon="key">
+            <q-chip dense outline class="welcome-identity-badge" icon="key">
               {{ $t('about.badgePermissionless') }}
             </q-chip>
           </div>
@@ -338,6 +338,9 @@ export default defineComponent({
 .welcome-page > div {
   max-width: 56rem;
   margin-inline: auto;
+}
+.welcome-identity-badge {
+  color: var(--q-color-text);
 }
 .welcome-intro-text {
   max-width: 42rem;

@@ -666,6 +666,38 @@ describe('startOutgoingReconciliation (#270)', () => {
     // and each sent only when a tick asks the wallet to look again. On main 517d720b7 no message
     // is pending, so the tick waits its idle minute between them: the lab wallet showed 0.141
     // MONR for minutes that Send max could not use. Fails there (one look in the first 59 s).
+    it('retains the idle cadence when a native set appears without a host wake event', async () => {
+      const reobserve = jest.fn(async () => undefined)
+      let operations: unknown[] = []
+      const polling = startOutgoingReconciliation({
+        wallet: {
+          ...wallet,
+          reobserveNativeOperations: reobserve,
+          getNativeOperations: () => operations,
+        } as unknown as WalletHandle,
+      })
+      try {
+        await jest.advanceTimersByTimeAsync(0)
+        expect(reobserve).toHaveBeenCalledTimes(1)
+        operations = [
+          {
+            operationId: 'original-new-legacy',
+            kind: 'transaction-set',
+            submissionAuthorized: true,
+            cancelled: false,
+          },
+        ]
+        await jest.advanceTimersByTimeAsync(
+          IDLE_OUTGOING_RECONCILE_INTERVAL_MS - 1,
+        )
+        expect(reobserve).toHaveBeenCalledTimes(1)
+        await jest.advanceTimersByTimeAsync(1)
+        expect(reobserve).toHaveBeenCalledTimes(2)
+      } finally {
+        polling.stop()
+      }
+    })
+
     it('keeps the short pauses while a submitted transaction set of the wallet is unfinished, and goes idle once it is done', async () => {
       const reobserve = jest.fn(async () => undefined)
       let operations: unknown[] = [

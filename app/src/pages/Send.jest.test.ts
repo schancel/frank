@@ -987,6 +987,349 @@ describe('Send.vue review boundary and signing protection (#535)', () => {
     }
   })
 
+  it('advances the original authorized legacy set on watched blocks while the host is idle', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    const fixture = await includedNativeTransfer(true, {
+      observed: false,
+      submitted: false,
+      transactionSet: true,
+    })
+    let visible = false
+    let nextBlock: (() => void) | undefined
+    const watchNativeOperation = jest.fn(
+      () =>
+        new Promise<void>(resolve => {
+          nextBlock = resolve
+        }),
+    )
+    const original = fixture.journal.list()[0]!
+    const originalHashes = original.members.map(
+      member => member.signed!.transactionHash,
+    )
+    expect(original.submissionAuthorized).toBe(true)
+    expect(original.members[1]!.exposed).toBe(false)
+    const reobserveNativeOperations = jest.fn(async () => {
+      // The wallet capability, not the page, submits its already-authorized deferred member.
+      await fixture.journal.markExposed(fixture.operationId, 1)
+      await fixture.journal.recordObservation(
+        fixture.journal.beginCapture(fixture.operationId, 1),
+        {
+          state: 'included-success',
+          transactionHash: fixture.hash,
+          blockHash: '0x' + '13'.repeat(32),
+          blockNumber: 69526800,
+          transactionIndex: 0,
+          feeWei: '2142000000000000',
+        },
+        null,
+      )
+    })
+    // The background host has already earned its idle pause. Its cadence is pinned separately;
+    // this mounted-page test advances the real public watchNativeOperation promise boundary.
+    const idleHost = setTimeout(() => void reobserveNativeOperations(), 60_000)
+    mockCaptureWallet.mockResolvedValue({
+      wallet: {
+        family: 'evm',
+        chainIdentifier: 'monad-testnet',
+        getNativeOperations: () => (visible ? fixture.journal.list() : []),
+        watchNativeOperation,
+        reobserveNativeOperations,
+      },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      visible = true
+      await onSigned({ txHash: fixture.hash })
+      throw new Error('Original authorized dependency is pending')
+    })
+    const wrapper = mountSend()
+    try {
+      await jest.advanceTimersByTimeAsync(5_000)
+      await reviewNative(wrapper)
+      await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+      await flushPromises()
+      expect(watchNativeOperation).toHaveBeenCalledWith(fixture.operationId)
+      expect(reobserveNativeOperations).not.toHaveBeenCalled()
+      nextBlock!()
+      await flushPromises()
+      expect(reobserveNativeOperations).toHaveBeenCalledTimes(1)
+      await reobserveNativeOperations.mock.results[0]!.value
+      await flushPromises()
+      expect(wrapper.get('[data-test="native-operation-line"]').text()).toBe(
+        'Sent on Monad Testnet.',
+      )
+      const final = await fixture.journal.readOperation(fixture.operationId)
+      expect(
+        final!.members.map(member => member.signed!.transactionHash),
+      ).toEqual(originalHashes)
+      expect(final!.recipient).toBe(original.recipient)
+      expect(final!.intendedValueWei).toBe(original.intendedValueWei)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      clearTimeout(idleHost)
+      wrapper.unmount()
+      nextBlock?.()
+      await fixture.close()
+      jest.useRealTimers()
+    }
+  })
+
+  async function pendingRecoveryView(
+    recover: (
+      fixture: Awaited<ReturnType<typeof includedNativeTransfer>>,
+    ) => Promise<void>,
+    ownedChange = false,
+  ) {
+    const fixture = await includedNativeTransfer(!ownedChange, {
+      observed: false,
+      submitted: false,
+      transactionSet: true,
+      ownedChange,
+    })
+    let nextBlock: (() => void) | undefined
+    const watchNativeOperation = jest.fn(
+      () =>
+        new Promise<void>(resolve => {
+          nextBlock = resolve
+        }),
+    )
+    const reobserveNativeOperations = jest.fn(() => recover(fixture))
+    const wallet = {
+      family: 'evm',
+      chainIdentifier: 'monad-testnet',
+      getNativeOperations: jest.fn(() => fixture.journal.list()),
+      watchNativeOperation,
+      reobserveNativeOperations,
+    }
+    mockCaptureWallet.mockResolvedValue({
+      wallet,
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    mockSend.mockImplementation(async ({ onSigned }) => {
+      await onSigned({ txHash: fixture.hash })
+      throw new Error('Original authorized operation is pending')
+    })
+    const wrapper = mountSend()
+    await reviewNative(wrapper)
+    await wrapper.get('[data-test="review-confirm-button"]').trigger('click')
+    await flushPromises()
+    return {
+      fixture,
+      wallet,
+      wrapper,
+      reobserveNativeOperations,
+      watchNativeOperation,
+      block: () => {
+        expect(nextBlock).toBeDefined()
+        nextBlock!()
+      },
+      async close() {
+        wrapper.unmount()
+        nextBlock?.()
+        await flushPromises()
+        await fixture.close()
+      },
+    }
+  }
+
+  it('coalesces slow authorized recovery without blocking block-observed status', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    let release!: () => void
+    const view = await pendingRecoveryView(
+      () =>
+        new Promise<void>(resolve => {
+          release = resolve
+        }),
+    )
+    try {
+      view.block()
+      await flushPromises()
+      expect(view.reobserveNativeOperations).toHaveBeenCalledTimes(1)
+      view.block()
+      await flushPromises()
+      expect(view.reobserveNativeOperations).toHaveBeenCalledTimes(1)
+      // A separate block observation succeeds while the recovery request is still unresolved.
+      await view.fixture.journal.markExposed(view.fixture.operationId, 1)
+      await view.fixture.journal.recordObservation(
+        view.fixture.journal.beginCapture(view.fixture.operationId, 1),
+        {
+          state: 'included-success',
+          transactionHash: view.fixture.hash,
+          blockHash: '0x' + '13'.repeat(32),
+          blockNumber: 69526800,
+          transactionIndex: 0,
+          feeWei: '2142000000000000',
+        },
+        null,
+      )
+      view.block()
+      await flushPromises()
+      expect(
+        view.wrapper.get('[data-test="native-operation-line"]').text(),
+      ).toBe('Sent on Monad Testnet.')
+      expect(view.reobserveNativeOperations).toHaveBeenCalledTimes(1)
+      expect(mockSend).toHaveBeenCalledTimes(1)
+      release()
+      await view.reobserveNativeOperations.mock.results[0]!.value
+      await flushPromises()
+    } finally {
+      release?.()
+      await view.close()
+      jest.useRealTimers()
+    }
+  })
+
+  it('keeps rejected original recovery pending, says recovery is unavailable, and never sends again', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    const failure = new Error('temporary recovery failure')
+    const view = await pendingRecoveryView(async () => {
+      throw failure
+    })
+    try {
+      for (let i = 0; i < 2; i++) {
+        view.block()
+        await flushPromises()
+        await flushPromises()
+      }
+      expect(view.reobserveNativeOperations).toHaveBeenCalledTimes(2)
+      expect(errorNotify).toHaveBeenCalledTimes(1)
+      expect(errorNotify).toHaveBeenCalledWith(failure, {
+        fallbackKey: 'nativeOperation.recoveryUnavailable',
+      })
+      expect(
+        view.wrapper.get('[data-test="native-operation-line"]').text(),
+      ).toBe('Sending on Monad Testnet… 1 of 2 transactions confirmed.')
+      expect(
+        view.wrapper.find('[data-test="review-confirm-button"]').exists(),
+      ).toBe(false)
+      expect(sentTransactionNotify).not.toHaveBeenCalled()
+      expect(mockSend).toHaveBeenCalledTimes(1)
+      expect(
+        (await view.fixture.journal.readOperation(view.fixture.operationId))!
+          .members[1]!.exposed,
+      ).toBe(false)
+    } finally {
+      await view.close()
+      jest.useRealTimers()
+    }
+  })
+
+  it('advances original owned change on the existing settle observer after the recipient is paid', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    const view = await pendingRecoveryView(async fixture => {
+      const member = (await fixture.journal.readOperation(fixture.operationId))!
+        .members[1]!
+      await fixture.journal.markExposed(fixture.operationId, 1)
+      await fixture.journal.recordObservation(
+        fixture.journal.beginCapture(fixture.operationId, 1),
+        {
+          state: 'included-success',
+          transactionHash: member.signed!.transactionHash,
+          blockHash: '0x' + '13'.repeat(32),
+          blockNumber: 69526800,
+          transactionIndex: 0,
+          feeWei: '2142000000000000',
+        },
+        null,
+      )
+    }, true)
+    try {
+      const original = (await view.fixture.journal.readOperation(
+        view.fixture.operationId,
+      ))!
+      expect(
+        view.wrapper.get('[data-test="native-operation-settling"]').text(),
+      ).toContain('Change still settling')
+      expect(view.reobserveNativeOperations).not.toHaveBeenCalled()
+      await jest.advanceTimersByTimeAsync(2_000)
+      await flushPromises()
+      expect(view.reobserveNativeOperations).toHaveBeenCalledTimes(1)
+      await view.reobserveNativeOperations.mock.results[0]!.value
+      await flushPromises()
+      expect(
+        view.wrapper.find('[data-test="native-operation-settling"]').exists(),
+      ).toBe(false)
+      const after = (await view.fixture.journal.readOperation(
+        view.fixture.operationId,
+      ))!
+      expect(after.operationId).toBe(original.operationId)
+      expect(after.members.map(m => m.signed!.transactionHash)).toEqual(
+        original.members.map(m => m.signed!.transactionHash),
+      )
+      expect(mockSend).toHaveBeenCalledTimes(1)
+      expect(view.watchNativeOperation).not.toHaveBeenCalled()
+    } finally {
+      await view.close()
+      jest.useRealTimers()
+    }
+  })
+
+  it.each(['unmount', 'stale-session', 'foreign-wallet-chain'])(
+    'does not start recovery after %s at the pending block boundary',
+    async change => {
+      jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+      const view = await pendingRecoveryView(async () => undefined)
+      try {
+        if (change === 'unmount') view.wrapper.unmount()
+        if (change === 'stale-session') mockCurrent.value = false
+        if (change === 'foreign-wallet-chain')
+          view.wallet.chainIdentifier = 'ethereum-sepolia'
+        view.block()
+        await flushPromises()
+        expect(view.reobserveNativeOperations).not.toHaveBeenCalled()
+        expect(mockSend).toHaveBeenCalledTimes(1)
+      } finally {
+        await view.close()
+        jest.useRealTimers()
+      }
+    },
+  )
+
+  it('does not publish recovery completion or errors into a stale captured session', async () => {
+    jest.useFakeTimers({ doNotFake: ['setImmediate', 'nextTick'] })
+    let reject!: (error: Error) => void
+    const view = await pendingRecoveryView(
+      () =>
+        new Promise<void>((_resolve, failure) => {
+          reject = failure
+        }),
+    )
+    try {
+      view.block()
+      await flushPromises()
+      expect(view.reobserveNativeOperations).toHaveBeenCalledTimes(1)
+      const reads = view.wallet.getNativeOperations.mock.calls.length
+      mockCurrent.value = false
+      reject(new Error('old session recovery unavailable'))
+      await flushPromises()
+      await flushPromises()
+      expect(view.wallet.getNativeOperations).toHaveBeenCalledTimes(reads)
+      expect(errorNotify).not.toHaveBeenCalled()
+      expect(sentTransactionNotify).not.toHaveBeenCalled()
+      expect(mockSend).toHaveBeenCalledTimes(1)
+    } finally {
+      await view.close()
+      jest.useRealTimers()
+    }
+  })
+
+  it('does not invoke native recovery for an unsigned review', async () => {
+    const reobserveNativeOperations = jest.fn(async () => undefined)
+    mockCaptureWallet.mockResolvedValue({
+      wallet: { ...mockWallet, reobserveNativeOperations },
+      assertCurrent: mockAssertCurrent,
+      isCurrent: () => mockCurrent.value,
+    })
+    const wrapper = mountSend()
+    await reviewNative(wrapper)
+    await flushPromises()
+    expect(mockSend).not.toHaveBeenCalled()
+    expect(reobserveNativeOperations).not.toHaveBeenCalled()
+    wrapper.unmount()
+  })
+
   // A QA run saw "Payment outcome is unresolved … Funds may have moved" while a Send max's
   // funding had landed and its payment, not yet sent, waited for it.
   it('a signed transfer not yet handed to the network reads as sending, not unresolved', async () => {

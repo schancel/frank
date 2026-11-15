@@ -68,12 +68,25 @@ export async function includedNativeTransfer(
   {
     observed = true,
     submitted = true,
-  }: { observed?: boolean; submitted?: boolean } = {},
+    transactionSet = false,
+    ownedChange = false,
+  }: {
+    observed?: boolean
+    submitted?: boolean
+    transactionSet?: boolean
+    ownedChange?: boolean
+  } = {},
 ) {
   const location = await mkdtemp(join(tmpdir(), 'frank-native-ui-'))
   const signer = new Wallet('0x' + '41'.repeat(32))
   const staging = new Wallet('0x' + '42'.repeat(32))
-  const signers = fanIn ? [signer, staging] : [signer]
+  if (ownedChange && !transactionSet)
+    throw new Error('Owned change fixture needs a transaction set')
+  const signers = ownedChange
+    ? [signer, signer]
+    : fanIn
+    ? [signer, staging]
+    : [signer]
   const recipient = '0x000000000000000000000000000000000000dead'
   const binding = {
     chainIdentifier: 'monad-testnet',
@@ -95,34 +108,82 @@ export async function includedNativeTransfer(
   }
   try {
     await journal.Open()
-    let row = await journal.prepare({
-      kind: 'legacy',
-      recipient,
-      intendedValueWei: '10000000000000000',
-      members: signers.map((wallet, index) => ({
-        source: { kind: 'main', address: wallet.address.toLowerCase() },
+    const fee = 21000n * 102000000000n
+    const members = signers.map((wallet, index) => {
+      const funding = !ownedChange && fanIn && index === 0
+      const change = ownedChange && index === 1
+      const value = 10000000000000000n + (transactionSet && funding ? fee : 0n)
+      return {
+        source: {
+          kind: 'main' as const,
+          address: wallet.address.toLowerCase(),
+        },
         unsignedTransaction: Transaction.from({
           type: 2,
           chainId: 10143n,
-          nonce: 0,
-          to: fanIn && index === 0 ? staging.address : recipient,
-          value: 10000000000000000n,
+          nonce: ownedChange ? index : 0,
+          to: funding || change ? staging.address : recipient,
+          value,
           gasLimit: 21000n,
           maxFeePerGas: 102000000000n,
           maxPriorityFeePerGas: 102000000000n,
         }).unsignedSerialized,
         dependencies: index ? [0] : [],
-      })),
+        ...(transactionSet
+          ? {
+              transactionSet: {
+                role: funding
+                  ? ('funding' as const)
+                  : change
+                  ? ('change' as const)
+                  : ('payment' as const),
+                logicalIndex: 0,
+                ...(funding || change ? { changeIndex: 0 } : {}),
+                ...(change ? { predecessorWaitBlocks: 3 } : {}),
+                balanceBeforeWei: (
+                  (ownedChange && index === 0 ? 2n : 1n) *
+                  (value + fee)
+                ).toString(),
+                balanceAfterWei:
+                  ownedChange && index === 0 ? (value + fee).toString() : '0',
+              },
+            }
+          : {}),
+      }
     })
+    const signed = transactionSet
+      ? await Promise.all(
+          members.map((member, index) =>
+            signers[index]!.signTransaction(
+              Transaction.from(member.unsignedTransaction),
+            ),
+          ),
+        )
+      : undefined
+    let row = await journal.prepare(
+      {
+        kind: transactionSet ? 'transaction-set' : 'legacy',
+        ...(transactionSet
+          ? { preparationId: 'evm-transaction-set:legacy-native-ui-fixture' }
+          : {}),
+        recipient,
+        intendedValueWei: '10000000000000000',
+        members,
+      },
+      signed,
+    )
+    if (transactionSet)
+      row = await journal.authorizeTransactionSet(row.operationId, signed)
     let hash = ''
     for (let index = 0; index < signers.length; index++) {
-      row = await journal.checkpointSigned(
-        row.operationId,
-        index,
-        await signers[index]!.signTransaction(
-          Transaction.from(row.members[index]!.unsignedTransaction),
-        ),
-      )
+      if (!transactionSet)
+        row = await journal.checkpointSigned(
+          row.operationId,
+          index,
+          await signers[index]!.signTransaction(
+            Transaction.from(row.members[index]!.unsignedTransaction),
+          ),
+        )
       hash = row.members[index]!.signed!.transactionHash
       const last = index === signers.length - 1
       if (submitted || !last) await journal.markExposed(row.operationId, index)
@@ -141,7 +202,7 @@ export async function includedNativeTransfer(
       )
     }
     return {
-      hash,
+      hash: ownedChange ? row.members[0]!.signed!.transactionHash : hash,
       operationId: row.operationId,
       get journal() {
         return journal

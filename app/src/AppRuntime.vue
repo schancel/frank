@@ -60,6 +60,7 @@ import { useRouter } from 'vue-router'
 
 import { fetchCuratedDefaultContacts } from '@frank/wallet/evm-identity'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { applyLocale } from 'src/utils/apply-locale'
 import { useRelayClientStore } from 'src/stores/relay-client'
 import { useAppearanceStore } from 'src/stores/appearance'
@@ -145,17 +146,25 @@ async function syncActivePersonaToExtension() {
       // Ignore balance observation failure during initial boot
     }
 
+    const chainIdentifier = wallet.chainIdentifier
+    const entry = getChainRegistryEntry(chainIdentifier)
+    const chainIdHex =
+      entry?.family === 'evm' && entry.nativeChainId !== undefined
+        ? '0x' + BigInt(entry.nativeChainId).toString(16)
+        : undefined
     void sendRuntimeMessage({
       channel: FRANK_DAPP_BRIDGE_CHANNEL,
       type: 'update-persona-state',
       address,
       poolBalanceWeiHex,
-      chainIdHex: '0x279f',
+      chainIdentifier,
+      chainIdHex,
       payload: {
         activePersonaAddress: address,
         poolBalanceWei: poolBalanceWeiHex,
         poolBalanceWeiHex,
-        chainIdHex: '0x279f',
+        chainIdentifier,
+        chainIdHex,
       },
     })
     const extApi = getRawExtensionApi()
@@ -163,8 +172,6 @@ async function syncActivePersonaToExtension() {
       void Promise.resolve(
         extApi.storage.local.set({
           frankDappPersonaAddress: address,
-          frankPoolBalanceWeiHex: poolBalanceWeiHex,
-          frankChainIdHex: '0x279f',
         }),
       ).catch(() => undefined)
     }

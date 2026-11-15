@@ -145,6 +145,13 @@ function bundleBexEntryWithDependencies(entryFilename) {
     target: 'es2020',
     write: false,
     logLevel: 'silent',
+    // Standalone extension entries share the app's public primary-network composition.
+    define: {
+      'import.meta.env': JSON.stringify({
+        QCLI_MONAD_RPC_CHAIN:
+          process.env.QCLI_MONAD_RPC_CHAIN ?? process.env.MONAD_RPC_CHAIN,
+      }),
+    },
   })
   return result.outputFiles[0].text
 }

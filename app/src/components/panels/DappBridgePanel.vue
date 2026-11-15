@@ -1248,6 +1248,7 @@ export default defineComponent({
           type: 'set-active-persona',
           address,
           poolBalanceWeiHex: '0x' + totalWei.toString(16),
+          chainIdentifier: props.chainIdentifier,
           chainIdHex: '0x' + BigInt(nativeChainId).toString(16),
         })
       } catch {

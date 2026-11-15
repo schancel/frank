@@ -30,6 +30,7 @@ import {
 } from '../src/utils/sync-pairing'
 import { createApprovalWindow, type ApprovalWindow } from './approval-window'
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
+import { primaryRpcChainFromEnv } from '@frank/wallet/chain/primary-rpc-chain'
 
 export type DappProviderAnnounceMode = 'always' | 'connected-only' | 'stealth'
 
@@ -92,6 +93,8 @@ export interface PendingRpcWaiter {
 
 export interface BackgroundBridgeState {
   chainIdHex: string
+  /** Transient admission failure; never a wallet reset or a persisted fallback. */
+  providerChainError?: { code: 4901; message: string }
   activePersonaAddress: string
   poolBalanceWeiHex?: string
   approvedOrigins: Set<string>
@@ -409,10 +412,53 @@ async function forwardReadOnlyRpc(
   }
 }
 
+const PROVIDER_CHAIN_UNAVAILABLE = {
+  code: 4901 as const,
+  message:
+    'The EVM provider network preference is unavailable. Explicitly choose a supported network.',
+}
+
+/** Native EIP-1193 preferences resolve to a canonical supported registry network. */
+function providerChain(chainIdHex: unknown) {
+  if (typeof chainIdHex !== 'string' || !/^0x[0-9a-fA-F]+$/.test(chainIdHex))
+    return undefined
+  const nativeId = BigInt(chainIdHex)
+  return Object.values(PROTOCOL_CHAINS).find(
+    chain =>
+      chain.family === 'evm' &&
+      chain.nativeChainId !== undefined &&
+      BigInt(chain.nativeChainId) === nativeId &&
+      chain.allowedProxyCapabilities.includes('json-rpc'),
+  )
+}
+
+function configuredProviderChainId(): string {
+  const id = primaryRpcChainFromEnv()
+  const chain = PROTOCOL_CHAINS[id]
+  if (
+    !chain ||
+    chain.family !== 'evm' ||
+    chain.nativeChainId === undefined ||
+    !chain.allowedProxyCapabilities.includes('json-rpc')
+  )
+    throw new Error('Unsupported configured EVM provider network')
+  return '0x' + BigInt(chain.nativeChainId).toString(16)
+}
+
 export function createBackgroundBridgeState(
   overrides: Partial<BackgroundBridgeState> = {},
   runtimeScope?: Record<string, any>,
 ): BackgroundBridgeState {
+  let chainIdHex = ''
+  let providerChainError: BackgroundBridgeState['providerChainError']
+  try {
+    chainIdHex = overrides.chainIdHex ?? configuredProviderChainId()
+    const chain = providerChain(chainIdHex)
+    if (!chain) throw new Error('Unsupported EVM provider network')
+    chainIdHex = '0x' + BigInt(chain.nativeChainId!).toString(16)
+  } catch {
+    providerChainError = { ...PROVIDER_CHAIN_UNAVAILABLE }
+  }
   const runtime = getExtensionRuntime(runtimeScope)
   const defaultLaunchMode =
     runtime.kind === 'chrome-extension' && runtime.hasSidePanel
@@ -444,7 +490,8 @@ export function createBackgroundBridgeState(
   }
 
   return {
-    chainIdHex: overrides.chainIdHex ?? '0x279f',
+    chainIdHex,
+    providerChainError,
     // Empty until Frank provisions the custody-derived shared persona.
     activePersonaAddress: overrides.activePersonaAddress ?? '',
     poolBalanceWeiHex: overrides.poolBalanceWeiHex ?? '0x0',
@@ -1400,6 +1447,40 @@ export async function handleBackgroundMessage(
     })
   }
 
+  async function selectProviderChain(raw: unknown) {
+    if (typeof raw !== 'string' || !/^0x[0-9a-fA-F]+$/.test(raw.trim())) {
+      return {
+        ok: false as const,
+        error: { code: -32602, message: 'Invalid chainId parameter' },
+      }
+    }
+    const chain = providerChain(raw.trim())
+    if (!chain)
+      return {
+        ok: false as const,
+        error: { code: 4902, message: 'Unsupported EVM provider network.' },
+      }
+    const normalized = '0x' + BigInt(chain.nativeChainId!).toString(16)
+    if (state.providerChainError || state.chainIdHex !== normalized) {
+      state.chainIdHex = normalized
+      delete state.providerChainError
+      state.poolBalanceWeiHex = '0x0'
+      const extApi = getRawExtensionApi(runtimeScope)
+      if (extApi?.storage?.local?.set) {
+        try {
+          await extApi.storage.local.set({
+            frankChainIdHex: normalized,
+            frankPoolBalanceWeiHex: '0x0',
+          })
+        } catch {
+          // Keep the existing in-memory provider selection if storage is unavailable.
+        }
+      }
+      broadcastProviderEventToTabs('chainChanged', normalized)
+    }
+    return { ok: true as const, chainIdHex: normalized }
+  }
+
   function broadcastPrivacyConfigToTabs(triggerAnnounce = false) {
     const connectedOrigins = Array.from(state.approvedOrigins)
     broadcastToTabs(runtimeScope, () => ({
@@ -1420,6 +1501,7 @@ export async function handleBackgroundMessage(
       result: {
         ok: true,
         chainIdHex: state.chainIdHex,
+        providerChainError: state.providerChainError,
         activePersonaAddress: state.activePersonaAddress,
         poolBalanceWeiHex: state.poolBalanceWeiHex ?? '0x0',
         approvedOrigins: Array.from(state.approvedOrigins),
@@ -1602,9 +1684,20 @@ export async function handleBackgroundMessage(
         nextPoolHex = '0x' + BigInt(trimmedPool).toString(16)
       }
     }
-    const nextChainHex = String(
-      payload.chainIdHex ?? message.chainIdHex ?? '',
-    ).trim()
+    const observationChainIdentifier =
+      payload.chainIdentifier ?? message.chainIdentifier
+    const observationChain =
+      typeof observationChainIdentifier === 'string'
+        ? PROTOCOL_CHAINS[observationChainIdentifier]
+        : undefined
+    const observationNativeHex = payload.chainIdHex ?? message.chainIdHex
+    const selectedChain = providerChain(state.chainIdHex)
+    const balanceMatchesSelection =
+      !state.providerChainError &&
+      observationChain?.family === 'evm' &&
+      observationChain.id === selectedChain?.id &&
+      (observationNativeHex === undefined ||
+        providerChain(observationNativeHex)?.id === observationChain.id)
     const storageUpdates: Record<string, unknown> = {}
 
     if (/^0x[a-fA-F0-9]{40}$/.test(nextAddr)) {
@@ -1621,17 +1714,9 @@ export async function handleBackgroundMessage(
       }
       storageUpdates.frankDappOriginPersonas = { ...state.originPersonas }
     }
-    if (/^0x[0-9a-fA-F]+$/.test(nextPoolHex)) {
+    if (balanceMatchesSelection && /^0x[0-9a-fA-F]+$/.test(nextPoolHex)) {
       state.poolBalanceWeiHex = nextPoolHex.toLowerCase()
       storageUpdates.frankPoolBalanceWeiHex = state.poolBalanceWeiHex
-    }
-    if (/^0x[0-9a-fA-F]+$/.test(nextChainHex)) {
-      const normalizedChain = '0x' + parseInt(nextChainHex, 16).toString(16)
-      if (state.chainIdHex !== normalizedChain) {
-        state.chainIdHex = normalizedChain
-        storageUpdates.frankChainIdHex = normalizedChain
-        broadcastProviderEventToTabs('chainChanged', normalizedChain)
-      }
     }
 
     if (Object.keys(storageUpdates).length > 0) {
@@ -1659,27 +1744,9 @@ export async function handleBackgroundMessage(
     message.channel === FRANK_DAPP_BRIDGE_CHANNEL &&
     message.type === 'set-dapp-chain'
   ) {
-    const rawChain = String(message.chainIdHex ?? '').trim()
-    if (/^0x[0-9a-fA-F]+$/.test(rawChain)) {
-      const normalized = '0x' + parseInt(rawChain, 16).toString(16)
-      state.chainIdHex = normalized
-      const extApi = getRawExtensionApi(runtimeScope)
-      if (extApi?.storage?.local?.set) {
-        try {
-          await extApi.storage.local.set({ frankChainIdHex: normalized })
-        } catch {
-          // Ignore storage errors
-        }
-      }
-      broadcastProviderEventToTabs('chainChanged', normalized)
-    }
-    return {
-      ok: true,
-      result: {
-        ok: true,
-        chainIdHex: state.chainIdHex,
-      },
-    }
+    const selection = await selectProviderChain(message.chainIdHex)
+    if (!selection.ok) return selection
+    return { ok: true, result: { ok: true, chainIdHex: selection.chainIdHex } }
   }
 
   if (
@@ -1779,6 +1846,14 @@ export async function handleBackgroundMessage(
     message.type === 'dapp-rpc-request'
   ) {
     const method = String(message.payload?.method ?? '')
+    if (
+      state.providerChainError &&
+      !method.startsWith('solana_') &&
+      method !== 'wallet_switchEthereumChain' &&
+      method !== 'wallet_addEthereumChain'
+    ) {
+      return { ok: false, error: { ...state.providerChainError } }
+    }
     const params = message.payload?.params
     const rawOrigin = String(
       message.origin ?? sender?.origin ?? sender?.url ?? '',
@@ -1927,34 +2002,10 @@ export async function handleBackgroundMessage(
       method === 'wallet_addEthereumChain'
     ) {
       const rawChainId = Array.isArray(params)
-        ? (params[0] as any)?.chainId
-        : (params as any)?.chainId
-      if (
-        typeof rawChainId === 'string' &&
-        /^0x[0-9a-fA-F]+$/.test(rawChainId.trim())
-      ) {
-        const normalized = '0x' + parseInt(rawChainId.trim(), 16).toString(16)
-        state.chainIdHex = normalized
-        const extApi = getRawExtensionApi(runtimeScope)
-        if (extApi?.storage?.local?.set) {
-          try {
-            await extApi.storage.local.set({
-              frankChainIdHex: normalized,
-            })
-          } catch {
-            // Ignore storage errors
-          }
-        }
-        broadcastProviderEventToTabs('chainChanged', normalized)
-        return { ok: true, result: null }
-      }
-      return {
-        ok: false,
-        error: {
-          code: -32602,
-          message: 'Invalid chainId parameter',
-        },
-      }
+        ? params[0]?.chainId
+        : params?.chainId
+      const selection = await selectProviderChain(rawChainId)
+      return selection.ok ? { ok: true, result: null } : selection
     }
 
     if (method === 'wallet_getCapabilities') {
@@ -2040,6 +2091,9 @@ export async function handleBackgroundMessage(
         method,
         params,
         chainIdHex: state.chainIdHex,
+        ...(!isSolanaMethod
+          ? { chainIdentifier: providerChain(state.chainIdHex)!.id }
+          : {}),
         createdAt: Date.now(),
         requiresCompanionApproval: true,
         personaAddress: isConnectMethod
@@ -2468,6 +2522,16 @@ export async function restoreStoredBridgeState(
     'frankChainIdHex',
   ])
   if (!stored) return
+  // Validate selection before applying any restored provider observations.
+  if (stored.frankChainIdHex !== undefined) {
+    const chain = providerChain(stored.frankChainIdHex)
+    if (!chain) {
+      state.providerChainError = { ...PROVIDER_CHAIN_UNAVAILABLE }
+    } else {
+      state.chainIdHex = '0x' + BigInt(chain.nativeChainId!).toString(16)
+      delete state.providerChainError
+    }
+  }
   const storedMode = parseExtensionLaunchMode(stored[FRANK_EXT_LAUNCH_MODE_KEY])
   if (storedMode) state.launchMode = storedMode
   if (
@@ -2476,12 +2540,8 @@ export async function restoreStoredBridgeState(
   ) {
     state.activePersonaAddress = stored.frankDappPersonaAddress
   }
-  if (
-    typeof stored.frankPoolBalanceWeiHex === 'string' &&
-    /^0x[0-9a-fA-F]+$/.test(stored.frankPoolBalanceWeiHex)
-  ) {
-    state.poolBalanceWeiHex = stored.frankPoolBalanceWeiHex
-  }
+  // A persisted untagged balance cannot establish a balance on the selected network.
+  state.poolBalanceWeiHex = '0x0'
   if (Array.isArray(stored.frankDappApprovedOrigins)) {
     for (const orig of stored.frankDappApprovedOrigins) {
       if (typeof orig === 'string' && orig) {
@@ -2534,12 +2594,6 @@ export async function restoreStoredBridgeState(
   ) {
     state.announceMode = stored.frankAnnounceMode
   }
-  if (
-    typeof stored.frankChainIdHex === 'string' &&
-    /^0x[0-9a-fA-F]+$/.test(stored.frankChainIdHex)
-  ) {
-    state.chainIdHex = stored.frankChainIdHex.toLowerCase()
-  }
 }
 
 export function installBackgroundBridge(
@@ -2589,7 +2643,9 @@ export function installBackgroundBridge(
   // be what woke this worker, and answering it from defaults would show (and
   // apply) a choice the user did not make.
   const restored = restoreStoredBridgeState(state, api)
-    .catch(() => undefined)
+    .catch(() => {
+      state.providerChainError = { ...PROVIDER_CHAIN_UNAVAILABLE }
+    })
     .then(() => applyToolbarClickBehavior(runtimeScope, state.launchMode))
   let restoreDone = false
   void restored.then(() => {

@@ -428,6 +428,7 @@ import {
   ContactPaymentBelowFloorError,
   findEvmNativeOperationStatus,
   type EvmNativeOperationStatus,
+  type NativeWalletHandle,
 } from '@frank/wallet/chain'
 import {
   createNativeTransferContext,
@@ -959,6 +960,60 @@ export default defineComponent({
               ))
           )
         }
+        // A block look observes exposed transactions. Advancing the original authorized
+        // dependencies is the wallet's separate capability; do not wait for the idle host tick.
+        // One slow recovery never holds up the existing outcome reads or starts a second pass.
+        let nativeRecovery: Promise<void> | undefined
+        let recoveryFailureShown = false
+        const recoverOriginal = () => {
+          const wallet = reviewed.binding.wallet
+          const isCurrent = () =>
+            !disposed &&
+            reviewed.binding.isCurrent() &&
+            wallet.chainIdentifier === reviewed.context.chain.chainIdentifier
+          const op = operation.value
+          if (
+            nativeRecovery ||
+            !isCurrent() ||
+            wallet.family !== 'evm' ||
+            !op ||
+            op.operationId !== signedOperationId ||
+            !op.members.some(
+              member =>
+                !['included-success', 'included-revert', 'superseded'].includes(
+                  member.state,
+                ),
+            )
+          )
+            return
+          const recover = (wallet as NativeWalletHandle)
+            .reobserveNativeOperations
+          if (!recover) return
+          nativeRecovery = Promise.resolve()
+            .then(async () => {
+              if (!isCurrent()) return
+              try {
+                await recover.call(wallet)
+                recoveryFailureShown = false
+              } catch (error) {
+                if (isCurrent() && !recoveryFailureShown) {
+                  recoveryFailureShown = true
+                  errorNotify(error, {
+                    fallbackKey: 'nativeOperation.recoveryUnavailable',
+                  })
+                }
+              }
+              // Rejection does not prove failure or authorize another payment. Keep inspecting
+              // the original outcome, including progress made before a rejected recovery.
+              if (isCurrent()) await inspect()
+            })
+            .finally(() => {
+              nativeRecovery = undefined
+            })
+          // Public inspection already represents unavailable evidence; a closed/stale view
+          // must not leave a rejected background observer unhandled.
+          void nativeRecovery.catch(() => undefined)
+        }
         const settle = async () => {
           const until = Date.now() + SETTLE_READ_LIMIT_MS
           while (
@@ -971,6 +1026,7 @@ export default defineComponent({
               setTimeout(resolve, SETTLE_READ_INTERVAL_MS),
             )
             if (disposed) return
+            recoverOriginal()
             await inspect()
           }
         }
@@ -983,6 +1039,7 @@ export default defineComponent({
             while (!disposed && reviewed.binding.isCurrent() && notFinal()) {
               await wallet.watchNativeOperation(id)
               if (disposed) return
+              recoverOriginal()
               await inspect()
             }
             if (

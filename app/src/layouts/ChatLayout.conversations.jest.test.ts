@@ -40,6 +40,13 @@ jest.mock('../router/routes', () => ({
   createRoutes: () => [
     { path: '/forum', component: { template: '<div />' } },
     {
+      path: '/chat/:conversationId/info',
+      name: 'group-info',
+      props: true,
+      component: () =>
+        Promise.resolve(jest.requireActual('../pages/GroupInfo.vue').default),
+    },
+    {
       path: '/new-conversation',
       component: jest.requireActual('../pages/AddContact.vue').default,
     },
@@ -904,18 +911,24 @@ it('offers no unsigned group subject editor and rejects a headless rename withou
   }
 })
 
-it('gives the group info close control an accessible name', async () => {
+it('opens group Info by exact conversation ID and gives Back an accessible name', async () => {
   const app = await mountedConversations()
   try {
     const group = admittedGroup(app.chats, 'a', 'Protocol Team')
     await settle()
     await app.select(group.id)
-    app.root.getComponent(ChatLayout).vm.openInfo()
+    await app.root
+      .getComponent(ChatLayout)
+      .get('[data-testid="chat-open-info"]')
+      .trigger('click')
     await settle()
-    const info = app.root.getComponent({ name: 'GroupInfoDialog' })
-    expect(info.get('button[icon="close"]').attributes('aria-label')).toBe(
-      'Close',
-    )
+    expect(app.router.currentRoute.value.name).toBe('group-info')
+    expect(app.router.currentRoute.value.params.conversationId).toBe(group.id)
+    const info = app.root.getComponent({ name: 'GroupInfoPage' })
+    expect(
+      info.get('[data-test="group-info-back"]').attributes('aria-label'),
+    ).toBe(translate('a11y.backToChats'))
+    expect(info.findComponent({ name: 'QDialog' }).exists()).toBe(false)
   } finally {
     app.root.unmount()
   }

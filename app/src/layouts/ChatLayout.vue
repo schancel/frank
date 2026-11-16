@@ -191,7 +191,12 @@
               @hide="chatMenuOpen = false"
             >
               <q-list style="min-width: 180px">
-                <q-item clickable v-close-popup @click="openInfo">
+                <q-item
+                  clickable
+                  v-close-popup
+                  data-testid="chat-open-info"
+                  @click="openInfo"
+                >
                   <q-item-section avatar><q-icon name="info" /></q-item-section>
                   <q-item-section>{{ $t('chatLayout.info') }}</q-item-section>
                 </q-item>
@@ -328,15 +333,6 @@
       />
     </div>
 
-    <!-- Full-pane swap, not a side-by-side layout -- direct user feedback: Info deserves the same
-    amount of room a chat gets, and on a narrow/mobile viewport there's no room for both panes at
-    once anyway, so a single view stack (never two panes fighting for space) is the one layout
-    that already works at every width. -->
-    <group-info-dialog
-      v-if="isGroup"
-      v-model="groupInfoOpen"
-      :conversation-id="activeConversation?.id"
-    />
     <!-- A /chat/<id> link to a conversation this account does not have: say so, instead of
     mounting a chat for nothing. -->
     <q-page-container v-if="!infoOpen && conversationMissing">
@@ -383,7 +379,6 @@ import {
 } from 'vue'
 import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
 
-import GroupInfoDialog from '../components/chat/GroupInfoDialog.vue'
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
 import { openChat } from '../utils/routes'
 import { goBack, returnTo } from '../utils/navigation'
@@ -425,7 +420,6 @@ export default defineComponent({
   emits: ['toggleMyDrawerOpen'],
   components: {
     ChatInfoView,
-    GroupInfoDialog,
     ClearHistoryDialog,
     DeleteChatDialog,
     AccountBadge,
@@ -481,7 +475,6 @@ export default defineComponent({
       // `router-view`/`chat-info-view` for why. Can be directly opened via ?info=true query param.
       infoOpen: this.$route.query?.info === 'true',
       chatMenuOpen: false,
-      groupInfoOpen: false,
       subjectEditorOpen: false,
       subjectEditorId: null as string | null,
       subjectDraft: '',
@@ -545,7 +538,11 @@ export default defineComponent({
     },
     openInfo() {
       if (this.isGroup) {
-        this.groupInfoOpen = true
+        const conversationId = this.activeConversation?.id
+        if (conversationId)
+          void this.$router
+            .push({ name: 'group-info', params: { conversationId } })
+            .catch(() => undefined)
         return
       }
       // A page of its own: Back and the close button both return to the conversation.

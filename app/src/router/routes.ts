@@ -60,6 +60,12 @@ export function createRoutes(): RouteRecordRaw[] {
           component: () => Promise.resolve({ default: AvuDetails }),
         },
         {
+          path: 'chat/:conversationId/info',
+          name: 'group-info',
+          component: () => import('pages/GroupInfo.vue'),
+          props: true,
+        },
+        {
           path: 'chat',
           component: () => import('layouts/ChatLayout.vue'),
           children: [

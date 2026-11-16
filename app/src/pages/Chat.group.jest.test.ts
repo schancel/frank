@@ -16,7 +16,8 @@ jest.mock('../adapters/level-message-store', () => ({
     },
   }),
 }))
-jest.mock('vue-router', () => ({ useRouter: () => ({ push: jest.fn() }) }))
+const mockInfoRouter = { push: jest.fn(), go: jest.fn(), replace: jest.fn() }
+jest.mock('vue-router', () => ({ useRouter: () => mockInfoRouter }))
 jest.mock('../utils/clients', () => {
   const wallet = {}
   return { useMonadWallet: () => wallet }
@@ -236,6 +237,8 @@ async function openConversation(
 
 beforeEach(() => {
   time = 0
+  // This mounted UI fixture represents an already restored account.
+  require('../accounts/session').accountStatus.status = 'ready'
   setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x7e)))
 })
 
@@ -734,10 +737,11 @@ describe('group decision persistence in mounted UI', () => {
       )
       const { errorNotify } = require('../utils/notifications')
       errorNotify.mockClear()
-      const GroupInfoDialog =
-        require('../components/chat/GroupInfoDialog.vue').default
-      const wrapper = mount(GroupInfoDialog, {
-        props: { modelValue: true, conversationId: CONVERSATION },
+      mockInfoRouter.replace.mockClear()
+      window.history.replaceState(null, '')
+      const GroupInfoPage = require('./GroupInfo.vue').default
+      const wrapper = mount(GroupInfoPage, {
+        props: { conversationId: CONVERSATION },
         global: {
           plugins: [getActivePinia()!],
           components: stubs,
@@ -747,21 +751,20 @@ describe('group decision persistence in mounted UI', () => {
       await wrapper.get('[data-test="leave-group-btn"]').trigger('click')
       expect(conv.membershipStatus).toBe('left')
       expect(chats.shouldPollGroupMailbox(CONVERSATION)).toBe(false)
-      expect(wrapper.emitted('left')).toBeUndefined()
-      expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+      expect(mockInfoRouter.replace).not.toHaveBeenCalled()
       const error = new Error('leave write failed')
       if (succeeds) resolve()
       else reject(error)
       await flushPromises()
       expect(conv.membershipStatus).toBe('left')
       if (succeeds) {
-        expect(wrapper.emitted('left')).toEqual([[CONVERSATION]])
-        expect(wrapper.emitted('update:modelValue')).toEqual([[false]])
+        expect(mockInfoRouter.replace).toHaveBeenCalledWith(
+          `/chat/${CONVERSATION}`,
+        )
         expect(errorNotify).not.toHaveBeenCalled()
       } else {
         expect(errorNotify).toHaveBeenCalledWith(error)
-        expect(wrapper.emitted('left')).toBeUndefined()
-        expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+        expect(mockInfoRouter.replace).not.toHaveBeenCalled()
       }
       wrapper.unmount()
       chat.unmount()
@@ -770,14 +773,6 @@ describe('group decision persistence in mounted UI', () => {
 })
 
 describe('group info and a removed member, in mounted UI', () => {
-  // A dialog shows its content only while open, as Quasar's does.
-  const DialogStub = defineComponent({
-    props: ['modelValue'],
-    setup:
-      (props, { slots }) =>
-      () =>
-        props.modelValue ? h('div', slots.default?.()) : null,
-  })
   function makeAdminGroup(chats: ReturnType<typeof useChatStore>) {
     const conv = chats.conversations[CONVERSATION]
     conv.kind = 'group'
@@ -796,17 +791,45 @@ describe('group info and a removed member, in mounted UI', () => {
     return conv
   }
   function mountInfo() {
-    const GroupInfoDialog =
-      require('../components/chat/GroupInfoDialog.vue').default
-    return mount(GroupInfoDialog, {
-      props: { modelValue: true, conversationId: CONVERSATION },
+    const GroupInfoPage = require('./GroupInfo.vue').default
+    return mount(GroupInfoPage, {
+      props: { conversationId: CONVERSATION },
       global: {
         plugins: [getActivePinia()!],
-        components: { ...stubs, QDialog: DialogStub },
+        components: stubs,
         mocks: { $t: translator(en) },
       },
     })
   }
+
+  it('restores text, attachments and reply from the existing draft after visiting group Info', async () => {
+    const first = await openConversation()
+    makeAdminGroup(first.chats)
+    const draft = {
+      message: 'Unsent group note',
+      attachments: [
+        {
+          id: 'attachment-1',
+          name: 'note.txt',
+          dataUrl: 'data:text/plain;base64,WA==',
+          sizeBytes: 1,
+        },
+      ],
+      replyDigest: 'original-message',
+    }
+    await first.wrapper.setData(draft)
+    await flushPromises()
+    first.wrapper.unmount()
+    const info = mountInfo()
+    expect(info.get('[data-test="group-info-name"]').text()).toBe('Core')
+    info.unmount()
+    const restored = await openConversation()
+    expect(restored.wrapper.vm.message).toBe(draft.message)
+    expect(restored.wrapper.vm.attachments).toEqual(draft.attachments)
+    expect(restored.wrapper.vm.replyDigest).toBe(draft.replyDigest)
+    restored.wrapper.unmount()
+    require('../utils/draft-storage').clearChatDraft(CONVERSATION)
+  })
 
   it("names the administrator's own row by its profile or address, never the Loading placeholder", async () => {
     const { wrapper: chat, chats } = await openConversation()
@@ -887,11 +910,10 @@ describe('group info and a removed member, in mounted UI', () => {
             props.errorMessage,
           ]),
     })
-    const GroupInfoDialog =
-      require('../components/chat/GroupInfoDialog.vue').default
+    const GroupInfoPage = require('./GroupInfo.vue').default
     const mountWith = () =>
-      mount(GroupInfoDialog, {
-        props: { modelValue: true, conversationId: CONVERSATION },
+      mount(GroupInfoPage, {
+        props: { conversationId: CONVERSATION },
         global: {
           plugins: [getActivePinia()!],
           components: { ...stubs, QInput },
@@ -954,7 +976,7 @@ describe('group info and a removed member, in mounted UI', () => {
     chat.unmount()
   })
 
-  it('asks in an in-app dialog before removing a member, and removes only on Remove', async () => {
+  it('asks inline before removing a member, and removes only on Remove', async () => {
     const { wrapper: chat, chats } = await openConversation()
     makeAdminGroup(chats)
     const remove = jest

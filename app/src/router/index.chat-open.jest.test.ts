@@ -29,13 +29,14 @@ jest.mock('../accounts/session', () => ({
   accountSession: { initialize: jest.fn(async () => undefined) },
 }))
 const mockSetActiveConversation = jest.fn()
+const mockSetActiveChat = jest.fn()
 jest.mock('src/stores/chats', () => ({
   hasConversationIdSalt: () => true,
   resolveConversation: () => ({ id: 'known' }),
   useChatStore: () => ({
     conversations: {},
     setActiveConversation: mockSetActiveConversation,
-    setActiveChat: jest.fn(),
+    setActiveChat: mockSetActiveChat,
   }),
 }))
 jest.mock('src/stores/contacts', () => ({
@@ -63,6 +64,11 @@ function resetChatPage() {
 jest.mock('./routes', () => ({
   createRoutes: (): RouteRecordRaw[] => [
     { path: '/wallet', component: page('Wallet') },
+    {
+      path: '/chat/:conversationId/info',
+      name: 'group-info',
+      component: page('GroupInfo'),
+    },
     { path: '/chat', component: page('Placeholder') },
     {
       path: '/chat/:address',
@@ -96,6 +102,7 @@ beforeEach(() => {
   pendingChatRoute.value = null
   resetChatPage()
   mockSetActiveConversation.mockClear()
+  mockSetActiveChat.mockClear()
   setStartupRestoration({ phase: 'restored' })
 })
 afterEach(() => {
@@ -188,4 +195,12 @@ describe('opening a conversation from the list', () => {
     expect(pendingChatRoute.value).toBeNull()
     expect(sessionStorage.getItem(PENDING_CHAT_ROUTE_KEY)).toBeNull()
   })
+})
+
+it('direct group Info does not select, mark read, or allocate a conversation', async () => {
+  const id = '11111111-2222-5333-8444-555555555555'
+  const router = await startApp(`/chat/${id}/info`)
+  expect(router.currentRoute.value.name).toBe('group-info')
+  expect(mockSetActiveConversation).not.toHaveBeenCalled()
+  expect(mockSetActiveChat).not.toHaveBeenCalled()
 })

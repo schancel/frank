@@ -476,6 +476,9 @@ export async function startRealStack(options: {
   const provider = new JsonRpcProvider(rpcUrlList(rpcUrl)[0], MONAD_TESTNET_CHAIN_ID, { staticNetwork: true })
   const wallets: RealWallet[] = []
   const keepIdentity = new Set<RealWallet>()
+  const openingWallets = new Set<Promise<RealWallet>>()
+  const lateCloseFailures: unknown[] = []
+  let closing = false
   let stopped: Promise<void> | undefined
 
   /** Returns one account's balance to the test wallet. `left` says why when it does not. */
@@ -541,20 +544,35 @@ export async function startRealStack(options: {
     stateDir,
     provider,
     fundingAddress,
-    async openWallet(label, walletOptions) {
-      const wallet = await openRealWallet({
+    openWallet(label, walletOptions) {
+      if (closing) return Promise.reject(new Error('Real stack is stopping; wallet admission is closed'))
+      const request = {
         label,
         relayUrl,
         stateDir,
         stampValueWei: walletOptions?.stampValueWei,
         burnAddress: env.MONAD_STAMP_BURN_ADDRESS,
+      }
+      const keepIdentityFunds = walletOptions?.keepIdentityFunds
+      // Register admission before the factory can run or reenter stop.
+      const opening = Promise.resolve().then(() => openRealWallet(request)).then(wallet => {
+        if (closing) {
+          // Stop drains this acquisition; never await stop from inside it.
+          return Promise.resolve().then(() => wallet.close()).then(
+            () => { throw new Error('Real stack stopped while opening wallet') },
+            error => { lateCloseFailures.push(error); throw error },
+          )
+        }
+        // Opening a label again (after the caller closed it) replaces the earlier handle.
+        const earlier = wallets.findIndex(opened => opened.label === label)
+        if (earlier >= 0) wallets.splice(earlier, 1)
+        wallets.push(wallet)
+        if (keepIdentityFunds) keepIdentity.add(wallet)
+        return wallet
       })
-      // Opening a label again (after the caller closed it) replaces the earlier handle.
-      const earlier = wallets.findIndex(opened => opened.label === label)
-      if (earlier >= 0) wallets.splice(earlier, 1)
-      wallets.push(wallet)
-      if (walletOptions?.keepIdentityFunds) keepIdentity.add(wallet)
-      return wallet
+      openingWallets.add(opening)
+      void opening.then(() => openingWallets.delete(opening), () => openingWallets.delete(opening))
+      return opening
     },
     async fund(to, valueWei, fundOptions) {
       if (!walletJsonPath) {
@@ -602,19 +620,24 @@ export async function startRealStack(options: {
       }
       return outcome
     },
-    stop: () =>
-      (stopped ??= (async () => {
+    stop: () => {
+      closing = true
+      return (stopped ??= (async () => {
         const failures: unknown[] = []
         const attempt = async (close: () => unknown) => {
           try { await close() } catch (error) { failures.push(error) }
         }
-        // Drain every tracked wallet before tearing down the shared provider and relay.
+        // Factory failures belong to their callers; late-owner close failures belong to stop.
+        await Promise.allSettled([...openingWallets])
+        failures.push(...lateCloseFailures)
+        // Drain every acquired and tracked owner before shared provider/relay teardown.
         for (const wallet of wallets) await attempt(() => wallet.close())
         await attempt(() => provider.destroy())
         await attempt(() => relay?.stop())
         for (const signal of signals) await attempt(() => process.off(signal, onSignal))
         if (failures.length) throw new AggregateError(failures, 'Real stack stop failed; preserve original state')
-      })()),
+      })())
+    },
     finish: () =>
       (finished ??= (async () => {
         let line: string

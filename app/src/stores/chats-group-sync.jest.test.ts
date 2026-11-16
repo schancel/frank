@@ -48,7 +48,7 @@ import {
 } from '@frank/cashweb/groups'
 import { groupWriteTestPayer } from '@frank/group-messaging/groups/write-payment.testutil'
 
-// Probe admission: no physical store, activated wallet or network fallback is permitted.
+// Network and wallet effects are inert; physical store guards are scoped below.
 const mockNetworkAttempt = jest.fn<never, unknown[]>(() => {
   throw new Error('Unexpected network effect in inert group probe')
 })
@@ -58,11 +58,6 @@ jest.mock('axios', () => {
     mockNetworkAttempt(...args)
   return actual
 })
-jest.mock('level', () =>
-  jest.fn(() => {
-    throw new Error('Unexpected Level open in inert group probe')
-  }),
-)
 jest.mock('../utils/identity-session', () => ({
   messagingWallet: () => undefined,
   waitForMessagingReady: () => {
@@ -116,6 +111,18 @@ const {
 } = require('./chats')
 const messageStorePromise = require('../adapters/level-message-store').store
 const { useContactStore } = require('./contacts')
+
+function guardPhysicalStoreOpen() {
+  // Construction only records paths; Open is the public boundary that touches Level.
+  const { LevelMessageStore } = jest.requireActual<
+    typeof import('@frank/cashweb/relay/storage/level-storage')
+  >('@frank/cashweb/relay/storage/level-storage')
+  return jest
+    .spyOn(LevelMessageStore.prototype, 'Open')
+    .mockRejectedValue(
+      new Error('Unexpected physical store open in inert group probe'),
+    )
+}
 
 function createSharedMockGroupRelay() {
   const epochs = new Map<string, Record<string, unknown>>()
@@ -753,62 +760,71 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
   })
 
   it('cancels an in-flight durable read before persistence when stop-following wins', async () => {
-    const alice = await makeGroup()
-    const bob = await inviteBob(alice.group, alice.client)
-    await bob.chats.approveGroupInvite(bob.group.id)
-    currentOwnAddress = ALICE
-    await alice.chats.sendGroupMessage({
-      conversationId: alice.group.id,
-      items: [{ type: 'text', text: 'cancelled read' }],
-      relayClient: alice.client,
-      senderAddress: ALICE,
-    })
-    currentOwnAddress = BOB
-    let wake!: () => Promise<void>
-    jest
-      .spyOn(alice.client, 'subscribeGroupMessages')
-      .mockImplementation((_id, _epoch, _token, callback) => {
-        wake = callback
-        return { close: jest.fn() }
+    const physicalOpen = guardPhysicalStoreOpen()
+    try {
+      const alice = await makeGroup()
+      const bob = await inviteBob(alice.group, alice.client)
+      await bob.chats.approveGroupInvite(bob.group.id)
+      currentOwnAddress = ALICE
+      await alice.chats.sendGroupMessage({
+        conversationId: alice.group.id,
+        items: [{ type: 'text', text: 'cancelled read' }],
+        relayClient: alice.client,
+        senderAddress: ALICE,
       })
-    let release!: () => void, entered!: () => void
-    const blocked = new Promise<void>(resolve => {
-      release = resolve
-    })
-    const reading = new Promise<void>(resolve => {
-      entered = resolve
-    })
-    const fetch = alice.client.fetchGroupMessages.bind(alice.client)
-    jest
-      .spyOn(alice.client, 'fetchGroupMessages')
-      .mockImplementation(async (...args) => {
-        const response = await fetch(...args)
-        entered()
-        await blocked
-        return response
+      currentOwnAddress = BOB
+      let wake!: () => Promise<void>
+      jest
+        .spyOn(alice.client, 'subscribeGroupMessages')
+        .mockImplementation((_id, _epoch, _token, callback) => {
+          wake = callback
+          return { close: jest.fn() }
+        })
+      let release!: () => void, entered!: () => void
+      const blocked = new Promise<void>(resolve => {
+        release = resolve
       })
-    const stop = bob.chats.startGroupLiveDelivery()
-    const messageStore = await messageStorePromise
-    messageStore.saveMessage.mockClear()
-    bob.group.groupState.syncFailed = false
-    const pending = wake()
-    await reading
-    await bob.chats.leaveGroupConversation(bob.group.id)
-    release()
-    await expect(pending).rejects.toThrow(/subscription changed/)
-    expect(messageStore.saveMessage).not.toHaveBeenCalled()
-    expect(bob.group.messages).toHaveLength(0)
-    expect(bob.group.groupState.lastSyncedSeq).toBe(0)
-    expect(bob.group.groupState.syncFailed).toBe(false)
-    stop()
+      const reading = new Promise<void>(resolve => {
+        entered = resolve
+      })
+      const fetch = alice.client.fetchGroupMessages.bind(alice.client)
+      jest
+        .spyOn(alice.client, 'fetchGroupMessages')
+        .mockImplementation(async (...args) => {
+          const response = await fetch(...args)
+          entered()
+          await blocked
+          return response
+        })
+      const stop = bob.chats.startGroupLiveDelivery()
+      const messageStore = await messageStorePromise
+      messageStore.saveMessage.mockClear()
+      bob.group.groupState.syncFailed = false
+      const pending = wake()
+      await reading
+      await bob.chats.leaveGroupConversation(bob.group.id)
+      release()
+      await expect(pending).rejects.toThrow(/subscription changed/)
+      expect(messageStore.saveMessage).not.toHaveBeenCalled()
+      expect(bob.group.messages).toHaveLength(0)
+      expect(bob.group.groupState.lastSyncedSeq).toBe(0)
+      expect(bob.group.groupState.syncFailed).toBe(false)
+      stop()
+    } finally {
+      const calls = physicalOpen.mock.calls.length
+      physicalOpen.mockRestore()
+      expect(calls).toBe(0)
+    }
   })
 
   describe('group sync failure provenance probe', () => {
     let socket: jest.SpyInstance
     let xhr: jest.SpyInstance
     let fetchDescriptor: PropertyDescriptor | undefined
+    let physicalOpen: ReturnType<typeof guardPhysicalStoreOpen>
     beforeEach(() => {
       mockNetworkAttempt.mockClear()
+      physicalOpen = guardPhysicalStoreOpen()
       fetchDescriptor = Object.getOwnPropertyDescriptor(globalThis, 'fetch')
       Object.defineProperty(globalThis, 'fetch', {
         configurable: true,
@@ -823,12 +839,15 @@ describe('stores/chats.ts — End-to-End Group Chat Sync & Roster Rotation (#70,
         .mockImplementation(() => mockNetworkAttempt())
     })
     afterEach(() => {
+      const opens = physicalOpen.mock.calls.length
+      physicalOpen.mockRestore()
       socket.mockRestore()
       xhr.mockRestore()
       if (fetchDescriptor)
         Object.defineProperty(globalThis, 'fetch', fetchDescriptor)
       else Reflect.deleteProperty(globalThis, 'fetch')
       expect(mockNetworkAttempt).not.toHaveBeenCalled()
+      expect(opens).toBe(0)
     })
 
     it('does not mark a fresh home context failed when an unleased old read is replaced', async () => {

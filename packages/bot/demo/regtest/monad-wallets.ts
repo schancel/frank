@@ -12,9 +12,18 @@
  * `monad-regtest` network: it reads and sends through the relay, never straight to the chain.
  */
 import { closeSync, lstatSync, openSync } from 'fs'
+import { createHash } from 'crypto'
 import { dirname, isAbsolute, join, resolve } from 'path'
 
-import { Wallet } from 'ethers'
+import { getAddress, Transaction, Wallet } from 'ethers'
+import { admitBotProfile, DirectoryManager } from '@frank/bot-framework'
+import { createRelayPricedEvmChain } from '@frank/wallet/chain/evm-host'
+import { installCanonicalDirectory } from '@frank/wallet/chain/evm-chain'
+import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config'
+import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
+import type { EvmNativeOperation } from '@frank/wallet/storage/evm-native-operation-journal'
+import { nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery } from '@frank/wallet/storage/evm-native-operation-journal'
+import { evmWalletStateOwner, walletStateLocation } from '@frank/wallet/storage/wallet-state-location'
 
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { findWallets, TRANSFER_GAS } from '../funds'
@@ -112,7 +121,7 @@ export function openMonadWallet(
  * wallet's next paid send is refused with `FundsInPendingSendError` (owner ruling 2026-10-26: a
  * send is refused, never queued). A check that sends again after a paid message ticks first.
  */
-export async function tickUntilSettled(wallet: RealWallet, timeoutMs = 180_000): Promise<number> {
+export async function tickUntilSettled(wallet: Pick<RealWallet, 'label' | 'handle' | 'chain'>, timeoutMs = 180_000): Promise<number> {
   const startedAt = Date.now()
   for (let ticks = 1; ; ticks++) {
     await wallet.chain.directMessages.reconcileAttempts({ wallet: wallet.handle, payloadDigests: [] })
@@ -134,6 +143,151 @@ export async function tickUntilSettled(wallet: RealWallet, timeoutMs = 180_000):
       )
     await new Promise(resolveTick => setTimeout(resolveTick, 2000))
   }
+}
+
+type ReturnWallet = Pick<RealWallet, 'label' | 'handle' | 'chain' | 'address' | 'mainAccount'>
+export interface BlackjackReturn {
+  label: string
+  logicalReturnId: string
+  nativeOperationId?: string
+  txHash: string
+  returnedWei: bigint
+  feeWei: bigint
+}
+
+/** One return per fresh run-owned custody owner, independent of where its state is kept. */
+export function blackjackReturnOperationId(owner: Pick<ReturnWallet, 'address' | 'mainAccount'>, faucet: string): string {
+  return `legacy-${createHash('sha256').update(JSON.stringify([
+    'frank-blackjack-limits-return:v1', MONAD_REGTEST_CHAIN,
+    getAddress(faucet).toLowerCase(), getAddress(owner.mainAccount).toLowerCase(),
+    getAddress(owner.address).toLowerCase(),
+  ])).digest('hex')}`
+}
+
+async function originalBlackjackReturn(wallet: ReturnWallet, logicalId: string, faucet: string): Promise<EvmNativeOperation | undefined> {
+  const { handle } = wallet
+  if (!handle.getNativeOperations || !handle.getNativeOperationHistory || !handle.readNativeOperation ||
+      !handle.resumeLegacySend || !handle.estimateLegacyMax || !handle.sendLegacy)
+    throw new Error(`${wallet.label}: public return capabilities unavailable`)
+  const preparationId = `evm-transaction-set:${logicalId}`
+  const matches = new Map<string, EvmNativeOperation>()
+  const collect = (rows: readonly EvmNativeOperation[]) => {
+    for (const row of rows) if (row.preparationId === preparationId) matches.set(row.operationId, row)
+  }
+  collect(handle.getNativeOperations())
+  let after: string | undefined
+  const cursors = new Set<string>()
+  for (let page = 0; ; page++) {
+    if (page === 100) throw new Error(`${wallet.label}: return history exceeds lookup bound`)
+    const history = await handle.getNativeOperationHistory({ after, limit: 100 })
+    collect(history.operations)
+    if (history.next === undefined) break
+    if (history.next === after || cursors.has(history.next)) throw new Error('Return history cursor did not advance')
+    cursors.add(history.next)
+    after = history.next
+  }
+  if (matches.size > 1) throw new Error(`${wallet.label}: ambiguous original return identity`)
+  const found = [...matches.values()][0]
+  if (!found) return undefined
+  // Logical caller IDs identify preparations; read/resume require the owner's native ID.
+  const row = await handle.readNativeOperation(found.operationId)
+  if (!row || row.operationId !== found.operationId || row.preparationId !== preparationId ||
+      row.cancelled || row.kind !== 'transaction-set' ||
+      row.binding.chainIdentifier !== MONAD_REGTEST_CHAIN || row.binding.nativeChainId !== String(MONAD_REGTEST_CHAIN_ID) ||
+      getAddress(row.recipient) !== getAddress(faucet)) throw new Error('Original return binding mismatch')
+  const tuple: unknown = JSON.parse(row.binding.publicTuple)
+  if (!tuple || typeof tuple !== 'object' || !('mainAddress' in tuple) ||
+      typeof tuple.mainAddress !== 'string' || getAddress(tuple.mainAddress) !== getAddress(wallet.mainAccount))
+    throw new Error('Original return owner mismatch')
+  const payments = row.members.filter(member => member.transactionSet?.role === 'payment')
+  if (payments.length !== 1) throw new Error('Original return must have exactly one recipient')
+  const payment = Transaction.from(payments[0]!.unsignedTransaction)
+  if (payment.to === null || getAddress(payment.to) !== getAddress(faucet) || payment.data !== '0x' ||
+      payment.chainId !== MONAD_REGTEST_CHAIN_ID || payment.value <= 0n || payment.value !== BigInt(row.intendedValueWei))
+    throw new Error('Original return recipient mismatch')
+  if (row.members.some(member => member.observation.state === 'included-revert' ||
+      (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member))))
+    throw new Error('Original return has confirmed failure evidence')
+  return row
+}
+
+async function prepareBlackjackReturn(wallet: ReturnWallet, faucet: string) {
+  if (wallet.chain.chainIdentifier !== MONAD_REGTEST_CHAIN || wallet.handle.chainIdentifier !== MONAD_REGTEST_CHAIN ||
+      getAddress(wallet.handle.identity.address.raw) !== getAddress(wallet.address) ||
+      getAddress((await wallet.handle.getReceiveAddress()).raw) !== getAddress(wallet.mainAccount))
+    throw new Error(`${wallet.label}: return wallet affinity mismatch`)
+  const logicalId = blackjackReturnOperationId(wallet, faucet)
+  const original = await originalBlackjackReturn(wallet, logicalId, faucet)
+  if (!original) await tickUntilSettled(wallet)
+  const held = wallet.handle.getNativeOperations!().filter(row => !row.cancelled && row.operationId !== original?.operationId &&
+    (row.members.length === 0 || row.members.some(member => member.signed === null || member.observation.state !== 'included-success')))
+  if (held.length) throw new Error(`${wallet.label}: original financial obligations remain unresolved`)
+  return { wallet, logicalId, original }
+}
+
+/** Same-run, intact-state cleanup only. The caller has observed successful host.stop().
+ * Reopens original dealer custody; never provisions a replacement or opens copied recovery data.
+ * Original host admission flags are preserved. Metadata checks do not prove namespace completeness. */
+export async function returnBlackjackAvailableFunds(params: {
+  stack: RegtestStack
+  player: RealWallet
+  dealer: { address: string; mainAccount: string; config: EvmChainConfig }
+  onReturned(result: BlackjackReturn): void
+}): Promise<void> {
+  const { stack, dealer } = params
+  const faucet = getAddress(monadOf(stack).faucetAddress)
+  const botDir = join(stack.stateDir, 'bot-host')
+  const profile = join(botDir, 'bots', 'blackjack')
+  const base = join(botDir, 'chain-storage')
+  const location = walletStateLocation({ base, chainIdentifier: MONAD_REGTEST_CHAIN, owner: evmWalletStateOwner(dealer.mainAccount) })
+  for (const path of [botDir, profile, join(profile, 'state'), location])
+    if (!lstatSync(path).isDirectory()) throw new Error('Original dealer state directory required')
+  const root = lstatSync(join(profile, 'account-root.hex'))
+  if (!root.isFile() || root.size === 0) throw new Error('Original dealer root required')
+  if (dealer.config.rpcChain !== MONAD_REGTEST_CHAIN || dealer.config.networkId !== MONAD_REGTEST_CHAIN ||
+      BigInt(dealer.config.chainId) !== MONAD_REGTEST_CHAIN_ID || dealer.config.networkTag !== MONAD_REGTEST_NETWORK_TAG ||
+      dealer.config.relayBaseUrl !== stack.relayUrl || dealer.config.walletStorageLocation !== base)
+    throw new Error('Original dealer chain configuration mismatch')
+  const admitted = await admitBotProfile({ stateDir: botDir, botId: 'blackjack',
+    identityPath: join(botDir, 'blackjack.json'), network: MONAD_REGTEST_CHAIN })
+  let handle: EvmChainWalletHandle | undefined
+  let directory: DirectoryManager | undefined
+  let uninstall: (() => void) | undefined
+  const failures: unknown[] = []
+  try {
+    if (admitted.operations.owner.chainIdentifier !== MONAD_REGTEST_CHAIN || admitted.operations.owner.botId !== 'blackjack' ||
+        getAddress(admitted.operations.owner.address) !== getAddress(dealer.address)) throw new Error('Original dealer profile owner mismatch')
+    if (admitted.operations.listStarted().length || admitted.operations.listDeferred().length)
+      throw new Error('Original dealer message obligations remain unresolved')
+    const chain = createRelayPricedEvmChain({ ...dealer.config })
+    handle = await chain.createWallet(admitted.roots) as EvmChainWalletHandle
+    directory = DirectoryManager.create({ handle, networkTag: MONAD_REGTEST_NETWORK_TAG,
+      relayBaseUrl: stack.relayUrl, location: join(profile, 'directory') })
+    uninstall = installCanonicalDirectory(handle, directory.rawDirectory)
+    const dealerWallet: ReturnWallet = { label: 'blackjack-dealer', handle, chain, address: dealer.address, mainAccount: dealer.mainAccount }
+    // Validate BOTH owners and their original obligations before the first new return.
+    const ready = [await prepareBlackjackReturn(params.player, faucet), await prepareBlackjackReturn(dealerWallet, faucet)]
+    for (const { wallet, logicalId, original } of ready) {
+      const result = original ? await wallet.handle.resumeLegacySend!(original.operationId) : await (async () => {
+        const max = await wallet.handle.estimateLegacyMax!({ recipient: { raw: faucet } })
+        return wallet.handle.sendLegacy!({ operationId: logicalId, recipient: { raw: faucet }, value: max.value, maxFee: max.totalFee })
+      })()
+      // Report confirmed transfers immediately, even if a later owner or balance read fails.
+      params.onReturned({ label: wallet.label, logicalReturnId: logicalId,
+        ...(original ? { nativeOperationId: original.operationId } : {}), txHash: result.txHash,
+        returnedWei: result.totalValueSent, feeWei: result.totalFeePaid })
+      console.log(`[regtest] ${wallet.label}: ${await wallet.handle.getBalance()} wei remain in known owned holdings; no further return batch authorized`)
+    }
+  } catch (error) { failures.push(error) }
+  const close = async (action: () => unknown) => {
+    try { await action() } catch (error) { failures.push(error) }
+  }
+  await close(() => admitted.operations.close())
+  await Promise.all([
+    close(() => uninstall?.()), close(() => directory?.close()),
+    close(() => handle?.close()), close(() => admitted.state.close()),
+  ])
+  if (failures.length) throw new AggregateError(failures, 'Blackjack returns HOLD; preserve original state')
 }
 
 /**

@@ -25,9 +25,9 @@
  *      docs/protocol/chains/monad-reserve-balance.md).
  *
  * Funding comes from the solonet faucet. Every key funded here lives under the run's directory
- * (FRANK_REGTEST_STACK_DIR, kept with FRANK_REGTEST_KEEP=1 until the sweep is done): the bot
- * host's funding key is written there before it is funded. At the end, also after a failure,
- * everything is sent back to the faucet.
+ * (FRANK_REGTEST_STACK_DIR, retained with FRANK_REGTEST_KEEP=1). After successful game checks
+ * and observed dealer shutdown, public wallet Max returns available value once per owner.
+ * Failures hold original state; residual and uncertain value remain owned there.
  */
 import { mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
@@ -47,7 +47,10 @@ import {
 
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { BlackjackDealerBot } from '../../src/bots/blackjack-bot'
-import { monadOf, openMonadWallet, returnToFaucet, tickUntilSettled } from './monad-wallets'
+import { monadOf, openMonadWallet, returnBlackjackAvailableFunds, tickUntilSettled } from './monad-wallets'
+import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
+import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config'
+import type { RealWallet } from '../real-stack'
 import { startRegtestStack } from './regtest-stack'
 
 const MON = 10n ** 18n
@@ -76,6 +79,8 @@ export async function main(): Promise<boolean> {
   // bytes executable; a fresh whole funding call here could pay the same account twice.
   let host: FrankBotHost | undefined
   const wallets: { close(): Promise<void> }[] = []
+  let cleanupPlayer: RealWallet | undefined
+  let cleanupDealer: { address: string; mainAccount: string; config: EvmChainConfig } | undefined
   try {
     // The bot host on this run's relay and on monad-regtest, its keys under the run directory.
     const botDir = join(stack.stateDir, 'bot-host')
@@ -85,6 +90,8 @@ export async function main(): Promise<boolean> {
     process.env.MONAD_RPC_CHAIN = 'monad-regtest'
     process.env.MONAD_STAMP_BURN_ADDRESS = DEMO_DEFAULT_BURN_ADDRESS
     process.env.BLACKJACK_BOT_IDENTITY_JSON = join(botDir, 'blackjack.json')
+    const originalDealerConfig: EvmChainConfig = { ...loadMonadChainConfigFromEnv(),
+      relayBaseUrl: stack.relayUrl, networkTag: 'MONR', walletStorageLocation: join(botDir, 'chain-storage') }
     // No shared funding wallet: the dealer's two accounts are funded from the faucet directly,
     // after its keys are on disk under the run directory (registration writes them).
     host = new FrankBotHost({
@@ -100,6 +107,7 @@ export async function main(): Promise<boolean> {
     const instance = (host as any).instances.get('blackjack')
     const dealer = instance.context.address as string
     const dealerMain = (await instance.wallet.getReceiveAddress()).raw as string
+    cleanupDealer = { address: dealer, mainAccount: dealerMain, config: originalDealerConfig }
     say(`dealer ${dealer}, main account ${dealerMain}`)
     // The dealer covers a bet of (identity balance - 0.02) / 4: about 0.5 MON at 2 MON. Its
     // payouts and refunds are paid from its wallet (main account).
@@ -108,6 +116,7 @@ export async function main(): Promise<boolean> {
     await host.start()
 
     const player = await openMonadWallet(stack, 'blackjack-limits-player')
+    cleanupPlayer = player
     wallets.push(player)
     await monad.fund(player.mainAccount, 4n * MON)
 
@@ -298,21 +307,26 @@ export async function main(): Promise<boolean> {
     problems.push(error instanceof Error ? error.stack ?? error.message : String(error))
     say('FAIL ', error)
   } finally {
-    await host?.stop().catch(() => undefined)
-    for (const wallet of wallets) await wallet.close().catch(() => undefined)
+    const failed = (stage: string, error: unknown) => {
+      problems.push(`${stage}: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+      say(`HOLD: ${stage}; original state retained`, error)
+    }
+    await Promise.resolve().then(() => host?.stop()).catch(error => failed('dealer shutdown failed', error))
     // A failed call can leave authorized signed bytes and reservations live. Do not construct
     // independent return transfers over that state; retain it for original-operation recovery.
     if (problems.length > 0) {
       say('HOLD: automatic returns skipped after failure; original wallet state retained')
     } else {
-      const back = await returnToFaucet(stack).catch(error => {
-        say('sweep failed:', error)
-        return undefined
-      })
-      if (back) say(`returned ${back.returnedWei} wei to the faucet; ${back.leftWei} wei left as dust or in flight`)
+      try {
+        if (!cleanupPlayer || !cleanupDealer) throw new Error('Original cleanup owner binding unavailable')
+        await returnBlackjackAvailableFunds({ stack, player: cleanupPlayer, dealer: cleanupDealer,
+          onReturned: result => say(`${result.label}: confirmed return ${result.returnedWei} wei, fee ${result.feeWei}, tx ${result.txHash}, logical return ${result.logicalReturnId}${result.nativeOperationId ? `, native operation ${result.nativeOperationId}` : ''}`) })
+      } catch (error) { failed('available-value returns incomplete', error) }
     }
-    say(`keys stay in ${stack.stateDir} until it is removed: sweep again with yarn --cwd packages/bot regtest:monad-sweep-state ${stack.stateDir}`)
-    await stack.stop()
+    for (const wallet of wallets)
+      await Promise.resolve().then(() => wallet.close()).catch(error => failed('player close failed', error))
+    say(`original state retained in ${stack.stateDir}; any residual or uncertain value remains owned there`)
+    await Promise.resolve().then(() => stack.stop()).catch(error => failed('stack shutdown failed', error))
   }
   say(problems.length ? `FAILED:\n  ${problems.join('\n  ')}` : 'all checks passed')
   return problems.length === 0

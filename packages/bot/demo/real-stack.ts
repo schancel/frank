@@ -383,8 +383,12 @@ export async function openRealWallet(params: {
       }
     },
     async close() {
-      await directory.close()
-      await handle.close()
+      const closed = await Promise.allSettled([
+        Promise.resolve().then(() => directory.close()),
+        Promise.resolve().then(() => handle.close()),
+      ])
+      const failures = closed.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      if (failures.length) throw new AggregateError(failures, 'Wallet close failed; preserve original state')
     },
   }
 }

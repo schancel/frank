@@ -249,6 +249,7 @@ export default () => {
       return (
         current.path.startsWith('/chat/') &&
         current.params.address === address &&
+        current.name !== 'group-info' &&
         current.query.info !== 'true'
       )
     })

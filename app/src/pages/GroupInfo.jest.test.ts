@@ -173,13 +173,13 @@ it.each(['locked', 'unavailable', 'loading'])(
   },
 )
 
-it('Back uses history and direct-entry Cancel replaces with the exact group conversation', async () => {
+it('Cancel uses history and direct-entry fallback to the exact group conversation', async () => {
   const wrapper = open()
   await wrapper.get('[data-test="close-group-info-btn"]').trigger('click')
   expect(mockRouter.replace).toHaveBeenCalledWith(`/chat/${FIRST}`)
   mockRouter.replace.mockClear()
   window.history.replaceState({ back: '/contacts' }, '')
-  await wrapper.get('[data-test="group-info-back"]').trigger('click')
+  await wrapper.get('[data-test="close-group-info-btn"]').trigger('click')
   expect(mockRouter.go).toHaveBeenCalledWith(-1)
   expect(mockRouter.replace).not.toHaveBeenCalled()
   wrapper.unmount()

@@ -36,27 +36,42 @@ jest.mock('../accounts/session', () => ({
     initialize: jest.fn(async () => undefined),
   },
 }))
-jest.mock('../router/routes', () => ({
-  createRoutes: () => [
-    { path: '/forum', component: { template: '<div />' } },
-    {
-      path: '/chat/:conversationId/info',
-      name: 'group-info',
-      props: true,
-      component: () =>
-        Promise.resolve(jest.requireActual('../pages/GroupInfo.vue').default),
-    },
-    {
-      path: '/new-conversation',
-      component: jest.requireActual('../pages/AddContact.vue').default,
-    },
-    {
-      path: '/chat/:address',
-      component: jest.requireActual('./ChatLayout.vue').default,
-      children: [{ path: '', component: { template: '<div />' } }],
-    },
-  ],
-}))
+jest.mock('../router/routes', () => {
+  const conversationPage = { template: '<div />' }
+  return {
+    createRoutes: () => [
+      { path: '/forum', component: { template: '<div />' } },
+      {
+        path: '/new-conversation',
+        component: jest.requireActual('../pages/AddContact.vue').default,
+      },
+      {
+        path: '/chat',
+        component: jest.requireActual('./ChatLayout.vue').default,
+        children: [
+          { path: '', component: { template: '<div />' } },
+          { path: ':address', component: conversationPage },
+          {
+            path: ':address/info',
+            name: 'group-info',
+            components: {
+              default: conversationPage,
+              groupInfo: () =>
+                Promise.resolve(
+                  jest.requireActual('../pages/GroupInfo.vue').default,
+                ),
+            },
+            props: {
+              groupInfo: route => ({
+                conversationId: String(route.params.address),
+              }),
+            },
+          },
+        ],
+      },
+    ],
+  }
+})
 jest.mock('nostics', () => ({
   createConsoleReporter: jest.fn(),
   defineDiagnostics: () => new Proxy({}, { get: () => jest.fn() }),
@@ -923,10 +938,10 @@ it('opens group Info by exact conversation ID and gives Back an accessible name'
       .trigger('click')
     await settle()
     expect(app.router.currentRoute.value.name).toBe('group-info')
-    expect(app.router.currentRoute.value.params.conversationId).toBe(group.id)
+    expect(app.router.currentRoute.value.params.address).toBe(group.id)
     const info = app.root.getComponent({ name: 'GroupInfoPage' })
     expect(
-      info.get('[data-test="group-info-back"]').attributes('aria-label'),
+      app.root.get('[data-test="group-info-back"]').attributes('aria-label'),
     ).toBe(translate('a11y.backToChats'))
     expect(info.findComponent({ name: 'QDialog' }).exists()).toBe(false)
   } finally {

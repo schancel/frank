@@ -18,6 +18,13 @@ jest.mock('../adapters/level-message-store', () => ({
 }))
 const mockInfoRouter = { push: jest.fn(), go: jest.fn(), replace: jest.fn() }
 jest.mock('vue-router', () => ({ useRouter: () => mockInfoRouter }))
+jest.mock(
+  require.resolve('@vue/devtools-api', {
+    paths: [require.resolve('vue-router')],
+  }),
+  () => ({ setupDevtoolsPlugin: () => undefined }),
+)
+jest.mock('./AvuDetails.vue', () => ({ render: () => null }))
 jest.mock('../utils/clients', () => {
   const wallet = {}
   return { useMonadWallet: () => wallet }
@@ -87,9 +94,14 @@ stubs.QBtn = defineComponent({
       h('button', attrs, [props.label, slots.default?.()]),
 })
 stubs.QScrollArea = defineComponent({
+  data: () => ({ scrollTarget: { scrollTop: 0, scrollHeight: 900 } }),
   methods: {
-    getScrollTarget: () => ({ scrollTop: 0, scrollHeight: 900 }),
-    setScrollPosition: () => undefined,
+    getScrollTarget() {
+      return this.scrollTarget
+    },
+    setScrollPosition(_axis: string, position: number) {
+      this.scrollTarget.scrollTop = position
+    },
   },
   render() {
     return h('div', this.$slots.default?.())
@@ -1038,4 +1050,213 @@ describe('group info and a removed member, in mounted UI', () => {
     expect(wrapper.find('.chat-input-bar').exists()).toBe(false)
     wrapper.unmount()
   })
+})
+
+// Uses the production chat route records and real Chat.vue. The scroll-area stand-in owns a
+// stable synthetic target; this proves component/state retention, not browser layout geometry.
+async function routedGroupInfo(direct = false) {
+  const fixture = await openConversation()
+  fixture.wrapper.unmount()
+  const conv = fixture.chats.conversations[CONVERSATION]
+  conv.kind = 'group'
+  conv.name = 'Retained group'
+  conv.membershipStatus = 'joined'
+  conv.groupState = { epoch: 1, roster: [], groupSecretKeyHex: 'aa' } as never
+  jest
+    .spyOn(fixture.chats, 'refreshGroupWritePrice')
+    .mockResolvedValue(undefined)
+  fixture.chats.setActiveConversation(null)
+  const select = jest.spyOn(fixture.chats, 'setActiveConversation')
+  const selectPeer = jest.spyOn(fixture.chats, 'setActiveChat')
+  const { createRouter, createMemoryHistory } = jest.requireActual('vue-router')
+  const chatRoute = require('../router/routes')
+    .createRoutes()[0]
+    .children.find((route: { path: string }) => route.path === 'chat')
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ ...chatRoute, path: '/chat' }],
+  })
+  await router.push(`/chat/${CONVERSATION}${direct ? '/info' : ''}`)
+  await router.isReady()
+  const root = mount(defineComponent({ template: '<router-view />' }), {
+    global: {
+      plugins: [getActivePinia()!, router],
+      components: stubs,
+      stubs: {
+        ChatInput: Blank,
+        ChatMessageComponent: MessageStub,
+        ChatMessageReply: Blank,
+        ChatBannerStack: Blank,
+        QResizeObserver: Blank,
+      },
+      mocks: {
+        $q: { dark: { isActive: false }, screen: { width: 390 } },
+        $t: translator(en),
+      },
+    },
+  })
+  await flushPromises()
+  return { ...fixture, root, router, select, selectPeer }
+}
+
+it('group Info and Back retain the actual routed Chat instance, history window, target and draft', async () => {
+  const app = await routedGroupInfo()
+  try {
+    const chat = app.root.getComponent(ChatPage)
+    await chat.setData({
+      messagesToShow: 90,
+      bottom: false,
+      followBottom: false,
+      lastScrollPosition: 137,
+      message: 'Still drafting',
+      attachments: [
+        {
+          id: 'retained',
+          name: 'note',
+          dataUrl: 'data:text/plain;base64,WA==',
+          sizeBytes: 1,
+        },
+      ],
+      replyDigest: 'original-message',
+    })
+    const original = chat.vm
+    const scrollArea = original.chatScroll
+    const target = scrollArea.getScrollTarget()
+    target.scrollTop = 137
+    const retainedAttachments = original.attachments
+    const selectCalls = app.select.mock.calls.length
+    for (let visit = 0; visit < 2; visit++) {
+      await app.root.get('[data-testid="chat-open-info"]').trigger('click')
+      await flushPromises()
+      expect(app.router.currentRoute.value.name).toBe('group-info')
+      expect(app.root.getComponent(ChatPage).vm).toBe(original)
+      expect(app.root.get('.chat-view-shell').attributes('inert')).toBeDefined()
+      expect(app.root.get('.chat-view-shell').attributes('aria-hidden')).toBe(
+        'true',
+      )
+      expect(app.select).toHaveBeenCalledTimes(selectCalls)
+      window.history.replaceState({ back: `/chat/${CONVERSATION}` }, '')
+      await app.root.get('[data-test="group-info-back"]').trigger('click')
+      await flushPromises()
+      expect(app.router.currentRoute.value.path).toBe(`/chat/${CONVERSATION}`)
+      expect(app.root.getComponent(ChatPage).vm).toBe(original)
+      expect(original.messagesToShow).toBe(90)
+      expect(original.bottom).toBe(false)
+      expect(original.followBottom).toBe(false)
+      expect(original.lastScrollPosition).toBe(137)
+      expect(original.chatScroll).toBe(scrollArea)
+      expect(scrollArea.getScrollTarget()).toBe(target)
+      expect(target.scrollTop).toBe(137)
+      expect(original.message).toBe('Still drafting')
+      expect(original.attachments).toBe(retainedAttachments)
+      expect(original.replyDigest).toBe('original-message')
+    }
+  } finally {
+    app.root.unmount()
+    window.history.replaceState(null, '')
+    require('../utils/draft-storage').clearChatDraft(CONVERSATION)
+  }
+})
+
+it('a direct Info entry mounts no Chat and does not select or mark its group read', async () => {
+  const app = await routedGroupInfo(true)
+  try {
+    expect(app.root.findComponent(ChatPage).exists()).toBe(false)
+    expect(app.root.find('[data-test="group-info-page"]').exists()).toBe(true)
+    expect(app.select).not.toHaveBeenCalled()
+    expect(app.selectPeer).not.toHaveBeenCalled()
+    expect(app.chats.activeConversationId).toBeNull()
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('different-ID Info discards the retained Chat instead of routing it to the other group', async () => {
+  const app = await routedGroupInfo()
+  try {
+    const secondId = '22222222-2222-4222-8222-222222222222'
+    app.chats.conversations[secondId] = {
+      ...app.chats.conversations[CONVERSATION],
+      id: secondId,
+      name: 'Other group',
+      messages: [],
+    }
+    const chat = app.root.getComponent(ChatPage)
+    const reroute = jest.spyOn(chat.vm, 'openRouteAddress')
+    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
+    await flushPromises()
+    app.select.mockClear()
+    await app.router.push({ name: 'group-info', params: { address: secondId } })
+    await flushPromises()
+    expect(app.root.findComponent(ChatPage).exists()).toBe(false)
+    expect(app.root.get('[data-test="group-info-name"]').text()).toBe(
+      'Other group',
+    )
+    expect(reroute).not.toHaveBeenCalled()
+    expect(app.select).not.toHaveBeenCalled()
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('retained Chat shortcuts cannot navigate or archive behind Info; Enter and input keys still propagate', async () => {
+  const app = await routedGroupInfo()
+  const input = document.createElement('input')
+  const keySeen = jest.fn()
+  try {
+    const chat = app.root.getComponent(ChatPage)
+    const archive = jest
+      .spyOn(chat.vm, 'archiveCurrentThread')
+      .mockImplementation(() => undefined)
+    const navigate = jest
+      .spyOn(chat.vm, 'navigateThread')
+      .mockImplementation(() => undefined)
+    const reply = jest
+      .spyOn(chat.vm, 'focusReplyComposer')
+      .mockImplementation(() => undefined)
+    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
+    await flushPromises()
+    for (const key of ['j', 'k', 'r', 'e'])
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+    expect(archive).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(reply).not.toHaveBeenCalled()
+    document.body.appendChild(input)
+    window.addEventListener('keydown', keySeen)
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'e', bubbles: true }),
+    )
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    )
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true }),
+    )
+    expect(keySeen).toHaveBeenCalledTimes(3)
+    expect(archive).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(reply).not.toHaveBeenCalled()
+  } finally {
+    window.removeEventListener('keydown', keySeen)
+    input.remove()
+    app.root.unmount()
+  }
+})
+
+it('a replaced account session discards the retained Chat without selecting another conversation', async () => {
+  const app = await routedGroupInfo()
+  const session = require('../accounts/session').accountStatus
+  const revision = session.revision
+  try {
+    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
+    await flushPromises()
+    app.select.mockClear()
+    session.revision++
+    await flushPromises()
+    expect(app.root.findComponent(ChatPage).exists()).toBe(false)
+    expect(app.select).not.toHaveBeenCalled()
+  } finally {
+    app.root.unmount()
+    session.revision = revision
+  }
 })

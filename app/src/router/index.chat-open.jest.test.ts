@@ -65,7 +65,7 @@ jest.mock('./routes', () => ({
   createRoutes: (): RouteRecordRaw[] => [
     { path: '/wallet', component: page('Wallet') },
     {
-      path: '/chat/:conversationId/info',
+      path: '/chat/:address/info',
       name: 'group-info',
       component: page('GroupInfo'),
     },

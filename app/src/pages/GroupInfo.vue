@@ -1,18 +1,5 @@
 <template>
   <div class="column full-height overflow-hidden">
-    <q-header>
-      <q-toolbar>
-        <q-btn
-          flat
-          dense
-          icon="arrow_back"
-          :aria-label="$t('a11y.backToChats')"
-          data-test="group-info-back"
-          @click="back"
-        />
-        <q-toolbar-title>{{ $t('groupChat.groupInfoTitle') }}</q-toolbar-title>
-      </q-toolbar>
-    </q-header>
     <q-page-container class="col full-height overflow-hidden">
       <q-page class="group-info-page q-pa-sm" :style-fn="pageStyle">
         <q-banner

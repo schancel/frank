@@ -2,7 +2,20 @@
   <div class="chat-layout-root column full-height overflow-hidden">
     <q-header>
       <q-toolbar class="q-pl-sm">
-        <template v-if="infoOpen">
+        <template v-if="isGroupInfoPage">
+          <q-btn
+            flat
+            dense
+            icon="arrow_back"
+            :aria-label="$t('a11y.backToChats')"
+            data-test="group-info-back"
+            @click="backFromGroupInfo"
+          />
+          <q-toolbar-title>{{
+            $t('groupChat.groupInfoTitle')
+          }}</q-toolbar-title>
+        </template>
+        <template v-else-if="infoOpen">
           <q-avatar
             rounded
             size="32px"
@@ -335,7 +348,9 @@
 
     <!-- A /chat/<id> link to a conversation this account does not have: say so, instead of
     mounting a chat for nothing. -->
-    <q-page-container v-if="!infoOpen && conversationMissing">
+    <q-page-container
+      v-if="!isGroupInfoPage && !infoOpen && conversationMissing"
+    >
       <q-page
         class="flex flex-center text-center q-pa-md"
         data-testid="conversation-not-found"
@@ -358,9 +373,33 @@
         </div>
       </q-page>
     </q-page-container>
-    <router-view v-else-if="!infoOpen" />
+    <!-- Retain only an actually mounted chat for this exact ID/session. Visibility preserves
+    its scroll geometry; inert keeps the retained pane out of input and focus handling. -->
+    <div
+      v-if="!infoOpen && !conversationMissing"
+      class="chat-view-shell"
+      :class="{ 'chat-view-hidden': isGroupInfoPage }"
+      :inert="isGroupInfoPage ? true : undefined"
+      :aria-hidden="isGroupInfoPage ? 'true' : undefined"
+    >
+      <router-view v-slot="{ Component }">
+        <component
+          :is="Component"
+          v-if="canRenderChatView"
+          ref="chatView"
+          @vue:mounted="rememberMountedChat"
+          @vue:updated="rememberMountedChat"
+          @vue:unmounted="forgetMountedChat"
+        />
+      </router-view>
+    </div>
+    <router-view
+      v-if="isGroupInfoPage"
+      name="groupInfo"
+      class="group-info-layer"
+    />
     <chat-info-view
-      v-else
+      v-else-if="infoOpen"
       :address="effectiveAddress || address"
       :conversation-id="activeConversation?.id"
       :contact="getContact(effectiveAddress || address)"
@@ -377,6 +416,9 @@ import {
   onMounted,
   ref,
 } from 'vue'
+import type { VNode } from 'vue'
+import { activeChain } from '@frank/wallet/chain'
+import { accountStatus } from '../accounts/session'
 import { useChatDeletionNavigation } from 'src/utils/chat-deletion-navigation'
 
 import ChatInfoView from '../components/panels/ChatInfoView.vue'
@@ -475,6 +517,13 @@ export default defineComponent({
       // `router-view`/`chat-info-view` for why. Can be directly opened via ?info=true query param.
       infoOpen: this.$route.query?.info === 'true',
       chatMenuOpen: false,
+      retainedChat: null as {
+        id: string
+        instanceId: number
+        account: typeof accountStatus.account
+        revision: number
+        chainIdentifier: string
+      } | null,
       subjectEditorOpen: false,
       subjectEditorId: null as string | null,
       subjectDraft: '',
@@ -488,13 +537,33 @@ export default defineComponent({
         | null,
     }
   },
+  mounted() {
+    window.addEventListener('keydown', this.guardHiddenChatShortcuts, true)
+    this.$watch(
+      () => [
+        accountStatus.account,
+        accountStatus.revision,
+        accountStatus.status,
+        activeChain.chainIdentifier,
+      ],
+      () => {
+        this.retainedChat = null
+      },
+      { flush: 'sync' },
+    )
+  },
+  beforeUnmount() {
+    window.removeEventListener('keydown', this.guardHiddenChatShortcuts, true)
+  },
   // Everything here follows the committed route: a Back that is still being decided (or that
   // only closes an overlay) changes nothing.
   watch: {
     '$route.fullPath'() {
       this.cancelSubjectEditor()
       this.selectMode = false
-      this.address = (this.$route?.params?.address as string) || ''
+      const nextId = (this.$route?.params?.address as string) || ''
+      if (this.retainedChat?.id !== nextId) this.retainedChat = null
+      this.address = nextId
     },
     '$route.query.info'(val: string | undefined) {
       this.infoOpen = val === 'true'
@@ -504,6 +573,46 @@ export default defineComponent({
     },
   },
   methods: {
+    rememberMountedChat(vnode: VNode) {
+      if (this.isGroupInfoPage || !this.address || !vnode.component) return
+      this.retainedChat = {
+        id: this.address,
+        instanceId: vnode.component.uid,
+        account: accountStatus.account,
+        revision: accountStatus.revision,
+        chainIdentifier: activeChain.chainIdentifier,
+      }
+    },
+    forgetMountedChat(vnode: VNode) {
+      if (this.retainedChat?.instanceId === vnode.component?.uid)
+        this.retainedChat = null
+    },
+    backFromGroupInfo() {
+      goBack(this.$router, `/chat/${encodeURIComponent(this.address)}`)
+    },
+    guardHiddenChatShortcuts(event: KeyboardEvent) {
+      if (
+        !this.isGroupInfoPage ||
+        !this.$refs.chatView ||
+        event.metaKey ||
+        event.ctrlKey ||
+        event.altKey
+      )
+        return
+      const target = event.target
+      const editable =
+        target instanceof Element
+          ? target.closest('input, textarea, select, [contenteditable]')
+          : null
+      if (
+        editable &&
+        (editable.matches('input, textarea, select') ||
+          editable.getAttribute('contenteditable') !== 'false')
+      )
+        return
+      if (['j', 'k', 'r', 'e'].includes(event.key.toLowerCase()))
+        event.stopImmediatePropagation()
+    },
     // The conversation's back arrow is Back (to the list, Contacts, wherever it was opened
     // from); opened directly, the conversation gives way to the list.
     backToChats() {
@@ -541,7 +650,7 @@ export default defineComponent({
         const conversationId = this.activeConversation?.id
         if (conversationId)
           void this.$router
-            .push({ name: 'group-info', params: { conversationId } })
+            .push({ name: 'group-info', params: { address: conversationId } })
             .catch(() => undefined)
         return
       }
@@ -590,6 +699,21 @@ export default defineComponent({
     },
   },
   computed: {
+    isGroupInfoPage(): boolean {
+      return this.$route.name === 'group-info'
+    },
+    canRenderChatView(): boolean {
+      if (!this.isGroupInfoPage) return true
+      const retained = this.retainedChat
+      return Boolean(
+        retained &&
+          retained.id === this.address &&
+          retained.account === accountStatus.account &&
+          retained.revision === accountStatus.revision &&
+          retained.chainIdentifier === activeChain.chainIdentifier &&
+          accountStatus.status === 'ready',
+      )
+    },
     narrow(): boolean {
       const raw =
         this.$q?.screen?.width ??
@@ -784,6 +908,7 @@ export default defineComponent({
 
 <style lang="scss" scoped>
 .chat-layout-root {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -793,7 +918,23 @@ export default defineComponent({
   overflow: hidden;
 }
 
-.chat-layout-root > :deep(.chat-container) {
+.chat-view-shell {
+  flex: 1 1 0%;
+  min-height: 0;
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+}
+.chat-view-hidden {
+  visibility: hidden;
+  pointer-events: none;
+}
+.group-info-layer {
+  position: absolute;
+  inset: 0;
+}
+
+.chat-view-shell > :deep(.chat-container) {
   flex: 1 1 0% !important;
   min-height: 0 !important;
   height: 100% !important;

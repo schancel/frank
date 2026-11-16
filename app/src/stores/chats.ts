@@ -7512,12 +7512,28 @@ export const useChatStore = defineStore('chats', {
     ): Promise<number> {
       return groupRun(this, `sync:${conversationId}`, async () => {
         const conv = this.conversations[conversationId]
+        const checkContext = captureGroupContext(this, conv)
+        const expectedHome = groupHomeRelays.get(toRaw(this))
+        const contextCurrent = () => {
+          if (
+            options.lease?.isCancelled() ||
+            !this.shouldPollGroupMailbox(conversationId) ||
+            groupHomeRelays.get(toRaw(this)) !== expectedHome
+          )
+            return false
+          try {
+            checkContext()
+            return true
+          } catch {
+            return false
+          }
+        }
         try {
           const count = await this.syncGroupConversationOnce(
             conversationId,
             options,
           )
-          if (conv?.groupState && !options.lease?.isCancelled())
+          if (conv?.groupState && contextCurrent())
             conv.groupState.syncFailed = Boolean(
               Object.keys(conv.groupState.pendingMemberDeliveries ?? {})
                 .length ||
@@ -7526,7 +7542,7 @@ export const useChatStore = defineStore('chats', {
             )
           return count
         } catch (error) {
-          if (conv?.groupState && !options.lease?.isCancelled())
+          if (conv?.groupState && contextCurrent())
             conv.groupState.syncFailed = true
           throw error
         }

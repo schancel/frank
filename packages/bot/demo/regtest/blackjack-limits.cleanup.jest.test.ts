@@ -107,6 +107,41 @@ it('finds an archived original through all history pages, reads its native ID an
   expect(player.handle.sendLegacy).not.toHaveBeenCalled()
 })
 
+it.each(['player', 'dealer'] as const)('holds a known failed %s original before either owner quotes, sends or resumes', async failedOwner => {
+  for (const state of ['included-revert', 'abandoned'] as const) {
+    const { params, player, dealer } = fixture()
+    const owner = failedOwner === 'player' ? player : dealer
+    const row = original(owner)
+    row.members[0]!.observation = state === 'included-revert' ? {
+      state, blockNumber: 1, transactionIndex: 0, transactionHash: 'original', blockHash: 'block', feeWei: '2',
+    } : { state, blockNumber: 1 }
+    owner.handle.getNativeOperationHistory.mockResolvedValue({ operations: [row] })
+    owner.handle.readNativeOperation.mockResolvedValue(row)
+    await expect(returnBlackjackAvailableFunds(params)).rejects.toThrow('HOLD')
+    for (const wallet of [player, dealer]) {
+      expect(wallet.handle.estimateLegacyMax).not.toHaveBeenCalled()
+      expect(wallet.handle.sendLegacy).not.toHaveBeenCalled()
+      expect(wallet.handle.resumeLegacySend).not.toHaveBeenCalled()
+    }
+  }
+})
+
+it.each(['unknown', 'pending', 'recoverable-own-move'] as const)('preserves exact original resume for %s evidence', async state => {
+  const { params, player } = fixture()
+  const row = original(player)
+  if (state === 'recoverable-own-move') row.members.push({ ...row.members[0]!,
+    observation: { state: 'abandoned', blockNumber: 1 },
+    transactionSet: { ...row.members[0]!.transactionSet!, role: 'change' },
+  })
+  else row.members[0]!.observation = { state }
+  player.handle.getNativeOperationHistory.mockResolvedValue({ operations: [row] })
+  player.handle.readNativeOperation.mockResolvedValue(row)
+  await returnBlackjackAvailableFunds(params)
+  expect(player.handle.resumeLegacySend).toHaveBeenCalledWith(row.operationId)
+  expect(player.handle.estimateLegacyMax).not.toHaveBeenCalled()
+  expect(player.handle.sendLegacy).not.toHaveBeenCalled()
+})
+
 it.each(['cursor', 'page-cap', 'duplicate', 'read', 'destination', 'payment', 'owner', 'chain', 'cancelled', 'pending'] as const)('holds %s original evidence without a new quote or send', async problem => {
   const { params, player, dealer, state } = fixture()
   const row = original(player)

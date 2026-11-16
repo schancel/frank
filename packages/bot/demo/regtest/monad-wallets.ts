@@ -22,6 +22,7 @@ import { installCanonicalDirectory } from '@frank/wallet/chain/evm-chain'
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import type { EvmNativeOperation } from '@frank/wallet/storage/evm-native-operation-journal'
+import { nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery } from '@frank/wallet/storage/evm-native-operation-journal'
 import { evmWalletStateOwner, walletStateLocation } from '@frank/wallet/storage/wallet-state-location'
 
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
@@ -204,6 +205,9 @@ async function originalBlackjackReturn(wallet: ReturnWallet, logicalId: string, 
   if (payment.to === null || getAddress(payment.to) !== getAddress(faucet) || payment.data !== '0x' ||
       payment.chainId !== MONAD_REGTEST_CHAIN_ID || payment.value <= 0n || payment.value !== BigInt(row.intendedValueWei))
     throw new Error('Original return recipient mismatch')
+  if (row.members.some(member => member.observation.state === 'included-revert' ||
+      (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member))))
+    throw new Error('Original return has confirmed failure evidence')
   return row
 }
 

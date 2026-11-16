@@ -604,10 +604,16 @@ export async function startRealStack(options: {
     },
     stop: () =>
       (stopped ??= (async () => {
-        for (const wallet of wallets) await wallet.close().catch(() => undefined)
-        provider.destroy()
-        await relay?.stop()
-        for (const signal of signals) process.off(signal, onSignal)
+        const failures: unknown[] = []
+        const attempt = async (close: () => unknown) => {
+          try { await close() } catch (error) { failures.push(error) }
+        }
+        // Drain every tracked wallet before tearing down the shared provider and relay.
+        for (const wallet of wallets) await attempt(() => wallet.close())
+        await attempt(() => provider.destroy())
+        await attempt(() => relay?.stop())
+        for (const signal of signals) await attempt(() => process.off(signal, onSignal))
+        if (failures.length) throw new AggregateError(failures, 'Real stack stop failed; preserve original state')
       })()),
     finish: () =>
       (finished ??= (async () => {

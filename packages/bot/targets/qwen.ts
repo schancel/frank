@@ -22,8 +22,13 @@ async function main() {
 
   const shutdown = async () => {
     console.log("[qwen-target] Shutting down gracefully...");
-    await host.stop();
-    process.exit(0);
+    try {
+      await host.stop();
+      process.exit(0);
+    } catch (error) {
+      console.error("[qwen-target] Shutdown failed; preserve retained state:", error);
+      process.exit(1);
+    }
   };
 
   process.on("SIGINT", shutdown);

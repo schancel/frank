@@ -125,6 +125,8 @@ it.each(['credited', 'exposed and pending'] as const)(
 /** Complete game behavior is stubbed: these cases verify actual finally control flow only. */
 it.each(['success', 'shutdown', 'return', 'close', 'stack'] as const)(
   'uses owned returns only after successful game/shutdown and reports %s cleanup outcome', async failureAt => {
+    const stateDir = mkdtempSync(join(tmpdir(), 'blackjack-cleanup-test-'))
+    writeFileSync(join(stateDir, 'owner-marker'), 'synthetic cleanup control fixture')
     jest.clearAllMocks()
     mockFund.mockReset().mockResolvedValue('funded')
     mockHostStop.mockReset().mockResolvedValue(undefined)
@@ -147,7 +149,7 @@ it.each(['success', 'shutdown', 'return', 'close', 'stack'] as const)(
       }),
     }
     mockOpenPlayer.mockResolvedValue(player)
-    mockStackStart.mockResolvedValue({ stateDir: '/synthetic-run', relayUrl: 'http://inert', stop: mockStop })
+    mockStackStart.mockResolvedValue({ stateDir, relayUrl: 'http://inert', stop: mockStop })
     const output = jest.spyOn(console, 'log').mockImplementation(() => undefined)
     process.env.BLACKJACK_LIMITS_MIN_HANDS = '0'
     process.env.BLACKJACK_LIMITS_MAX_HANDS = '2'
@@ -155,7 +157,12 @@ it.each(['success', 'shutdown', 'return', 'close', 'stack'] as const)(
     try {
       const finished = main()
       await jest.runAllTimersAsync()
-      expect(await finished).toBe(failureAt === 'success')
+      const result = await finished
+      const unexpectedGameFailures = output.mock.calls.filter(call =>
+        typeof call[1] === 'string' && /^FAIL\s/.test(call[1]))
+      expect(unexpectedGameFailures.map(call => call.map(value =>
+        value instanceof Error ? value.stack ?? value.message : String(value)).join(' '))).toEqual([])
+      expect(result).toBe(failureAt === 'success')
       expect(mockReturn).not.toHaveBeenCalled()
       expect(mockOwnedReturn).toHaveBeenCalledTimes(failureAt === 'shutdown' ? 0 : 1)
       if (failureAt !== 'shutdown') {
@@ -166,9 +173,11 @@ it.each(['success', 'shutdown', 'return', 'close', 'stack'] as const)(
       expect(close).toHaveBeenCalledTimes(1)
       expect(mockStop).toHaveBeenCalledTimes(1)
       expect(output.mock.calls.flat().join(' ')).not.toContain('monad-sweep-state')
+      expect(existsSync(join(stateDir, 'owner-marker'))).toBe(true)
     } finally {
       jest.useRealTimers()
       output.mockRestore()
+      rmSync(stateDir, { recursive: true, force: true })
       delete process.env.BLACKJACK_LIMITS_MIN_HANDS
       delete process.env.BLACKJACK_LIMITS_MAX_HANDS
     }

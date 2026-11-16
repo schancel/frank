@@ -2534,12 +2534,17 @@ export class FrankBotHost {
       };
       // Drain existing work before closing stores. Ordinary task/poll failures retain their
       // existing handling; they are not resource teardown failures.
+      // Already-admitted callbacks (including scheduled work) can be queued behind a reply
+      // waiting for its next poll. Wake those replies before waiting for their dependents.
+      for (const [id, instance] of this.instances)
+        await attempt(`${id}: wake replies`, () => this.wakeReplies(instance));
       await attempt("scheduler.stop", () => this.scheduler.stop());
       // An admitted register may still attach an instance or be running its onStart hook.
       // An admitted registration pass keeps its original claim/callback semantics while
       // resources remain open. Neither kind of work can be admitted after closing.
       await Promise.allSettled([...this.registrations]);
       await Promise.allSettled([this.registrationPolling]);
+      // A registration admitted before closing may have attached another instance meanwhile.
       for (const [id, instance] of this.instances)
         await attempt(`${id}: wake replies`, () => this.wakeReplies(instance));
       await Promise.all([...this.instances].map(([id, instance]) =>

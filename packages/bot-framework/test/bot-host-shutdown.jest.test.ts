@@ -337,6 +337,66 @@ describe("registration work belongs to public host shutdown", () => {
     }
   });
 
+  it("wakes an existing reply waiter before draining callbacks serialized behind it", async () => {
+    const { host, first, scheduler, instances, closes } = registrationFixture();
+    // The host's real wakeReplies owns this resolver, as for sendReply's nextPoll wait.
+    const retry = deferred();
+    first.pollWaiters.add(retry.resolve);
+    const order: string[] = [];
+    const priorMessage = retry.promise.then(() => {
+      expect(first.state.close).not.toHaveBeenCalled();
+      order.push("message retry released");
+    });
+    first.tasks.add(priorMessage);
+    void priorMessage.then(
+      () => first.tasks.delete(priorMessage),
+      () => first.tasks.delete(priorMessage)
+    );
+    const entered = deferred();
+    const callbackGate = deferred();
+    const callback = jest.fn(async () => {
+      entered.resolve();
+      await priorMessage; // Model the bot's serialized message/greeting lane.
+      expect(first.wallet.close).not.toHaveBeenCalled();
+      order.push("registration callback released");
+      await callbackGate.promise;
+    });
+    // No greeting delay is needed for this dependency regression.
+    instances.delete("first");
+    instances.set("faucet", first);
+    Object.assign(first.definition, { onNewUser: callback });
+    Object.assign(first, { loopGuard: { shouldDrop: () => false } });
+    Object.assign(first.state, {
+      get: jest.fn(async () => undefined), put: jest.fn(async () => undefined),
+      del: jest.fn(async () => undefined),
+    });
+    // A scheduled callback can share the same bot lane, so waking must precede this drain too.
+    scheduler.stop.mockImplementation(async () => { await priorMessage; });
+    jest.mocked(identity.fetchMonadProfilesSince).mockResolvedValue([
+      { address: "synthetic-user", rawBytes: new Uint8Array() },
+    ] as Awaited<ReturnType<typeof identity.fetchMonadProfilesSince>>);
+    try {
+      await host.start();
+      await entered.promise;
+      let stopped = false;
+      const stopping = host.stop().then(() => { stopped = true; });
+      await jest.advanceTimersByTimeAsync(0);
+      expect(order).toEqual(["message retry released", "registration callback released"]);
+      expect(stopped).toBe(false);
+      for (const close of closes(first).slice(1)) expect(close).not.toHaveBeenCalled();
+      callbackGate.resolve();
+      await stopping;
+      expect(callback).toHaveBeenCalledTimes(1);
+      expect(first.pollWaiters.size).toBe(0);
+      for (const close of closes(first)) expect(close).toHaveBeenCalledTimes(1);
+    } finally {
+      // Release both dependencies even on the broken ordering, avoiding a hung regression.
+      retry.resolve();
+      callbackGate.resolve();
+      await host.stop();
+    }
+  });
+
   it.each([
     { stage: "before attachment", fails: false },
     { stage: "onStart", fails: false },

@@ -160,3 +160,137 @@ it.each([false, true])('preserves successful stop and relay ownership (external 
   expect(mockRawWallet).not.toHaveBeenCalled()
   expect(mockFinancial).not.toHaveBeenCalled()
 })
+
+const syntheticHandle = (close: () => Promise<void>) => ({
+  identity: { address: { raw: 'synthetic-identity' } },
+  getReceiveAddress: async () => ({ raw: 'synthetic-main' }), close, sendLegacy: mockFinancial,
+})
+
+it('drains admitted factory and late-owner closure before shared teardown without publishing a usable wallet', async () => {
+  const stack = await open()
+  const factoryEntered = deferred()
+  const factoryGate = deferred()
+  const closeEntered = deferred()
+  const closeGate = deferred()
+  const lateClose = jest.fn(async () => { closeEntered.resolve(); await closeGate.promise })
+  mockCreateWallet.mockImplementation(async () => {
+    factoryEntered.resolve()
+    await factoryGate.promise
+    return syntheticHandle(lateClose)
+  })
+  let published: Awaited<ReturnType<typeof stack.openWallet>> | undefined
+  const acquisition = stack.openWallet('late')
+  const openOutcome = acquisition.then(wallet => { published = wallet; return wallet }, error => error as unknown)
+  await factoryEntered.promise
+  let completed = false
+  const stopping = stack.stop()
+  const stopOutcome = stopping.then(() => { completed = true }, error => { completed = true; return error as unknown })
+  try {
+    expect(stack.stop()).toBe(stopping)
+    expect(completed).toBe(false)
+    expect(mockProviderDestroy).not.toHaveBeenCalled()
+    expect(mockRelayStop).not.toHaveBeenCalled()
+    expect(process.off).not.toHaveBeenCalled()
+    await expect(stack.openWallet('after-stop-request')).rejects.toThrow('admission is closed')
+    expect(mockCreateWallet).toHaveBeenCalledTimes(1)
+    factoryGate.resolve()
+    // A broken implementation may publish instead of closing; fail without a dead barrier.
+    await Promise.race([closeEntered.promise, openOutcome])
+    expect(lateClose).toHaveBeenCalledTimes(1)
+    expect(published).toBeUndefined()
+    expect(completed).toBe(false)
+    expect(mockProviderDestroy).not.toHaveBeenCalled()
+    closeGate.resolve()
+    const failure = await openOutcome
+    expect(failure).toBeInstanceOf(Error)
+    if (!(failure instanceof Error)) throw new Error('Late acquisition must reject')
+    expect(failure.message).toContain('stopped while opening')
+    expect(await stopOutcome).toBeUndefined()
+    await expect(stack.stop()).resolves.toBeUndefined()
+    await expect(stack.openWallet('after-stop-complete')).rejects.toThrow('admission is closed')
+    expect(mockCreateWallet).toHaveBeenCalledTimes(1)
+    expect(lateClose).toHaveBeenCalledTimes(1)
+    expect(mockProviderDestroy).toHaveBeenCalledTimes(1)
+    expect(mockRelayStop).toHaveBeenCalledTimes(1)
+    expect(mockFinancial).not.toHaveBeenCalled()
+    expect(mockRawWallet).not.toHaveBeenCalled()
+  } finally {
+    factoryGate.resolve()
+    closeGate.resolve()
+    await openOutcome
+    await stopping.catch(() => undefined)
+    // Fail-before probes still own any handle incorrectly published by the old implementation.
+    if (published) await published.close()
+  }
+})
+
+it('retains late-owner close failure once in stop while attempting shared teardown', async () => {
+  const stack = await open()
+  const entered = deferred()
+  const gate = deferred()
+  const cause = new Error('late wallet close failed')
+  const lateClose = jest.fn(async () => { throw cause })
+  mockCreateWallet.mockImplementation(async () => {
+    entered.resolve()
+    await gate.promise
+    return syntheticHandle(lateClose)
+  })
+  const acquisition = stack.openWallet('late-failure')
+  const openOutcome = acquisition.catch(error => error as unknown)
+  await entered.promise
+  const stopping = stack.stop()
+  const stopOutcome = stopping.catch(error => error as unknown)
+  gate.resolve()
+  const openFailure = await openOutcome
+  const stopFailure = await stopOutcome
+  if (!(openFailure instanceof AggregateError) || !(stopFailure instanceof AggregateError))
+    throw new Error('Late close failure must be observable to acquisition and stop')
+  expect(openFailure.errors).toEqual([cause])
+  expect(stopFailure.errors).toEqual([openFailure])
+  expect(lateClose).toHaveBeenCalledTimes(1)
+  expect(mockProviderDestroy).toHaveBeenCalledTimes(1)
+  expect(mockRelayStop).toHaveBeenCalledTimes(1)
+  expect(process.off).toHaveBeenCalledTimes(3)
+  expect(stack.stop()).toBe(stopping)
+  await expect(stack.stop()).rejects.toBe(stopFailure)
+  await expect(stack.openWallet('after-failure')).rejects.toThrow('admission is closed')
+  expect(mockCreateWallet).toHaveBeenCalledTimes(1)
+  expect(lateClose).toHaveBeenCalledTimes(1)
+})
+
+it.each(['synchronous', 'asynchronous'] as const)('registers before reentrant stop and drains %s factory rejection without inventing teardown failure', async mode => {
+  const stack = await open()
+  const cause = new Error(`${mode} factory failure`)
+  let reentrantStop: Promise<void> | undefined
+  let destroysAtReentry: number | undefined
+  mockCreateWallet.mockImplementation(() => {
+    reentrantStop = stack.stop()
+    destroysAtReentry = mockProviderDestroy.mock.calls.length
+    if (mode === 'synchronous') throw cause
+    return Promise.reject(cause)
+  })
+  await expect(stack.openWallet('factory-failure')).rejects.toBe(cause)
+  expect(destroysAtReentry).toBe(0)
+  if (!reentrantStop) throw new Error('Factory did not enter stop')
+  await expect(reentrantStop).resolves.toBeUndefined()
+  expect(stack.stop()).toBe(reentrantStop)
+  expect(mockProviderDestroy).toHaveBeenCalledTimes(1)
+  expect(mockRelayStop).toHaveBeenCalledTimes(1)
+  expect(process.off).toHaveBeenCalledTimes(3)
+  await expect(stack.openWallet('after-factory-failure')).rejects.toThrow('admission is closed')
+  expect(mockCreateWallet).toHaveBeenCalledTimes(1)
+})
+
+it('preserves ordinary sequential reopen without closing the earlier owner twice', async () => {
+  const stack = await open()
+  const first = await stack.openWallet('same-label')
+  const firstClose = jest.spyOn(first, 'close')
+  await first.close()
+  const second = await stack.openWallet('same-label')
+  const secondClose = jest.spyOn(second, 'close')
+  await expect(stack.stop()).resolves.toBeUndefined()
+  expect(mockCreateWallet).toHaveBeenCalledTimes(2)
+  expect(firstClose).toHaveBeenCalledTimes(1)
+  expect(secondClose).toHaveBeenCalledTimes(1)
+  expect(mockProviderDestroy).toHaveBeenCalledTimes(1)
+})

@@ -327,6 +327,7 @@ export class FrankBotHost {
   private readonly scheduler = new BotScheduler();
   private stopPromise?: Promise<void>;
   private resolveStop?: () => void;
+  private shutdownCompletion?: Promise<void>;
 
   getScheduler(): BotScheduler {
     return this.scheduler;
@@ -1029,8 +1030,13 @@ export class FrankBotHost {
     // Set up shutdown hooks
     const shutdown = async () => {
       console.log("\n[bot-host] shutting down hosted bots...");
-      await this.stop();
-      process.exit(0);
+      try {
+        await this.stop();
+        process.exit(0);
+      } catch (error) {
+        console.error("[bot-host] Shutdown failed; preserve retained state:", error);
+        process.exit(1);
+      }
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
@@ -2478,8 +2484,9 @@ export class FrankBotHost {
     return this.instances.get(botId)?.negotiation?.snapshot;
   }
 
-  async stop(): Promise<void> {
-    if (!this.running && this.instances.size === 0) return;
+  stop(): Promise<void> {
+    if (this.shutdownCompletion) return this.shutdownCompletion;
+    if (!this.running && this.instances.size === 0) return Promise.resolve();
     this.closing = true;
     this.running = false;
     this.stopController.abort();
@@ -2492,50 +2499,43 @@ export class FrankBotHost {
 
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
-    // A scheduled event in progress finishes, and none starts, before any bot's state store
-    // is closed below.
-    await this.scheduler.stop();
-    // A reply waiting for a poll that will not come is released, and its handler told so.
-    for (const instance of this.instances.values()) this.wakeReplies(instance);
-
-    const negotiationCleanup = [...this.instances.values()].map(
-      instance => instance.negotiation?.stop()
-    );
-    const negotiationClosed = await Promise.allSettled(negotiationCleanup);
-    if (negotiationClosed.some(result => result.status === "rejected"))
-      console.warn("[bot-host] Swap recovery cleanup failed; preserve retained evidence");
-
-    // An in-flight relay or wallet call is waited for, never abandoned. A handler's own slow
-    // call (a model request) is the handler's to end, on the `stopping` signal.
-    await Promise.allSettled(
-      [...this.instances.values()].flatMap((instance) => [
-        instance.polling,
-        instance.mailboxRead,
-      ])
-    );
-    for (const [id, instance] of this.instances.entries()) {
-      try {
+    this.shutdownCompletion = (async () => {
+      const failures: Error[] = [];
+      // Invoke inside the guard: a synchronous throw must not skip sibling cleanup.
+      const attempt = async (stage: string, close: () => unknown): Promise<void> => {
+        try {
+          await close();
+        } catch (cause) {
+          failures.push(new Error(`Bot shutdown failed during ${stage}`, { cause }));
+        }
+      };
+      // Drain existing work before closing stores. Ordinary task/poll failures retain their
+      // existing handling; they are not resource teardown failures.
+      await attempt("scheduler.stop", () => this.scheduler.stop());
+      for (const [id, instance] of this.instances)
+        await attempt(`${id}: wake replies`, () => this.wakeReplies(instance));
+      await Promise.all([...this.instances].map(([id, instance]) =>
+        attempt(`${id}: negotiation.stop`, () => instance.negotiation?.stop())
+      ));
+      await Promise.allSettled(
+        [...this.instances.values()].flatMap(instance => [instance.polling, instance.mailboxRead])
+      );
+      for (const [id, instance] of this.instances) {
         while (instance.tasks.size)
           await Promise.allSettled([...instance.tasks]);
-        await instance.operations.close();
-        if (instance.definition.onStop) {
-          await instance.definition.onStop(instance.context);
-        }
-      } catch {
-        console.warn(
-          `[bot-host] Stop hook failed for "${id}"; original operations remain retained`
-        );
-      } finally {
-        instance.uninstallDirectory();
-        const closed = await Promise.allSettled([
-          instance.directory.close(),
-          instance.state.close(),
-          instance.wallet.close(),
+        await attempt(`${id}: operations.close`, () => instance.operations.close());
+        await attempt(`${id}: onStop`, () => instance.definition.onStop?.(instance.context));
+        await attempt(`${id}: uninstallDirectory`, () => instance.uninstallDirectory());
+        await Promise.all([
+          attempt(`${id}: directory.close`, () => instance.directory.close()),
+          attempt(`${id}: state.close`, () => instance.state.close()),
+          attempt(`${id}: wallet.close`, () => instance.wallet.close()),
         ]);
-        if (closed.some((result) => result.status === "rejected"))
-          console.warn(`[bot-host] Close failed for "${id}"; preserve state`);
       }
-    }
-    this.instances.clear();
+      this.instances.clear();
+      if (failures.length)
+        throw new AggregateError(failures, "Bot shutdown failed; preserve retained state");
+    })();
+    return this.shutdownCompletion;
   }
 }

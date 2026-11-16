@@ -24,8 +24,13 @@ async function main() {
 
   const shutdown = async () => {
     console.log("[vendor-target] Shutting down gracefully...");
-    await host.stop();
-    process.exit(0);
+    try {
+      await host.stop();
+      process.exit(0);
+    } catch (error) {
+      console.error("[vendor-target] Shutdown failed; preserve retained state:", error);
+      process.exit(1);
+    }
   };
 
   process.on("SIGINT", shutdown);

@@ -76,6 +76,15 @@ jest.mock('../components/panels/ChatInfoView.vue', () => ({
 jest.mock('../components/dialogs/ClearHistoryDialog.vue', () => ({
   template: '<i />',
 }))
+// Router mocks do not install RouterView. Closing Info after deletion must still call the
+// chat layout's scoped view slot with RouterView's contract, rather than a native element slot.
+const EmptyRouterView = defineComponent({
+  setup:
+    (_props, { slots }) =>
+    () =>
+      slots.default?.({ Component: null }),
+})
+
 function mountMenu(menu: 'header' | 'row', target: string, active = target) {
   mockStore.activeConversationId = active
   const router = { replace: jest.fn(), push: jest.fn() }
@@ -93,7 +102,7 @@ function mountMenu(menu: 'header' | 'row', target: string, active = target) {
         $t: (key: string) => key,
         $status: { setup: true },
       },
-      stubs: { DeleteChatDialog: false },
+      stubs: { DeleteChatDialog: false, RouterView: EmptyRouterView },
     },
   })
   const dialog = wrapper.findComponent(DeleteChatDialog)

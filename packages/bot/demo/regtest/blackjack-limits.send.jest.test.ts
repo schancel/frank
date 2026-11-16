@@ -32,6 +32,7 @@ jest.mock("fs", () => ({
   },
 }));
 jest.mock("../demo-config", () => ({ DEMO_DEFAULT_BURN_ADDRESS: "inert" }));
+jest.mock("@frank/wallet/chain/evm-chain", () => ({ loadMonadChainConfigFromEnv: () => ({}) }));
 jest.mock("ethers", () => ({
   Wallet: { createRandom: () => ({ privateKey: "00".repeat(33) }) },
 }));

@@ -321,6 +321,8 @@ export class FrankBotHost {
   private readonly stopController = new AbortController();
   private pollTimer?: NodeJS.Timeout;
   private registrationTimer?: NodeJS.Timeout;
+  private registrationPolling?: Promise<void>;
+  private readonly registrations = new Set<Promise<void>>();
   private lastRegistrationPollMs = 0;
   private lastFundingAlertMs = 0;
   private fundingAlertInFlight = false;
@@ -497,6 +499,16 @@ export class FrankBotHost {
 
   async register(definition: FrankBotDefinition): Promise<void> {
     if (this.closing) throw new Error("Bot host is closed");
+    const registration = this.registerOnce(definition);
+    this.registrations.add(registration);
+    void registration.then(
+      () => this.registrations.delete(registration),
+      () => this.registrations.delete(registration)
+    );
+    return registration;
+  }
+
+  private async registerOnce(definition: FrankBotDefinition): Promise<void> {
     if (this.instances.has(definition.id)) {
       throw new Error(`Bot with id "${definition.id}" is already registered`);
     }
@@ -2206,7 +2218,15 @@ export class FrankBotHost {
     }
   }
 
-  private async pollRegistrations(): Promise<void> {
+  /** One admitted pass owns its fetch, greeting claims and callbacks until they settle. */
+  private pollRegistrations(): Promise<void> {
+    if (this.closing) return Promise.resolve();
+    return (this.registrationPolling ??= this.pollRegistrationsOnce().finally(() => {
+      this.registrationPolling = undefined;
+    }));
+  }
+
+  private async pollRegistrationsOnce(): Promise<void> {
     const hasInterestedBots = Array.from(this.instances.values()).some(
       (inst) => typeof inst.definition.onNewUser === "function"
     );
@@ -2486,7 +2506,10 @@ export class FrankBotHost {
 
   stop(): Promise<void> {
     if (this.shutdownCompletion) return this.shutdownCompletion;
-    if (!this.running && this.instances.size === 0) return Promise.resolve();
+    if (
+      !this.running && this.instances.size === 0 &&
+      this.registrations.size === 0 && !this.registrationPolling
+    ) return Promise.resolve();
     this.closing = true;
     this.running = false;
     this.stopController.abort();
@@ -2511,7 +2534,17 @@ export class FrankBotHost {
       };
       // Drain existing work before closing stores. Ordinary task/poll failures retain their
       // existing handling; they are not resource teardown failures.
+      // Already-admitted callbacks (including scheduled work) can be queued behind a reply
+      // waiting for its next poll. Wake those replies before waiting for their dependents.
+      for (const [id, instance] of this.instances)
+        await attempt(`${id}: wake replies`, () => this.wakeReplies(instance));
       await attempt("scheduler.stop", () => this.scheduler.stop());
+      // An admitted register may still attach an instance or be running its onStart hook.
+      // An admitted registration pass keeps its original claim/callback semantics while
+      // resources remain open. Neither kind of work can be admitted after closing.
+      await Promise.allSettled([...this.registrations]);
+      await Promise.allSettled([this.registrationPolling]);
+      // A registration admitted before closing may have attached another instance meanwhile.
       for (const [id, instance] of this.instances)
         await attempt(`${id}: wake replies`, () => this.wakeReplies(instance));
       await Promise.all([...this.instances].map(([id, instance]) =>

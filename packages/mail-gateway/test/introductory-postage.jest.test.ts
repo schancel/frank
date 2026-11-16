@@ -22,6 +22,7 @@ describe('first authenticated mail introductory postage through the production h
   let ledger: CreditLedger;
   let submitted: Uint8Array[];
   let attempts: Map<string, string>;
+  let sendRequests: Map<string, { recipient: string; conversationId: string }>;
   let failSmtp: boolean;
   let pending: boolean;
   const stampValues: bigint[] = [];
@@ -31,10 +32,11 @@ describe('first authenticated mail introductory postage through the production h
       chainIdentifier: 'monad-testnet',
       parseAddress: (value: string) => /^0x[0-9a-f]{40}$/.test(value) ? { raw: value } : undefined,
       directMessages: {
-        send: async (input: { messageId: string; stampValue: bigint; onEnvelopeDurable: (digest: string) => Promise<void> }) => {
+        send: async (input: { messageId: string; recipient: { raw: string }; conversationId: string; stampValue: bigint; onEnvelopeDurable: (digest: string) => Promise<void> }) => {
           const digest = crypto.createHash('sha256').update(input.messageId).digest('hex');
           if (attempts.has(input.messageId)) throw new Error('already attempted');
           attempts.set(input.messageId, digest);
+          sendRequests.set(input.messageId, { recipient: input.recipient.raw, conversationId: input.conversationId });
           stampValues.push(input.stampValue);
           await input.onEnvelopeDurable(digest);
           if (pending) throw new Error('delivery acceptance unknown');
@@ -80,7 +82,7 @@ describe('first authenticated mail introductory postage through the production h
 
   beforeEach(() => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mail-intro-'));
-    submitted = []; attempts = new Map(); failSmtp = false; pending = false; stampValues.length = 0;
+    submitted = []; attempts = new Map(); sendRequests = new Map(); failSmtp = false; pending = false; stampValues.length = 0;
     open('provision');
     host.journal.issueMailbox({ localPart: 'alice', scopeAccount: RECIPIENT });
     host.journal.issueMailbox({ localPart: 'bob', scopeAccount: OTHER });
@@ -210,6 +212,72 @@ describe('first authenticated mail introductory postage through the production h
   const envelope = (localPart: string) => ({
     clientIp: '192.0.2.1', helo: 'sender.example.org', mailFrom: SENDER,
     recipients: [`${localPart}@gateway.example`],
+  });
+
+  it('shares one introductory grant across two distinct concurrent authenticated messages', async () => {
+    const ingress = smtpIngress();
+    const firstRaw = smtpMail('concurrent-alice', 'alice');
+    const secondRaw = smtpMail('concurrent-bob', 'bob');
+    expect(ledger.hasIntroductoryPostage(SENDER)).toBe(false);
+    expect(ledger.getBalance(SENDER)).toBe(0);
+
+    await Promise.all([
+      ingress.accept(firstRaw, envelope('alice')),
+      ingress.accept(secondRaw, envelope('bob')),
+    ]);
+
+    expect(ledger.hasIntroductoryPostage(SENDER)).toBe(true);
+    expect(ledger.getBalance(SENDER)).toBe(1);
+    const slots = host.journal.listUnfinishedFrankSends();
+    expect(slots).toHaveLength(2);
+    expect(new Set(slots.map(slot => slot.scopeAccount))).toEqual(new Set([RECIPIENT, OTHER]));
+    expect(new Set(slots.map(slot => slot.frankMessageId)).size).toBe(2);
+    expect(new Set(slots.map(slot => slot.conversationId)).size).toBe(2);
+    for (const slot of slots) {
+      expect(host.journal.findMailThread(slot.scopeAccount, slot.conversationId)).toBeDefined();
+    }
+
+    expect(await Promise.all(slots.map(slot => host.inbound.resume(slot.slotId))))
+      .toEqual(['delivered', 'delivered']);
+    expect(attempts.size).toBe(2);
+    expect(new Set(attempts.values()).size).toBe(2);
+    const expectedRequests = new Map(slots.map(slot => [slot.frankMessageId, {
+      recipient: slot.scopeAccount, conversationId: slot.conversationId,
+    }]));
+    expect(sendRequests).toEqual(expectedRequests);
+    expect(stampValues).toEqual([1000n, 1000n]);
+    await host.inbound.sendPendingHeldAutoReplies();
+    expect(submitted).toHaveLength(1);
+    const notice = Buffer.from(submitted[0]).toString('utf8');
+    const encoded = notice.split('Content-Transfer-Encoding: base64\r\n\r\n')[1].split('\r\n--')[0];
+    const body = Buffer.from(encoded.replace(/\s/g, ''), 'base64').toString('utf8');
+    expect(body).toContain('received 3 free postage credits');
+    expect(body).toContain('prepared: 1');
+    expect(body).toContain('shared across all recipients');
+    expect(body).toContain('https://gateway.example/pay/');
+
+    await restart();
+    const reopenedIngress = smtpIngress();
+    await Promise.all([
+      reopenedIngress.accept(firstRaw, envelope('alice')),
+      reopenedIngress.accept(secondRaw, envelope('bob')),
+    ]);
+    await host.inbound.recover();
+    await host.inbound.sendPendingHeldAutoReplies();
+    expect(ledger.getBalance(SENDER)).toBe(1);
+    expect(attempts.size).toBe(2);
+    expect(sendRequests).toEqual(expectedRequests);
+    expect(stampValues).toEqual([1000n, 1000n]);
+    expect(submitted).toHaveLength(1);
+    expect(host.journal.listUnfinishedFrankSends()).toHaveLength(0);
+    for (const slot of slots) {
+      expect(host.journal.findFrankSend(slot.slotId)).toMatchObject({
+        state: 'delivered',
+        frankMessageId: slot.frankMessageId,
+        conversationId: slot.conversationId,
+        scopeAccount: slot.scopeAccount,
+      });
+    }
   });
 
   it('introduces a real relay-resolved username without creating or requiring an issued alias row', async () => {

@@ -142,6 +142,8 @@ describe('Wallet real-world performance & reliability simulation (integration)',
       providerBroadcasts.length = 0
       f!.setMailbox(bobMailbox)
       const requestsBefore = f!.requests.length
+      const providerRequestsBefore = providerRequests.length
+      const cpuBefore = process.cpuUsage()
       const t0 = performance.now()
       const sent = await f!.chain.directMessages.send({
         wallet: f!.alice,
@@ -150,6 +152,7 @@ describe('Wallet real-world performance & reliability simulation (integration)',
         stampValue: STAMP,
       })
       const elapsed = performance.now() - t0
+      const cpu = process.cpuUsage(cpuBefore)
       f!.setMailbox(undefined)
       expect(sent.stampValueWei).toBe(STAMP)
       // Every message spends coins the wallet already holds, with zero on-the-spot funding txs
@@ -163,7 +166,13 @@ describe('Wallet real-world performance & reliability simulation (integration)',
             .slice(requestsBefore)
             .reduce((n, request) => n + restoreCanonicalRequest(request).parts.transactions.length, 0)
         : 0
-      return { elapsed, transactions: providerBroadcasts.length + relayed }
+      return {
+        elapsed, transactions: providerBroadcasts.length + relayed,
+        cpuUserMs: cpu.user / 1000, cpuSystemMs: cpu.system / 1000,
+        providerRequests: providerRequests.length - providerRequestsBefore,
+        chainRequests: chainHttpRequests.length,
+        relayRequests: f!.requests.length - requestsBefore,
+      }
     }
 
     // The deposit is one large coin. A send that spends a coin that large also splits it into
@@ -184,9 +193,15 @@ describe('Wallet real-world performance & reliability simulation (integration)',
 
     // Now measure critical-path send latency across sequential paid messages
     const sendLatenciesMs: number[] = []
+    const sendDiagnostics: string[] = []
     const messageCount = 5
-    for (let i = 0; i < messageCount; i++)
-      sendLatenciesMs.push((await send(`fast-message-${i}`)).elapsed)
+    for (let i = 0; i < messageCount; i++) {
+      const sample = await send(`fast-message-${i}`)
+      sendLatenciesMs.push(sample.elapsed)
+      sendDiagnostics.push(
+        `sample ${i + 1}: wall ${sample.elapsed.toFixed(1)} ms, CPU user ${sample.cpuUserMs.toFixed(1)} ms, system ${sample.cpuSystemMs.toFixed(1)} ms, transactions ${sample.transactions}, provider requests ${sample.providerRequests}, chain requests ${sample.chainRequests}, relay requests ${sample.relayRequests}`,
+      )
+    }
 
     const sorted = [...sendLatenciesMs].sort((a, b) => a - b)
     const p50 = percentile(sorted, 50)
@@ -195,6 +210,9 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     console.log(
       `steady paid DM sends: ${sendLatenciesMs.map(ms => ms.toFixed(1)).join(', ')} ms; p50 ${p50.toFixed(1)}, p95 ${p95.toFixed(1)}`,
     )
+    // Offline fixture diagnostics, not a network SLA. Process-wide CPU brackets the unchanged
+    // wall timer; CPU versus wall alone cannot prove cause, and unseeded work remains nonidentical.
+    console.log(`offline fixture paid DM diagnostics: ${sendDiagnostics.join('; ')}`)
     expect(p50).toBeLessThan(110)
     expect(p95).toBeLessThan(180)
     expect(bobMailbox).toHaveLength(distributing + 1 + messageCount)

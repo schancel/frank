@@ -20,7 +20,9 @@ jest.mock('quasar', () => {
 enableAutoUnmount(afterEach)
 const mockSession = reactive({ status: 'ready', revision: 1, account: null })
 jest.mock('src/accounts/session', () => ({
-  accountStatus: mockSession,
+  get accountStatus() {
+    return mockSession
+  },
   accountSession: {
     get state() {
       return mockSession

@@ -46,6 +46,11 @@ jest.mock('../utils/clients', () => {
   const wallet = {}
   return { useMonadWallet: () => wallet }
 })
+// Profile lookup transport is outside these mounted presentation/state assertions.
+jest.mock('../utils/directory-peer', () => ({
+  ...jest.requireActual('../utils/directory-peer'),
+  fetchContactProfile: jest.fn(async () => undefined),
+}))
 jest.mock('../composables/useBalance', () => ({
   useBalance: () => ({ refresh: jest.fn() }),
 }))
@@ -203,7 +208,13 @@ async function openConversation(
 ) {
   const pinia = createPinia()
   setActivePinia(pinia)
+  // Keep the real oracle store/getters while replacing only its external feed source.
+  require('../stores/oracle')
+    .useOracleStore()
+    .useFeedSource(async () => undefined)
   const chats = useChatStore()
+  // GroupInfo's automatic metadata read is synthetic unless a case supplies its price.
+  jest.spyOn(chats, 'refreshGroupWritePrice').mockResolvedValue(undefined)
   const contacts = useContactStore()
   jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined)
   for (const [address, name, fill] of [
@@ -1091,9 +1102,6 @@ async function routedGroupInfo(direct = false) {
     ],
     groupSecretKeyHex: 'bb'.repeat(32),
   } as never
-  jest
-    .spyOn(fixture.chats, 'refreshGroupWritePrice')
-    .mockResolvedValue(undefined)
   fixture.chats.setActiveConversation(null)
   const select = jest.spyOn(fixture.chats, 'setActiveConversation')
   const selectPeer = jest.spyOn(fixture.chats, 'setActiveChat')
@@ -1182,7 +1190,7 @@ it('group Info and Back retain the actual routed Chat instance, history window, 
     for (let visit = 0; visit < 2; visit++) {
       await clickRoutedGroupInfo(app)
       expect(app.router.currentRoute.value.name).toBe('group-info')
-      expect(app.root.getComponent(ChatPage).vm).toBe(original)
+      expect(app.root.getComponent(ChatPage).vm.$ === original.$).toBe(true)
       expect(app.root.get('.chat-view-shell').attributes('inert')).toBeDefined()
       expect(app.root.get('.chat-view-shell').attributes('aria-hidden')).toBe(
         'true',
@@ -1202,16 +1210,16 @@ it('group Info and Back retain the actual routed Chat instance, history window, 
       await returned
       await flushPromises()
       expect(app.router.currentRoute.value.path).toBe(`/chat/${CONVERSATION}`)
-      expect(app.root.getComponent(ChatPage).vm).toBe(original)
+      expect(app.root.getComponent(ChatPage).vm.$ === original.$).toBe(true)
       expect(original.messagesToShow).toBe(90)
       expect(original.bottom).toBe(false)
       expect(original.followBottom).toBe(false)
       expect(original.lastScrollPosition).toBe(137)
-      expect(original.chatScroll).toBe(scrollArea)
-      expect(scrollArea.getScrollTarget()).toBe(target)
+      expect(original.chatScroll === scrollArea).toBe(true)
+      expect(scrollArea.getScrollTarget() === target).toBe(true)
       expect(target.scrollTop).toBe(137)
       expect(original.message).toBe('Still drafting')
-      expect(original.attachments).toBe(retainedAttachments)
+      expect(original.attachments === retainedAttachments).toBe(true)
       expect(original.replyDigest).toBe('original-message')
     }
   } finally {

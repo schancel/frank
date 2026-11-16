@@ -68,10 +68,6 @@ it.each(['credited', 'exposed and pending'] as const)(
         throw failure
       })
     mockStackStart.mockResolvedValue(stack)
-    if (outcome === 'exposed and pending')
-      mockReturn.mockRejectedValueOnce(
-        new Error('Synthetic recovery temporarily unavailable'),
-      )
     const output = jest
       .spyOn(console, 'log')
       .mockImplementation(() => undefined)
@@ -95,8 +91,7 @@ it.each(['credited', 'exposed and pending'] as const)(
       expect(output.mock.calls.some(args => args.includes(failure))).toBe(true)
       expect(mockStart).not.toHaveBeenCalled()
       expect(mockOpenPlayer).not.toHaveBeenCalled()
-      expect(mockReturn).toHaveBeenCalledTimes(1)
-      expect(mockReturn).toHaveBeenCalledWith(stack)
+      expect(mockReturn).not.toHaveBeenCalled()
       expect(mockHostStop).toHaveBeenCalledTimes(1)
       expect(mockStop).toHaveBeenCalledTimes(1)
       expect(existsSync(join(stateDir, 'owner-marker'))).toBe(true)

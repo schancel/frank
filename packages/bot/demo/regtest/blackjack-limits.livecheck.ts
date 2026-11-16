@@ -45,11 +45,9 @@ import {
   type HandItem,
 } from '@frank/wallet/message-item-plugins/blackjack/hand'
 
-import { FundsInPendingSendError } from '@frank/wallet/evm-transaction-set-types'
-
 import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { BlackjackDealerBot } from '../../src/bots/blackjack-bot'
-import { monadOf, openMonadWallet, returnToFaucet } from './monad-wallets'
+import { monadOf, openMonadWallet, returnToFaucet, tickUntilSettled } from './monad-wallets'
 import { startRegtestStack } from './regtest-stack'
 
 const MON = 10n ** 18n
@@ -113,27 +111,12 @@ export async function main(): Promise<boolean> {
     wallets.push(player)
     await monad.fund(player.mainAccount, 4n * MON)
 
-    /** Sends once the wallet's earlier payments have settled: a paid send while the change of an
-     * earlier one is still on its way is refused (owner ruling 2026-10-26), never queued, and the
-     * wallet's own ticks finish that change. */
+    /** Advance earlier authorized operations before one new logical send. A rejected send may
+     * already have durable/exposed payment bytes: retain it and fail this run, never call send again
+     * based on the rejection's class or text. Settlement is not a promise of future selectability. */
     const sendSettled = async (items: never[], stampWei?: bigint): Promise<string> => {
-      for (let attempt = 1; ; attempt++) {
-        try {
-          return await player.send(dealer, items, stampWei)
-        } catch (error) {
-          const pending =
-            error instanceof FundsInPendingSendError ||
-            // Also when every coin is change of a send so recent the node would not take it yet
-            // (docs/protocol/chains/monad-reserve-balance.md): the wallet then names no amount.
-            /tied up in a previous send|No funds cover a stamp/.test(String((error as Error)?.message))
-          // A payment the node refused stays refused for up to about fifteen minutes.
-          if (!pending || attempt >= 400) throw error
-          if (attempt === 1) say('the previous send has not reached the chain yet; waiting for it')
-          if (attempt % 40 === 0) say(`  still waiting (${attempt * 3} s); relay: ${relaySaid() || 'nothing refused'}`)
-          await player.chain.directMessages.reconcileAttempts({ wallet: player.handle, payloadDigests: [] })
-          await sleep(3000)
-        }
-      }
+      await tickUntilSettled(player)
+      return player.send(dealer, items, stampWei)
     }
     /** What the relay logged about payments it could not broadcast, or one payment's. */
     const relaySaid = (txHash?: string) => {
@@ -317,12 +300,17 @@ export async function main(): Promise<boolean> {
   } finally {
     await host?.stop().catch(() => undefined)
     for (const wallet of wallets) await wallet.close().catch(() => undefined)
-    // Everything the run's accounts hold goes back to the faucet, the bot host's included.
-    const back = await returnToFaucet(stack).catch(error => {
-      say('sweep failed:', error)
-      return undefined
-    })
-    if (back) say(`returned ${back.returnedWei} wei to the faucet; ${back.leftWei} wei left as dust or in flight`)
+    // A failed call can leave authorized signed bytes and reservations live. Do not construct
+    // independent return transfers over that state; retain it for original-operation recovery.
+    if (problems.length > 0) {
+      say('HOLD: automatic returns skipped after failure; original wallet state retained')
+    } else {
+      const back = await returnToFaucet(stack).catch(error => {
+        say('sweep failed:', error)
+        return undefined
+      })
+      if (back) say(`returned ${back.returnedWei} wei to the faucet; ${back.leftWei} wei left as dust or in flight`)
+    }
     say(`keys stay in ${stack.stateDir} until it is removed: sweep again with yarn --cwd packages/bot regtest:monad-sweep-state ${stack.stateDir}`)
     await stack.stop()
   }

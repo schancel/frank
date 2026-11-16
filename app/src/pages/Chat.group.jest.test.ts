@@ -4,7 +4,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia, getActivePinia } from 'pinia'
 import * as quasar from 'quasar'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, reactive } from 'vue'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -15,6 +15,23 @@ jest.mock('../adapters/level-message-store', () => ({
       /* none */
     },
   }),
+}))
+// A stable restored UI session: this fixture never initializes custody or a real account.
+const mockAccountState = reactive({
+  status: 'ready',
+  revision: 1,
+  account: null,
+})
+jest.mock('../accounts/session', () => ({
+  accountStatus: mockAccountState,
+  accountSession: {
+    state: mockAccountState,
+    initialize: jest.fn(async () => undefined),
+    peekWallet: () => undefined,
+    getWallet: jest.fn(async () => {
+      throw new Error('No wallet in mounted group UI fixture')
+    }),
+  },
 }))
 const mockInfoRouter = { push: jest.fn(), go: jest.fn(), replace: jest.fn() }
 jest.mock('vue-router', () => ({ useRouter: () => mockInfoRouter }))
@@ -249,8 +266,8 @@ async function openConversation(
 
 beforeEach(() => {
   time = 0
-  // This mounted UI fixture represents an already restored account.
-  require('../accounts/session').accountStatus.status = 'ready'
+  mockAccountState.status = 'ready'
+  mockAccountState.revision = 1
   setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x7e)))
 })
 
@@ -889,6 +906,7 @@ describe('group info and a removed member, in mounted UI', () => {
   it("shows the group's price per message, and lets only the administrator change it", async () => {
     const { wrapper: chat, chats } = await openConversation()
     const conv = makeAdminGroup(chats)
+    expect(mockAccountState.status).toBe('ready')
     const view = {
       network: 'monad-testnet',
       priceWei: '3000000000000000',
@@ -1060,8 +1078,19 @@ async function routedGroupInfo(direct = false) {
   const conv = fixture.chats.conversations[CONVERSATION]
   conv.kind = 'group'
   conv.name = 'Retained group'
+  conv.address = `group:${'aa'.repeat(32)}`
+  conv.participants = [mockOwn, ALICE, BOB]
   conv.membershipStatus = 'joined'
-  conv.groupState = { epoch: 1, roster: [], groupSecretKeyHex: 'aa' } as never
+  conv.groupState = {
+    epoch: 1,
+    groupIdHex: 'aa'.repeat(32),
+    roster: [
+      { address: mockOwn, role: 'admin' },
+      { address: ALICE, role: 'member' },
+      { address: BOB, role: 'member' },
+    ],
+    groupSecretKeyHex: 'bb'.repeat(32),
+  } as never
   jest
     .spyOn(fixture.chats, 'refreshGroupWritePrice')
     .mockResolvedValue(undefined)
@@ -1099,6 +1128,31 @@ async function routedGroupInfo(direct = false) {
   return { ...fixture, root, router, select, selectPeer }
 }
 
+async function clickRoutedGroupInfo(
+  app: Awaited<ReturnType<typeof routedGroupInfo>>,
+) {
+  const layout = app.root.getComponent(
+    require('../layouts/ChatLayout.vue').default,
+  )
+  expect(layout.vm.isGroup).toBe(true)
+  const navigation = jest.spyOn(app.router, 'push')
+  try {
+    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
+    expect(navigation).toHaveBeenCalledWith({
+      name: 'group-info',
+      params: { address: CONVERSATION },
+    })
+    await navigation.mock.results[0].value
+    await flushPromises()
+    expect(app.router.currentRoute.value.name).toBe('group-info')
+    expect(app.router.currentRoute.value.path).toBe(
+      `/chat/${CONVERSATION}/info`,
+    )
+  } finally {
+    navigation.mockRestore()
+  }
+}
+
 it('group Info and Back retain the actual routed Chat instance, history window, target and draft', async () => {
   const app = await routedGroupInfo()
   try {
@@ -1126,8 +1180,7 @@ it('group Info and Back retain the actual routed Chat instance, history window, 
     const retainedAttachments = original.attachments
     const selectCalls = app.select.mock.calls.length
     for (let visit = 0; visit < 2; visit++) {
-      await app.root.get('[data-testid="chat-open-info"]').trigger('click')
-      await flushPromises()
+      await clickRoutedGroupInfo(app)
       expect(app.router.currentRoute.value.name).toBe('group-info')
       expect(app.root.getComponent(ChatPage).vm).toBe(original)
       expect(app.root.get('.chat-view-shell').attributes('inert')).toBeDefined()
@@ -1136,7 +1189,17 @@ it('group Info and Back retain the actual routed Chat instance, history window, 
       )
       expect(app.select).toHaveBeenCalledTimes(selectCalls)
       window.history.replaceState({ back: `/chat/${CONVERSATION}` }, '')
+      const returned = new Promise<void>((resolve, reject) => {
+        const stop = app.router.afterEach(
+          (_to: unknown, _from: unknown, failure: unknown) => {
+            stop()
+            if (failure) reject(failure)
+            else resolve()
+          },
+        )
+      })
       await app.root.get('[data-test="group-info-back"]').trigger('click')
+      await returned
       await flushPromises()
       expect(app.router.currentRoute.value.path).toBe(`/chat/${CONVERSATION}`)
       expect(app.root.getComponent(ChatPage).vm).toBe(original)
@@ -1161,6 +1224,10 @@ it('group Info and Back retain the actual routed Chat instance, history window, 
 it('a direct Info entry mounts no Chat and does not select or mark its group read', async () => {
   const app = await routedGroupInfo(true)
   try {
+    expect(app.router.currentRoute.value.name).toBe('group-info')
+    expect(app.router.currentRoute.value.path).toBe(
+      `/chat/${CONVERSATION}/info`,
+    )
     expect(app.root.findComponent(ChatPage).exists()).toBe(false)
     expect(app.root.find('[data-test="group-info-page"]').exists()).toBe(true)
     expect(app.select).not.toHaveBeenCalled()
@@ -1179,16 +1246,22 @@ it('different-ID Info discards the retained Chat instead of routing it to the ot
       ...app.chats.conversations[CONVERSATION],
       id: secondId,
       name: 'Other group',
+      address: `group:${'cc'.repeat(32)}`,
+      groupState: {
+        ...app.chats.conversations[CONVERSATION].groupState,
+        groupIdHex: 'cc'.repeat(32),
+      },
       messages: [],
     }
     const chat = app.root.getComponent(ChatPage)
     const reroute = jest.spyOn(chat.vm, 'openRouteAddress')
-    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
-    await flushPromises()
+    await clickRoutedGroupInfo(app)
     app.select.mockClear()
     await app.router.push({ name: 'group-info', params: { address: secondId } })
     await flushPromises()
     expect(app.root.findComponent(ChatPage).exists()).toBe(false)
+    expect(app.router.currentRoute.value.name).toBe('group-info')
+    expect(app.router.currentRoute.value.params.address).toBe(secondId)
     expect(app.root.get('[data-test="group-info-name"]').text()).toBe(
       'Other group',
     )
@@ -1214,8 +1287,7 @@ it('retained Chat shortcuts cannot navigate or archive behind Info; Enter and in
     const reply = jest
       .spyOn(chat.vm, 'focusReplyComposer')
       .mockImplementation(() => undefined)
-    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
-    await flushPromises()
+    await clickRoutedGroupInfo(app)
     for (const key of ['j', 'k', 'r', 'e'])
       window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
     expect(archive).not.toHaveBeenCalled()
@@ -1248,8 +1320,7 @@ it('a replaced account session discards the retained Chat without selecting anot
   const session = require('../accounts/session').accountStatus
   const revision = session.revision
   try {
-    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
-    await flushPromises()
+    await clickRoutedGroupInfo(app)
     app.select.mockClear()
     session.revision++
     await flushPromises()

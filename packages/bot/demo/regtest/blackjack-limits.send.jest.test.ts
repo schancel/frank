@@ -131,7 +131,8 @@ it.each(ambiguous)(
       false
     );
     expect(mockClose).toHaveBeenCalledTimes(1);
-    expect(mockReturn).toHaveBeenCalledTimes(1);
+    expect(mockReturn).not.toHaveBeenCalled();
+    expect(mockStop).toHaveBeenCalledTimes(2);
   }
 );
 
@@ -141,6 +142,9 @@ it("does not dispatch a bet if prior settlement rejects, retaining the exact fai
   expect(await main()).toBe(false);
   expect(mockSend).toHaveBeenCalledTimes(1);
   expect(output.mock.calls.some((args) => args.includes(failure))).toBe(true);
+  expect(mockReturn).not.toHaveBeenCalled();
+  expect(mockClose).toHaveBeenCalledTimes(1);
+  expect(mockStop).toHaveBeenCalledTimes(2);
 });
 
 it("settles first then dispatches the intended bet exactly once", async () => {

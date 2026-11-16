@@ -300,12 +300,17 @@ export async function main(): Promise<boolean> {
   } finally {
     await host?.stop().catch(() => undefined)
     for (const wallet of wallets) await wallet.close().catch(() => undefined)
-    // Everything the run's accounts hold goes back to the faucet, the bot host's included.
-    const back = await returnToFaucet(stack).catch(error => {
-      say('sweep failed:', error)
-      return undefined
-    })
-    if (back) say(`returned ${back.returnedWei} wei to the faucet; ${back.leftWei} wei left as dust or in flight`)
+    // A failed call can leave authorized signed bytes and reservations live. Do not construct
+    // independent return transfers over that state; retain it for original-operation recovery.
+    if (problems.length > 0) {
+      say('HOLD: automatic returns skipped after failure; original wallet state retained')
+    } else {
+      const back = await returnToFaucet(stack).catch(error => {
+        say('sweep failed:', error)
+        return undefined
+      })
+      if (back) say(`returned ${back.returnedWei} wei to the faucet; ${back.leftWei} wei left as dust or in flight`)
+    }
     say(`keys stay in ${stack.stateDir} until it is removed: sweep again with yarn --cwd packages/bot regtest:monad-sweep-state ${stack.stateDir}`)
     await stack.stop()
   }

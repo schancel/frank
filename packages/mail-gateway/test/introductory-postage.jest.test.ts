@@ -22,6 +22,7 @@ describe('first authenticated mail introductory postage through the production h
   let ledger: CreditLedger;
   let submitted: Uint8Array[];
   let attempts: Map<string, string>;
+  let sendRequests: Map<string, { recipient: string; conversationId: string }>;
   let failSmtp: boolean;
   let pending: boolean;
   const stampValues: bigint[] = [];
@@ -31,10 +32,11 @@ describe('first authenticated mail introductory postage through the production h
       chainIdentifier: 'monad-testnet',
       parseAddress: (value: string) => /^0x[0-9a-f]{40}$/.test(value) ? { raw: value } : undefined,
       directMessages: {
-        send: async (input: { messageId: string; stampValue: bigint; onEnvelopeDurable: (digest: string) => Promise<void> }) => {
+        send: async (input: { messageId: string; recipient: { raw: string }; conversationId: string; stampValue: bigint; onEnvelopeDurable: (digest: string) => Promise<void> }) => {
           const digest = crypto.createHash('sha256').update(input.messageId).digest('hex');
           if (attempts.has(input.messageId)) throw new Error('already attempted');
           attempts.set(input.messageId, digest);
+          sendRequests.set(input.messageId, { recipient: input.recipient.raw, conversationId: input.conversationId });
           stampValues.push(input.stampValue);
           await input.onEnvelopeDurable(digest);
           if (pending) throw new Error('delivery acceptance unknown');
@@ -80,7 +82,7 @@ describe('first authenticated mail introductory postage through the production h
 
   beforeEach(() => {
     directory = fs.mkdtempSync(path.join(os.tmpdir(), 'mail-intro-'));
-    submitted = []; attempts = new Map(); failSmtp = false; pending = false; stampValues.length = 0;
+    submitted = []; attempts = new Map(); sendRequests = new Map(); failSmtp = false; pending = false; stampValues.length = 0;
     open('provision');
     host.journal.issueMailbox({ localPart: 'alice', scopeAccount: RECIPIENT });
     host.journal.issueMailbox({ localPart: 'bob', scopeAccount: OTHER });
@@ -239,6 +241,10 @@ describe('first authenticated mail introductory postage through the production h
       .toEqual(['delivered', 'delivered']);
     expect(attempts.size).toBe(2);
     expect(new Set(attempts.values()).size).toBe(2);
+    const expectedRequests = new Map(slots.map(slot => [slot.frankMessageId, {
+      recipient: slot.scopeAccount, conversationId: slot.conversationId,
+    }]));
+    expect(sendRequests).toEqual(expectedRequests);
     expect(stampValues).toEqual([1000n, 1000n]);
     await host.inbound.sendPendingHeldAutoReplies();
     expect(submitted).toHaveLength(1);
@@ -260,6 +266,7 @@ describe('first authenticated mail introductory postage through the production h
     await host.inbound.sendPendingHeldAutoReplies();
     expect(ledger.getBalance(SENDER)).toBe(1);
     expect(attempts.size).toBe(2);
+    expect(sendRequests).toEqual(expectedRequests);
     expect(stampValues).toEqual([1000n, 1000n]);
     expect(submitted).toHaveLength(1);
     expect(host.journal.listUnfinishedFrankSends()).toHaveLength(0);

@@ -60,7 +60,8 @@ jest.mock('./level-message-store', () => ({
 
 const mockOpenForeignEvmWallet = jest.fn()
 jest.mock('../accounts/evm-wallets', () => ({
-  openEvmWallet: (...args: unknown[]) => mockOpenForeignEvmWallet(...args),
+  openEvmWalletInBackground: (...args: unknown[]) =>
+    mockOpenForeignEvmWallet(...args),
   recoverSecondaryEvmWallets: jest.fn(async () => []),
 }))
 

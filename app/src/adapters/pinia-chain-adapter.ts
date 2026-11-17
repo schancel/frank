@@ -42,7 +42,7 @@ import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yi
 import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
 import { accountSession } from '../accounts/session'
 import {
-  openEvmWallet,
+  openEvmWalletInBackground,
   peekOpenedEvmWallets,
   recoverSecondaryEvmWallets,
 } from '../accounts/evm-wallets'
@@ -272,7 +272,9 @@ export function startDirectMessagePolling({
         onForeignWalletSync: async item => {
           if (stopped || accountSession.peekWallet() !== wallet)
             throw new Error('Wallet sync session changed')
-          const target = await openEvmWallet(item.chainIdentifier)
+          // Spaced out like recovery: a peer network whose open keeps failing is not opened (and its
+          // chain identity not read) on every poll; the note stays held until it is applied.
+          const target = await openEvmWalletInBackground(item.chainIdentifier)
           if (
             stopped ||
             accountSession.peekWallet() !== wallet ||

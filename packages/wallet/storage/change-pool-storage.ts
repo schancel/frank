@@ -90,6 +90,11 @@ export interface ChangePoolStore {
    * ms), or undefined when this store has never completed a walk (a new or restored device). */
   getSeedWalkedAtMs(): number | undefined
   setSeedWalkedAtMs(atMs: number): void
+  /** Whether any account of this wallet's seed or deposit roots has been seen on chain with a
+   * nonce above zero or a balance above zero. Once set it stays set: a later zero balance does not
+   * undo the history another device may have left. */
+  getSeedActivityObserved(): boolean
+  setSeedActivityObserved(): void
   getPendingIntent(): ChangeSweepIntent | undefined
   setPendingIntent(intent: ChangeSweepIntent): void
   clearPendingIntent(): void
@@ -124,9 +129,18 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
   private pendingIntent?: ChangeSweepIntent
   private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
   private seedWalkedAtMs?: number
+  private seedActivityObserved = false
 
   getNextIndex(): number {
     return this.nextIndex
+  }
+
+  getSeedActivityObserved(): boolean {
+    return this.seedActivityObserved
+  }
+
+  setSeedActivityObserved(): void {
+    this.seedActivityObserved = true
   }
 
   getSeedWalkedAtMs(): number | undefined {
@@ -222,6 +236,7 @@ export class InMemoryChangePoolStore implements ChangePoolStore {
     this.pendingIntent = undefined
     this.recoveredAccountsByIndex.clear()
     this.seedWalkedAtMs = undefined
+    this.seedActivityObserved = false
   }
 }
 

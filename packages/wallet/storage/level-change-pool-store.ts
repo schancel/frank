@@ -27,6 +27,7 @@ const WALLET_BINDING_KEY = '__wallet_binding__'
 const BY_SOURCE_PREFIX = '__by_source__:'
 const RECOVERED_PREFIX = '__recovered_change__:'
 const SEED_WALKED_AT_KEY = '__seed_walked_at__'
+const SEED_ACTIVITY_KEY = '__seed_activity__'
 
 /**
  * `level`-backed `ChangePoolStore`, mirroring `LevelSubAccountPoolStore`
@@ -49,6 +50,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private pendingIntent?: ChangeSweepIntent
   private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
   private seedWalkedAtMs?: number
+  private seedActivityObserved = false
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
@@ -118,6 +120,12 @@ export class LevelChangePoolStore implements ChangePoolStore {
       }
       if (key === PENDING_INTENT_KEY) {
         this.pendingIntent = JSON.parse(value)
+        continue
+      }
+      if (key === SEED_ACTIVITY_KEY) {
+        if (JSON.parse(value) !== true)
+          throw new Error('Invalid stored seed activity mark')
+        this.seedActivityObserved = true
         continue
       }
       if (key === SEED_WALKED_AT_KEY) {
@@ -319,6 +327,20 @@ export class LevelChangePoolStore implements ChangePoolStore {
     )
   }
 
+  getSeedActivityObserved(): boolean {
+    this.assertLoaded()
+    return this.seedActivityObserved
+  }
+
+  setSeedActivityObserved(): void {
+    this.assertMutationAllowed()
+    if (this.seedActivityObserved) return
+    this.seedActivityObserved = true
+    this.pendingWrites.push(
+      durablePut(this.db, SEED_ACTIVITY_KEY, JSON.stringify(true)),
+    )
+  }
+
   getRecoveredAccounts(): RecoveredChangeAccount[] {
     this.assertLoaded()
     return Array.from(this.recoveredAccountsByIndex.values())
@@ -401,6 +423,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.nextIndex = 0
     this.pendingIntent = undefined
     this.seedWalkedAtMs = undefined
+    this.seedActivityObserved = false
     await durableClear(this.db)
   }
 }

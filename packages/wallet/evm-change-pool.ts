@@ -244,6 +244,17 @@ export class EvmChangePool {
     this.store.setSeedWalkedAtMs(atMs)
   }
 
+  /** Whether this wallet has been seen in use on chain (`ChangePoolStore.getSeedActivityObserved`):
+   * kept with the walk record because it decides whether the change branch is walked again. */
+  seedActivityObserved(): boolean {
+    return this.store.getSeedActivityObserved()
+  }
+
+  /** Records that this wallet has been seen in use on chain; durable after `flush`. */
+  recordSeedActivity(): void {
+    this.store.setSeedActivityObserved()
+  }
+
   /** Persists a complete chain-scanned restore snapshot before the root is bound. */
   applyRecoveredAccounts(records: readonly RecoveredChangeAccount[]): void {
     this.store.putRecoveredAccounts(records)

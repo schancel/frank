@@ -88,6 +88,11 @@ export function installEvmWalletCoinList(params: {
   // Deterministic-branch accounts found on chain this session. Once observed they become coins
   // of the list, which is what keeps them watched after a restart.
   const discoveredDeterministic = new Map<number, string>()
+  const recordActivity = async () => {
+    if (changePool.seedActivityObserved()) return
+    changePool.recordSeedActivity()
+    await changePool.flush()
+  }
   const discover = params.seedDiscovery && (async (
     stopped: () => boolean,
     scope: 'all' | 'change',
@@ -126,6 +131,7 @@ export function installEvmWalletCoinList(params: {
       )
       await changePool.flush()
     }
+    if (change.length > 0) await recordActivity()
     // Merge targets: a merge's anchor is the last transaction of an account it emptied. Look for
     // the target of each such account this walk or the list knows (`evm-merge-targets.ts`).
     const merged: string[] = []
@@ -165,16 +171,21 @@ export function installEvmWalletCoinList(params: {
       gap,
       stopped,
     })
+    // A deterministic account spent to zero lists no coin: its history is kept as activity.
+    if (deterministic.length > 0) await recordActivity()
     const funded = deterministic.filter(found => found.balanceWei > 0n)
     for (const found of funded)
       discoveredDeterministic.set(found.index, found.account)
     // Not yet coins of the list: read before the walk is recorded as done.
     return [...merged, ...funded.map(found => found.account)]
   })
-  // Activity on this chain: any coin (a spent one included), any allocated or recovered change
-  // account, any deterministic pool account past `unfunded` (the open itself derives unfunded
-  // ones), or the deposit roots having been seen holding or spending a coin.
+  // Activity on this chain: any account of the wallet seen with a nonce or balance above zero
+  // (recorded in the change pool's store, beside the walk record, so it survives a restart and an
+  // account spent to zero, which lists no coin), any coin (a spent one included), any allocated or
+  // recovered change account, or any deterministic pool account past `unfunded` (the open itself
+  // derives unfunded ones, so those alone never count).
   const hasActivity = () =>
+    changePool.seedActivityObserved() ||
     coinList.all().length > 0 ||
     changePool.records().length > 0 ||
     changePool.recoveredAccounts().length > 0 ||
@@ -194,6 +205,7 @@ export function installEvmWalletCoinList(params: {
             await changePool.flush()
           },
           hasActivity,
+          recordActivity,
           // Brand-new means nothing at all in the store: an existing store without a walk record
           // (an older build's, or one whose walk never completed) may hold what another device
           // did, so it walks.

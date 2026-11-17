@@ -267,7 +267,7 @@ it.each([429, 'NETWORK_ERROR'])('keeps a failed read observable when invalidated
 })
 
 describe('the seed walk', () => {
-  async function walking(options: { walkedAtMs?: number; found?: string[]; active?: () => boolean; newSeedAt?: () => number | undefined } = {}) {
+  async function walking(options: { walkedAtMs?: number; found?: string[]; active?: () => boolean; newSeedAt?: () => number | undefined; walk?: (scope: 'all' | 'change') => Promise<void> } = {}) {
     const f = await fixture()
     const walks: ('all' | 'change')[] = []
     const recorded: number[] = []
@@ -279,6 +279,7 @@ describe('the seed walk', () => {
       sources: () => f.sources,
       discover: async (_stopped, scope) => {
         walks.push(scope)
+        await options.walk?.(scope)
         return scope === 'all' ? options.found ?? [] : []
       },
       lastDiscoveredAtMs: () => walkedAtMs,
@@ -333,6 +334,33 @@ describe('the seed walk', () => {
     await f.sync.refresh({ all: true })
     await new Promise(resolve => setImmediate(resolve))
     expect(f.walks).toEqual(['change'])
+  })
+
+  it('the user reconcile waits out a change walk already in flight, then walks both branches', async () => {
+    let now = 1_000_000
+    jest.spyOn(Date, 'now').mockImplementation(() => now)
+    let finishChange!: () => void
+    const f = await walking({
+      walkedAtMs: now,
+      active: () => true,
+      walk: async scope => {
+        if (scope === 'change') await new Promise<void>(resolve => (finishChange = resolve))
+      },
+    })
+    const scopes = f.walks
+    now += SEED_REWALK_MS
+    f.sync.rediscoverIfOlderThan(SEED_REWALK_MS)
+    expect(scopes).toEqual(['change'])
+    let reconciled = false
+    const reconcile = f.sync.walkSeed().then(() => (reconciled = true))
+    await new Promise(resolve => setImmediate(resolve))
+    // Not satisfied by joining the change-only walk: it waits for it to finish.
+    expect(scopes).toEqual(['change'])
+    expect(reconciled).toBe(false)
+    finishChange()
+    await reconcile
+    expect(scopes).toEqual(['change', 'all'])
+    expect(f.recorded).toEqual([now, now])
   })
 
   it('a brand-new store of a seed generated here records the walk once instead of walking', async () => {

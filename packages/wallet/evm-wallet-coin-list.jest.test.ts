@@ -9,6 +9,10 @@ import { EvmSubAccountPool } from './evm-account-pool'
 import { MonadHdKeyring, MonadChangeKeyring } from './secp256k1-hd-keyring'
 import { MonadIdentity } from './evm-identity'
 import { MemoryRecordStore, type EvmCoin } from './storage/evm-coin-store'
+import { LevelChangePoolStore } from './storage/level-change-pool-store'
+import { mkdtempSync, rmSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const mnemonic = 'test test test test test test test test test test test junk'
 it('registers root, identity, deterministic, received and change sources without a mailbox coordinator and keeps change ordering after refresh', async () => {
@@ -190,5 +194,100 @@ describe('a seed this device generated', () => {
     }])
     const f = await open({ generatedAtMs: NOW - 60_000, changePool })
     expect(f.walkReads()).toBeGreaterThanOrEqual(100)
+  })
+})
+
+describe('activity on a chain (decides the periodic change-branch walk)', () => {
+  const NOW = 1_800_000_000_000
+  const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
+  const changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
+  const change0 = changeKeyring.deriveChangeAccount(0).address.toLowerCase()
+  let dir: string
+  beforeEach(() => {
+    jest.spyOn(Date, 'now').mockImplementation(() => NOW)
+    dir = mkdtempSync(join(tmpdir(), 'evm-activity-'))
+  })
+  afterEach(() => {
+    jest.restoreAllMocks()
+    rmSync(dir, { recursive: true, force: true })
+  })
+
+  /** Opens the wallet's inventory over the persisted change pool in `dir`, with a seed generated
+   * here moments ago (no initial walk), then reads every account once. `chain` gives an account's
+   * nonce and balance (zero by default). */
+  async function open(chain: Map<string, { nonce: number; balance: bigint }> = new Map()) {
+    const store = new LevelChangePoolStore(dir)
+    await store.Open()
+    const changePool = new EvmChangePool({ keyring: changeKeyring, store })
+    const mainAccount = new Wallet('0x' + '11'.repeat(32))
+    const pool = new EvmSubAccountPool({
+      store: new InMemorySubAccountPoolStore(),
+      keyring,
+      mainAccountAddress: mainAccount.address,
+    })
+    // What every open derives: deterministic accounts nothing has been seen at.
+    const unfunded = pool.ensureUnfundedSize(3)
+    const at = (account: string) => chain.get(account.toLowerCase()) ?? { nonce: 0, balance: 0n }
+    const provider = {
+      getBalance: jest.fn(async (account: string) => at(account).balance),
+      getTransactionCount: jest.fn(async (account: string) => at(account).nonce),
+      getBlockNumber: jest.fn(async () => 100),
+    }
+    const coinList = await EvmCoinList.open(new MemoryRecordStore())
+    const sync = installEvmWalletCoinList({
+      mainAccount,
+      identity: MonadIdentity.fromSeed({ mnemonic }),
+      pool,
+      changePool,
+      changeKeyring,
+      coinStore: new MemoryRecordStore<EvmCoin>(),
+      coinList,
+      provider: provider as never,
+      watcher: { current: async () => 100 } as EvmBlockWatcher,
+      seedDiscovery: { keyring, generatedAtMs: NOW - 60_000 },
+    })
+    await sync.refresh({ all: true })
+    /** Whether the periodic walk would look at the change branch now. */
+    const rewalksChange = async () => {
+      provider.getTransactionCount.mockClear()
+      sync.rediscoverIfOlderThan(0)
+      await new Promise(resolve => setTimeout(resolve, 50))
+      return provider.getTransactionCount.mock.calls.some(
+        ([account]) => String(account).toLowerCase() === change0,
+      )
+    }
+    return { sync, store, coinList, mainAccount, unfunded, provider, rewalksChange }
+  }
+
+  it('a chain with only the unfunded accounts every open derives is inactive', async () => {
+    const f = await open()
+    expect(f.store.getSeedWalkedAtMs()).toBe(NOW - 60_000)
+    expect(f.provider.getBalance).toHaveBeenCalled()
+    expect(await f.rewalksChange()).toBe(false)
+    expect(f.store.getSeedActivityObserved()).toBe(false)
+    await f.store.Close()
+  })
+
+  it('a funded deposit root makes the chain active', async () => {
+    const mainAccount = new Wallet('0x' + '11'.repeat(32)).address.toLowerCase()
+    const f = await open(new Map([[mainAccount, { nonce: 0, balance: 5n }]]))
+    expect(await f.rewalksChange()).toBe(true)
+    await f.store.Close()
+  })
+
+  it('a deterministic account another device spent to zero makes it active, also after reopen', async () => {
+    const drained = keyring.deriveSubAccount(0).address.toLowerCase()
+    const f = await open(new Map([[drained, { nonce: 3, balance: 0n }]]))
+    // Nothing is listed for it: only the recorded activity tells.
+    expect(f.coinList.all()).toEqual([])
+    expect(f.store.getSeedActivityObserved()).toBe(true)
+    expect(await f.rewalksChange()).toBe(true)
+    await f.sync.stop()
+    await f.store.Close()
+    // Restart over the same store, the chain now showing nothing new.
+    const reopened = await open()
+    expect(reopened.coinList.all()).toEqual([])
+    expect(await reopened.rewalksChange()).toBe(true)
+    await reopened.store.Close()
   })
 })

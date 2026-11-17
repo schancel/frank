@@ -66,6 +66,7 @@ export class EvmCoinListSync {
   private discovering: Promise<void> | undefined
   private discoveredOnce = false
   private discoveredAt = 0
+  private activityRecorded = false
   private readonly writes = new Set<Promise<unknown>>()
   private running: Promise<void> | undefined
   private again = false
@@ -112,6 +113,11 @@ export class EvmCoinListSync {
        * none has nothing another device could have spent change from that this one would miss
        * beyond its deposit roots, which every pass reads. */
       readonly hasActivity?: () => boolean
+      /** Records, durably, that a source was read with a nonce or balance above zero: the account
+       * has history, which may be all that is left of another device's use of the seed once it
+       * spent the account to zero (no coin is listed for it). Called at most once per session
+       * while it succeeds; must take effect for `hasActivity` synchronously. */
+      readonly recordActivity?: () => Promise<void>
     },
   ) {}
 
@@ -160,6 +166,18 @@ export class EvmCoinListSync {
     const key = account.toLowerCase()
     this.empty.delete(key)
     this.generations.set(key, (this.generations.get(key) ?? 0) + 1)
+  }
+
+  /** A source was read in use on chain: recorded once. The read does not wait for the record
+   * (`stop` drains it); a record that fails is tried again on the next such read. */
+  private noteActivity(): void {
+    const record = this.config.recordActivity
+    if (!record || this.activityRecorded || this.stopped) return
+    this.activityRecorded = true
+    void this.mutate(record).catch(error => {
+      this.activityRecorded = false
+      console.warn('[evm-coin-list] recording chain activity failed:', error)
+    })
   }
 
   /** Selection could not fund a request. Incomplete observations are not proof of insufficient
@@ -501,6 +519,9 @@ export class EvmCoinListSync {
         }
         throw error
       })
+    // History on chain, whatever the account holds now and whatever this pass lists of it (a
+    // later dirty mark does not undo it).
+    if (latest > 0 || pending > 0 || balance > 0n) this.noteActivity()
     // Marked dirty while these reads were out: they may predate what the mark announced.
     if (this.stopped || (this.generations.get(account) ?? 0) !== generation)
       return

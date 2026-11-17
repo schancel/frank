@@ -483,6 +483,39 @@ describe("custom relay configuration", () => {
     }
   });
 
+  it.each([
+    ["a configured loopback relay is used directly from a dev-server page", "http://127.0.0.1:8098", "http://127.0.0.1:8098"],
+    ["without a loopback relay configured, a dev-server page asks its own origin", undefined, "http://localhost:8080"],
+    ["a configured public relay keeps the dev-server proxy (tunnel)", "https://relay.example.org", "http://localhost:8080"],
+  ])("%s", (_name, relay, expected) => {
+    const before = Object.getOwnPropertyDescriptor(globalThis, "window");
+    const configured = process.env.MONAD_RELAY_BASE_URL;
+    const demo = process.env.E2E_DEMO_RELAY_URL;
+    delete process.env.E2E_DEMO_RELAY_URL;
+    if (relay === undefined) delete process.env.MONAD_RELAY_BASE_URL;
+    else process.env.MONAD_RELAY_BASE_URL = relay;
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: {
+          origin: "http://localhost:8080",
+          protocol: "http:",
+          hostname: "localhost",
+          port: "8080",
+        },
+      },
+    });
+    try {
+      expect(getDefaultRelayBaseUrl()).toBe(expected);
+    } finally {
+      if (before) Object.defineProperty(globalThis, "window", before);
+      else Reflect.deleteProperty(globalThis, "window");
+      if (configured === undefined) delete process.env.MONAD_RELAY_BASE_URL;
+      else process.env.MONAD_RELAY_BASE_URL = configured;
+      if (demo !== undefined) process.env.E2E_DEMO_RELAY_URL = demo;
+    }
+  });
+
   it("stores and retrieves custom relay url", () => {
     expect(getCustomRelayBaseUrl()).toBeUndefined();
     setCustomRelayBaseUrl("https://relay.custom.org");

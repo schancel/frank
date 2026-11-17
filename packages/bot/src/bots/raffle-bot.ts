@@ -246,13 +246,23 @@ export class RaffleBot implements FrankBotDefinition {
       return refused(
         "This round is full and its winner is being paid. You are not entered."
       );
-    if (entry && entry.raffleId !== round.raffleId)
-      return refused("That round is over. You are not entered in the current one.");
     if (round.entrants.includes(peer))
       return refused("You have already entered this round.");
     if ((round.leftAddresses ?? []).includes(peer))
       return refused(
         "You already left this round and cannot re-enter until the next round."
+      );
+    // An entry from an earlier round's card (a stale card may still be in the chat): refunded,
+    // with the current round's card so the player can enter it. Checked after the entered/left
+    // checks, so a player already in this round is told so instead.
+    if (entry && entry.raffleId !== round.raffleId)
+      return refuse(
+        this.outbox,
+        msgCtx,
+        ctx,
+        received,
+        "That round is over. You are not entered in the current one; this is the current round.",
+        [this.status(round, "announce")]
       );
     const price = BigInt(round.entryPriceWei);
     // An entry is a confirmed payment of the entry price. Nothing else is.

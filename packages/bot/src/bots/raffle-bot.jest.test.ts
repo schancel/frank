@@ -29,6 +29,30 @@ const enter = (
   );
 
 describe("RaffleBot", () => {
+  test("an entry for an earlier round is refunded with the current round's card", async () => {
+    const h = harness();
+    const bot = new RaffleBot();
+    const { raffleId } = await open(h, bot);
+    h.sent.length = 0;
+    await enter(h, bot, "00".repeat(16), ALICE);
+    const card = h.item("raffle", h.sent[0]);
+    expect(card).toMatchObject({ action: "announce", raffleId, entryCount: 0 });
+    expect(h.sent[0].valueWei).toBe(PRICE);
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([]);
+    // The card it carries enters the current round.
+    h.sent.length = 0;
+    await enter(h, bot, card.raffleId, ALICE);
+    expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([ALICE]);
+    // Already in this round, a stale card is refunded with "already entered", no new card.
+    h.sent.length = 0;
+    await enter(h, bot, "00".repeat(16), ALICE);
+    expect(h.item("raffle", h.sent[0])).toMatchObject({
+      action: "error",
+      message: "You have already entered this round.",
+    });
+    expect(h.sent[0].valueWei).toBe(PRICE);
+  });
+
   test("announces the round with its seed commitment before any entry", async () => {
     const h = harness();
     const announce = await open(h, new RaffleBot({ maxEntries: 2 }));

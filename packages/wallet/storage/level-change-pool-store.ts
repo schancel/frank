@@ -27,6 +27,7 @@ const WALLET_BINDING_KEY = '__wallet_binding__'
 const BY_SOURCE_PREFIX = '__by_source__:'
 const RECOVERED_PREFIX = '__recovered_change__:'
 const SEED_WALKED_AT_KEY = '__seed_walked_at__'
+const SEED_ACTIVITY_KEY = '__seed_activity__'
 
 /**
  * `level`-backed `ChangePoolStore`, mirroring `LevelSubAccountPoolStore`
@@ -49,6 +50,10 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private pendingIntent?: ChangeSweepIntent
   private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
   private seedWalkedAtMs?: number
+  private seedActivityObserved = false
+  /** Where the activity mark's write stands: none landed (or the last one failed), one in flight,
+   * or durable. */
+  private seedActivityWrite: 'none' | 'pending' | 'durable' = 'none'
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
@@ -118,6 +123,13 @@ export class LevelChangePoolStore implements ChangePoolStore {
       }
       if (key === PENDING_INTENT_KEY) {
         this.pendingIntent = JSON.parse(value)
+        continue
+      }
+      if (key === SEED_ACTIVITY_KEY) {
+        if (JSON.parse(value) !== true)
+          throw new Error('Invalid stored seed activity mark')
+        this.seedActivityObserved = true
+        this.seedActivityWrite = 'durable'
         continue
       }
       if (key === SEED_WALKED_AT_KEY) {
@@ -319,6 +331,31 @@ export class LevelChangePoolStore implements ChangePoolStore {
     )
   }
 
+  getSeedActivityObserved(): boolean {
+    this.assertLoaded()
+    return this.seedActivityObserved
+  }
+
+  /** Observed at once for this session; the write is attempted again by a later call until one
+   * has landed, so a failed put is not lost behind the in-memory flag. */
+  setSeedActivityObserved(): void {
+    this.assertMutationAllowed()
+    this.seedActivityObserved = true
+    if (this.seedActivityWrite !== 'none') return
+    this.seedActivityWrite = 'pending'
+    this.pendingWrites.push(
+      durablePut(this.db, SEED_ACTIVITY_KEY, JSON.stringify(true)).then(
+        () => {
+          this.seedActivityWrite = 'durable'
+        },
+        error => {
+          this.seedActivityWrite = 'none'
+          throw error
+        },
+      ),
+    )
+  }
+
   getRecoveredAccounts(): RecoveredChangeAccount[] {
     this.assertLoaded()
     return Array.from(this.recoveredAccountsByIndex.values())
@@ -401,6 +438,8 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.nextIndex = 0
     this.pendingIntent = undefined
     this.seedWalkedAtMs = undefined
+    this.seedActivityObserved = false
+    this.seedActivityWrite = 'none'
     await durableClear(this.db)
   }
 }

@@ -289,6 +289,12 @@ export async function consumeEvmSelfNotes(
   const settled = internals.settledSelfNotes;
   if (settled.has(digest)) return { kind: "consumed", rest };
   const waiting = internals.waitingSelfNotes;
+  const receivedTime = message.receivedTime ?? Date.now();
+  const peerNotes = notes.flatMap((note, noteIndex) =>
+    (note as WalletSyncItem).chainIdentifier === wallet.chainIdentifier
+      ? []
+      : [{ item: note as WalletSyncItem, place: { payloadDigest: digest, receivedTime, noteIndex } }]
+  );
   try {
     // What the note says this account sent, recorded for History before its spends are applied
     // (recording again changes nothing). A note to self is authenticated by decryption with the
@@ -308,6 +314,10 @@ export async function consumeEvmSelfNotes(
         waiting.delete(waiting.keys().next().value as string);
       }
       waiting.set(digest, since);
+      // This row is read again, but its notes about other networks are kept now, so a later
+      // row's notes for those networks wait behind them.
+      if (internals.heldPeerNotes !== undefined)
+        for (const { item, place } of peerNotes) await holdPeerNote(internals, place, item);
       return { kind: "retry" };
     }
     console.warn(
@@ -318,11 +328,8 @@ export async function consumeEvmSelfNotes(
   }
   // A note about another network: applied by that network's wallet. One that network cannot take
   // now (it is down, say) is kept and tried again on later reads; it never holds the inbox.
-  for (const note of notes) {
-    const item = note as WalletSyncItem;
-    if (item.chainIdentifier === wallet.chainIdentifier) continue;
-    await applyOrHoldPeerNote(internals, digest, item, onForeignWalletSync);
-  }
+  for (const { item, place } of peerNotes)
+    await applyOrHoldPeerNote(internals, place, item, onForeignWalletSync);
   waiting.delete(digest);
   settled.add(digest);
   return { kind: "consumed", rest };
@@ -333,8 +340,10 @@ export interface HeldPeerNote {
   readonly payloadDigest: string;
   readonly item: WalletSyncItem;
   readonly heldAtMs: number;
-  /** Order of arrival: a network's kept notes are applied in this order, as the mailbox had them. */
-  readonly seq: number;
+  /** Where the note stands in the mailbox: when the relay received its message, and its place
+   * among that message's notes. A network's kept notes are applied in this order. */
+  readonly receivedTime: number;
+  readonly noteIndex: number;
 }
 
 export const HELD_PEER_NOTES_NAMESPACE = "held-peer-network-notes";
@@ -346,7 +355,12 @@ function heldPeerNoteKey(payloadDigest: string, item: WalletSyncItem): string {
 function heldInOrder(rows: readonly HeldPeerNote[], chainIdentifier?: string): HeldPeerNote[] {
   return rows
     .filter((row) => chainIdentifier === undefined || row.item.chainIdentifier === chainIdentifier)
-    .sort((a, b) => a.seq - b.seq);
+    .sort(
+      (a, b) =>
+        a.receivedTime - b.receivedTime ||
+        (a.payloadDigest < b.payloadDigest ? -1 : a.payloadDigest > b.payloadDigest ? 1 : 0) ||
+        a.noteIndex - b.noteIndex
+    );
 }
 
 type PeerNoteOutcome = "applied" | "refused" | "held";
@@ -373,16 +387,23 @@ async function tryPeerNote(
   }
 }
 
+/** Where a note stands in the mailbox, for ordering a network's kept notes. */
+interface PeerNotePlace {
+  readonly payloadDigest: string;
+  readonly receivedTime: number;
+  readonly noteIndex: number;
+}
+
 async function holdPeerNote(
   internals: ReturnType<typeof evmWalletInternals>,
-  payloadDigest: string,
+  place: PeerNotePlace,
   item: WalletSyncItem
 ): Promise<void> {
   const held = internals.heldPeerNotes!;
+  const { payloadDigest } = place;
   const key = heldPeerNoteKey(payloadDigest, item);
   if (held.get(key) !== undefined) return;
-  const seq = held.all().reduce((last, row) => Math.max(last, row.seq), 0) + 1;
-  await held.put(key, { payloadDigest, item, heldAtMs: Date.now(), seq });
+  await held.put(key, { ...place, item, heldAtMs: Date.now() });
   console.warn(
     `[wallet-sync] a note to self for ${item.chainIdentifier} is kept until that network can take it (${payloadDigest})`
   );
@@ -392,21 +413,21 @@ async function holdPeerNote(
  * has notes waiting: then it waits behind them, so a network's notes are applied in order. */
 async function applyOrHoldPeerNote(
   internals: ReturnType<typeof evmWalletInternals>,
-  payloadDigest: string,
+  place: PeerNotePlace,
   item: WalletSyncItem,
   onForeignWalletSync: ((item: WalletSyncItem) => Promise<void>) | undefined
 ): Promise<void> {
   const held = internals.heldPeerNotes;
   if (held !== undefined && heldInOrder(held.all(), item.chainIdentifier).length > 0) {
-    await holdPeerNote(internals, payloadDigest, item);
+    await holdPeerNote(internals, place, item);
     return;
   }
-  const outcome = await tryPeerNote(internals, payloadDigest, item, onForeignWalletSync);
+  const outcome = await tryPeerNote(internals, place.payloadDigest, item, onForeignWalletSync);
   if (outcome !== "held") return;
   // No place to keep it: the read stops here and takes the note again next time.
   if (held === undefined)
     throw new Error(`Wallet sync for ${item.chainIdentifier} is not available yet`);
-  await holdPeerNote(internals, payloadDigest, item);
+  await holdPeerNote(internals, place, item);
 }
 
 /**

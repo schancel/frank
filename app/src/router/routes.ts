@@ -65,6 +65,19 @@ export function createRoutes(): RouteRecordRaw[] {
           children: [
             { path: '', component: () => import('pages/ChatPlaceholder.vue') },
             { path: ':address', component: () => import('pages/Chat.vue') },
+            {
+              path: ':address/info',
+              name: 'group-info',
+              components: {
+                default: () => import('pages/Chat.vue'),
+                groupInfo: () => import('pages/GroupInfo.vue'),
+              },
+              props: {
+                groupInfo: route => ({
+                  conversationId: String(route.params.address ?? ''),
+                }),
+              },
+            },
           ],
         },
         // One component for the list and every section (/settings/networking, ...): a phone

@@ -4,7 +4,7 @@
 import { flushPromises, mount } from '@vue/test-utils'
 import { createPinia, setActivePinia, getActivePinia } from 'pinia'
 import * as quasar from 'quasar'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, reactive } from 'vue'
 
 jest.mock('../adapters/level-message-store', () => ({
   store: Promise.resolve({
@@ -16,11 +16,41 @@ jest.mock('../adapters/level-message-store', () => ({
     },
   }),
 }))
-jest.mock('vue-router', () => ({ useRouter: () => ({ push: jest.fn() }) }))
+// A stable restored UI session: this fixture never initializes custody or a real account.
+const mockAccountState = reactive({
+  status: 'ready',
+  revision: 1,
+  account: null,
+})
+jest.mock('../accounts/session', () => ({
+  accountStatus: mockAccountState,
+  accountSession: {
+    state: mockAccountState,
+    initialize: jest.fn(async () => undefined),
+    peekWallet: () => undefined,
+    getWallet: jest.fn(async () => {
+      throw new Error('No wallet in mounted group UI fixture')
+    }),
+  },
+}))
+const mockInfoRouter = { push: jest.fn(), go: jest.fn(), replace: jest.fn() }
+jest.mock('vue-router', () => ({ useRouter: () => mockInfoRouter }))
+jest.mock(
+  require.resolve('@vue/devtools-api', {
+    paths: [require.resolve('vue-router')],
+  }),
+  () => ({ setupDevtoolsPlugin: () => undefined }),
+)
+jest.mock('./AvuDetails.vue', () => ({ render: () => null }))
 jest.mock('../utils/clients', () => {
   const wallet = {}
   return { useMonadWallet: () => wallet }
 })
+// Profile lookup transport is outside these mounted presentation/state assertions.
+jest.mock('../utils/directory-peer', () => ({
+  ...jest.requireActual('../utils/directory-peer'),
+  fetchContactProfile: jest.fn(async () => undefined),
+}))
 jest.mock('../composables/useBalance', () => ({
   useBalance: () => ({ refresh: jest.fn() }),
 }))
@@ -86,9 +116,14 @@ stubs.QBtn = defineComponent({
       h('button', attrs, [props.label, slots.default?.()]),
 })
 stubs.QScrollArea = defineComponent({
+  data: () => ({ scrollTarget: { scrollTop: 0, scrollHeight: 900 } }),
   methods: {
-    getScrollTarget: () => ({ scrollTop: 0, scrollHeight: 900 }),
-    setScrollPosition: () => undefined,
+    getScrollTarget() {
+      return this.scrollTarget
+    },
+    setScrollPosition(_axis: string, position: number) {
+      this.scrollTarget.scrollTop = position
+    },
   },
   render() {
     return h('div', this.$slots.default?.())
@@ -173,7 +208,13 @@ async function openConversation(
 ) {
   const pinia = createPinia()
   setActivePinia(pinia)
+  // Keep the real oracle store/getters while replacing only its external feed source.
+  require('../stores/oracle')
+    .useOracleStore()
+    .useFeedSource(async () => undefined)
   const chats = useChatStore()
+  // GroupInfo's automatic metadata read is synthetic unless a case supplies its price.
+  jest.spyOn(chats, 'refreshGroupWritePrice').mockResolvedValue(undefined)
   const contacts = useContactStore()
   jest.spyOn(contacts, 'refresh').mockResolvedValue(undefined)
   for (const [address, name, fill] of [
@@ -236,6 +277,8 @@ async function openConversation(
 
 beforeEach(() => {
   time = 0
+  mockAccountState.status = 'ready'
+  mockAccountState.revision = 1
   setConversationIdSalt(conversationIdSalt(new Uint8Array(32).fill(0x7e)))
 })
 
@@ -734,10 +777,11 @@ describe('group decision persistence in mounted UI', () => {
       )
       const { errorNotify } = require('../utils/notifications')
       errorNotify.mockClear()
-      const GroupInfoDialog =
-        require('../components/chat/GroupInfoDialog.vue').default
-      const wrapper = mount(GroupInfoDialog, {
-        props: { modelValue: true, conversationId: CONVERSATION },
+      mockInfoRouter.replace.mockClear()
+      window.history.replaceState(null, '')
+      const GroupInfoPage = require('./GroupInfo.vue').default
+      const wrapper = mount(GroupInfoPage, {
+        props: { conversationId: CONVERSATION },
         global: {
           plugins: [getActivePinia()!],
           components: stubs,
@@ -747,21 +791,20 @@ describe('group decision persistence in mounted UI', () => {
       await wrapper.get('[data-test="leave-group-btn"]').trigger('click')
       expect(conv.membershipStatus).toBe('left')
       expect(chats.shouldPollGroupMailbox(CONVERSATION)).toBe(false)
-      expect(wrapper.emitted('left')).toBeUndefined()
-      expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+      expect(mockInfoRouter.replace).not.toHaveBeenCalled()
       const error = new Error('leave write failed')
       if (succeeds) resolve()
       else reject(error)
       await flushPromises()
       expect(conv.membershipStatus).toBe('left')
       if (succeeds) {
-        expect(wrapper.emitted('left')).toEqual([[CONVERSATION]])
-        expect(wrapper.emitted('update:modelValue')).toEqual([[false]])
+        expect(mockInfoRouter.replace).toHaveBeenCalledWith(
+          `/chat/${CONVERSATION}`,
+        )
         expect(errorNotify).not.toHaveBeenCalled()
       } else {
         expect(errorNotify).toHaveBeenCalledWith(error)
-        expect(wrapper.emitted('left')).toBeUndefined()
-        expect(wrapper.emitted('update:modelValue')).toBeUndefined()
+        expect(mockInfoRouter.replace).not.toHaveBeenCalled()
       }
       wrapper.unmount()
       chat.unmount()
@@ -770,14 +813,6 @@ describe('group decision persistence in mounted UI', () => {
 })
 
 describe('group info and a removed member, in mounted UI', () => {
-  // A dialog shows its content only while open, as Quasar's does.
-  const DialogStub = defineComponent({
-    props: ['modelValue'],
-    setup:
-      (props, { slots }) =>
-      () =>
-        props.modelValue ? h('div', slots.default?.()) : null,
-  })
   function makeAdminGroup(chats: ReturnType<typeof useChatStore>) {
     const conv = chats.conversations[CONVERSATION]
     conv.kind = 'group'
@@ -796,17 +831,45 @@ describe('group info and a removed member, in mounted UI', () => {
     return conv
   }
   function mountInfo() {
-    const GroupInfoDialog =
-      require('../components/chat/GroupInfoDialog.vue').default
-    return mount(GroupInfoDialog, {
-      props: { modelValue: true, conversationId: CONVERSATION },
+    const GroupInfoPage = require('./GroupInfo.vue').default
+    return mount(GroupInfoPage, {
+      props: { conversationId: CONVERSATION },
       global: {
         plugins: [getActivePinia()!],
-        components: { ...stubs, QDialog: DialogStub },
+        components: stubs,
         mocks: { $t: translator(en) },
       },
     })
   }
+
+  it('restores text, attachments and reply from the existing draft after visiting group Info', async () => {
+    const first = await openConversation()
+    makeAdminGroup(first.chats)
+    const draft = {
+      message: 'Unsent group note',
+      attachments: [
+        {
+          id: 'attachment-1',
+          name: 'note.txt',
+          dataUrl: 'data:text/plain;base64,WA==',
+          sizeBytes: 1,
+        },
+      ],
+      replyDigest: 'original-message',
+    }
+    await first.wrapper.setData(draft)
+    await flushPromises()
+    first.wrapper.unmount()
+    const info = mountInfo()
+    expect(info.get('[data-test="group-info-name"]').text()).toBe('Core')
+    info.unmount()
+    const restored = await openConversation()
+    expect(restored.wrapper.vm.message).toBe(draft.message)
+    expect(restored.wrapper.vm.attachments).toEqual(draft.attachments)
+    expect(restored.wrapper.vm.replyDigest).toBe(draft.replyDigest)
+    restored.wrapper.unmount()
+    require('../utils/draft-storage').clearChatDraft(CONVERSATION)
+  })
 
   it("names the administrator's own row by its profile or address, never the Loading placeholder", async () => {
     const { wrapper: chat, chats } = await openConversation()
@@ -854,6 +917,7 @@ describe('group info and a removed member, in mounted UI', () => {
   it("shows the group's price per message, and lets only the administrator change it", async () => {
     const { wrapper: chat, chats } = await openConversation()
     const conv = makeAdminGroup(chats)
+    expect(mockAccountState.status).toBe('ready')
     const view = {
       network: 'monad-testnet',
       priceWei: '3000000000000000',
@@ -887,11 +951,10 @@ describe('group info and a removed member, in mounted UI', () => {
             props.errorMessage,
           ]),
     })
-    const GroupInfoDialog =
-      require('../components/chat/GroupInfoDialog.vue').default
+    const GroupInfoPage = require('./GroupInfo.vue').default
     const mountWith = () =>
-      mount(GroupInfoDialog, {
-        props: { modelValue: true, conversationId: CONVERSATION },
+      mount(GroupInfoPage, {
+        props: { conversationId: CONVERSATION },
         global: {
           plugins: [getActivePinia()!],
           components: { ...stubs, QInput },
@@ -954,7 +1017,7 @@ describe('group info and a removed member, in mounted UI', () => {
     chat.unmount()
   })
 
-  it('asks in an in-app dialog before removing a member, and removes only on Remove', async () => {
+  it('asks inline before removing a member, and removes only on Remove', async () => {
     const { wrapper: chat, chats } = await openConversation()
     makeAdminGroup(chats)
     const remove = jest
@@ -1016,4 +1079,263 @@ describe('group info and a removed member, in mounted UI', () => {
     expect(wrapper.find('.chat-input-bar').exists()).toBe(false)
     wrapper.unmount()
   })
+})
+
+// Uses the production chat route records and real Chat.vue. The scroll-area stand-in owns a
+// stable synthetic target; this proves component/state retention, not browser layout geometry.
+async function routedGroupInfo(direct = false) {
+  const fixture = await openConversation()
+  fixture.wrapper.unmount()
+  const conv = fixture.chats.conversations[CONVERSATION]
+  conv.kind = 'group'
+  conv.name = 'Retained group'
+  conv.address = `group:${'aa'.repeat(32)}`
+  conv.participants = [mockOwn, ALICE, BOB]
+  conv.membershipStatus = 'joined'
+  conv.groupState = {
+    epoch: 1,
+    groupIdHex: 'aa'.repeat(32),
+    roster: [
+      { address: mockOwn, role: 'admin' },
+      { address: ALICE, role: 'member' },
+      { address: BOB, role: 'member' },
+    ],
+    groupSecretKeyHex: 'bb'.repeat(32),
+  } as never
+  fixture.chats.setActiveConversation(null)
+  const select = jest.spyOn(fixture.chats, 'setActiveConversation')
+  const selectPeer = jest.spyOn(fixture.chats, 'setActiveChat')
+  const { createRouter, createMemoryHistory } = jest.requireActual('vue-router')
+  const chatRoute = require('../router/routes')
+    .createRoutes()[0]
+    .children.find((route: { path: string }) => route.path === 'chat')
+  const router = createRouter({
+    history: createMemoryHistory(),
+    routes: [{ ...chatRoute, path: '/chat' }],
+  })
+  await router.push(`/chat/${CONVERSATION}${direct ? '/info' : ''}`)
+  await router.isReady()
+  const root = mount(defineComponent({ template: '<router-view />' }), {
+    global: {
+      plugins: [getActivePinia()!, router],
+      components: stubs,
+      stubs: {
+        ChatInput: Blank,
+        ChatMessageComponent: MessageStub,
+        ChatMessageReply: Blank,
+        ChatBannerStack: Blank,
+        QResizeObserver: Blank,
+      },
+      mocks: {
+        $q: { dark: { isActive: false }, screen: { width: 390 } },
+        $t: translator(en),
+      },
+    },
+  })
+  await flushPromises()
+  return { ...fixture, root, router, select, selectPeer }
+}
+
+async function clickRoutedGroupInfo(
+  app: Awaited<ReturnType<typeof routedGroupInfo>>,
+) {
+  const layout = app.root.getComponent(
+    require('../layouts/ChatLayout.vue').default,
+  )
+  expect(layout.vm.isGroup).toBe(true)
+  const navigation = jest.spyOn(app.router, 'push')
+  try {
+    await app.root.get('[data-testid="chat-open-info"]').trigger('click')
+    expect(navigation).toHaveBeenCalledWith({
+      name: 'group-info',
+      params: { address: CONVERSATION },
+    })
+    await navigation.mock.results[0].value
+    await flushPromises()
+    expect(app.router.currentRoute.value.name).toBe('group-info')
+    expect(app.router.currentRoute.value.path).toBe(
+      `/chat/${CONVERSATION}/info`,
+    )
+  } finally {
+    navigation.mockRestore()
+  }
+}
+
+it('group Info and Back retain the actual routed Chat instance, history window, target and draft', async () => {
+  const app = await routedGroupInfo()
+  try {
+    const chat = app.root.getComponent(ChatPage)
+    await chat.setData({
+      messagesToShow: 90,
+      bottom: false,
+      followBottom: false,
+      lastScrollPosition: 137,
+      message: 'Still drafting',
+      attachments: [
+        {
+          id: 'retained',
+          name: 'note',
+          dataUrl: 'data:text/plain;base64,WA==',
+          sizeBytes: 1,
+        },
+      ],
+      replyDigest: 'original-message',
+    })
+    const original = chat.vm
+    const scrollArea = original.chatScroll
+    const target = scrollArea.getScrollTarget()
+    target.scrollTop = 137
+    const retainedAttachments = original.attachments
+    const selectCalls = app.select.mock.calls.length
+    for (let visit = 0; visit < 2; visit++) {
+      await clickRoutedGroupInfo(app)
+      expect(app.router.currentRoute.value.name).toBe('group-info')
+      expect(app.root.getComponent(ChatPage).vm.$ === original.$).toBe(true)
+      expect(app.root.get('.chat-view-shell').attributes('inert')).toBeDefined()
+      expect(app.root.get('.chat-view-shell').attributes('aria-hidden')).toBe(
+        'true',
+      )
+      expect(app.select).toHaveBeenCalledTimes(selectCalls)
+      window.history.replaceState({ back: `/chat/${CONVERSATION}` }, '')
+      const returned = new Promise<void>((resolve, reject) => {
+        const stop = app.router.afterEach(
+          (_to: unknown, _from: unknown, failure: unknown) => {
+            stop()
+            if (failure) reject(failure)
+            else resolve()
+          },
+        )
+      })
+      await app.root.get('[data-test="group-info-back"]').trigger('click')
+      await returned
+      await flushPromises()
+      expect(app.router.currentRoute.value.path).toBe(`/chat/${CONVERSATION}`)
+      expect(app.root.getComponent(ChatPage).vm.$ === original.$).toBe(true)
+      expect(original.messagesToShow).toBe(90)
+      expect(original.bottom).toBe(false)
+      expect(original.followBottom).toBe(false)
+      expect(original.lastScrollPosition).toBe(137)
+      expect(original.chatScroll === scrollArea).toBe(true)
+      expect(scrollArea.getScrollTarget() === target).toBe(true)
+      expect(target.scrollTop).toBe(137)
+      expect(original.message).toBe('Still drafting')
+      expect(original.attachments === retainedAttachments).toBe(true)
+      expect(original.replyDigest).toBe('original-message')
+    }
+  } finally {
+    app.root.unmount()
+    window.history.replaceState(null, '')
+    require('../utils/draft-storage').clearChatDraft(CONVERSATION)
+  }
+})
+
+it('a direct Info entry mounts no Chat and does not select or mark its group read', async () => {
+  const app = await routedGroupInfo(true)
+  try {
+    expect(app.router.currentRoute.value.name).toBe('group-info')
+    expect(app.router.currentRoute.value.path).toBe(
+      `/chat/${CONVERSATION}/info`,
+    )
+    expect(app.root.findComponent(ChatPage).exists()).toBe(false)
+    expect(app.root.find('[data-test="group-info-page"]').exists()).toBe(true)
+    expect(app.select).not.toHaveBeenCalled()
+    expect(app.selectPeer).not.toHaveBeenCalled()
+    expect(app.chats.activeConversationId).toBeNull()
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('different-ID Info discards the retained Chat instead of routing it to the other group', async () => {
+  const app = await routedGroupInfo()
+  try {
+    const secondId = '22222222-2222-4222-8222-222222222222'
+    app.chats.conversations[secondId] = {
+      ...app.chats.conversations[CONVERSATION],
+      id: secondId,
+      name: 'Other group',
+      address: `group:${'cc'.repeat(32)}`,
+      groupState: {
+        ...app.chats.conversations[CONVERSATION].groupState,
+        groupIdHex: 'cc'.repeat(32),
+      },
+      messages: [],
+    }
+    const chat = app.root.getComponent(ChatPage)
+    const reroute = jest.spyOn(chat.vm, 'openRouteAddress')
+    await clickRoutedGroupInfo(app)
+    app.select.mockClear()
+    await app.router.push({ name: 'group-info', params: { address: secondId } })
+    await flushPromises()
+    expect(app.root.findComponent(ChatPage).exists()).toBe(false)
+    expect(app.router.currentRoute.value.name).toBe('group-info')
+    expect(app.router.currentRoute.value.params.address).toBe(secondId)
+    expect(app.root.get('[data-test="group-info-name"]').text()).toBe(
+      'Other group',
+    )
+    expect(reroute).not.toHaveBeenCalled()
+    expect(app.select).not.toHaveBeenCalled()
+  } finally {
+    app.root.unmount()
+  }
+})
+
+it('retained Chat shortcuts cannot navigate or archive behind Info; Enter and input keys still propagate', async () => {
+  const app = await routedGroupInfo()
+  const input = document.createElement('input')
+  const keySeen = jest.fn()
+  try {
+    const chat = app.root.getComponent(ChatPage)
+    const archive = jest
+      .spyOn(chat.vm, 'archiveCurrentThread')
+      .mockImplementation(() => undefined)
+    const navigate = jest
+      .spyOn(chat.vm, 'navigateThread')
+      .mockImplementation(() => undefined)
+    const reply = jest
+      .spyOn(chat.vm, 'focusReplyComposer')
+      .mockImplementation(() => undefined)
+    await clickRoutedGroupInfo(app)
+    for (const key of ['j', 'k', 'r', 'e'])
+      window.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }))
+    expect(archive).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(reply).not.toHaveBeenCalled()
+    document.body.appendChild(input)
+    window.addEventListener('keydown', keySeen)
+    input.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'e', bubbles: true }),
+    )
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }),
+    )
+    window.dispatchEvent(
+      new KeyboardEvent('keydown', { key: 'e', ctrlKey: true, bubbles: true }),
+    )
+    expect(keySeen).toHaveBeenCalledTimes(3)
+    expect(archive).not.toHaveBeenCalled()
+    expect(navigate).not.toHaveBeenCalled()
+    expect(reply).not.toHaveBeenCalled()
+  } finally {
+    window.removeEventListener('keydown', keySeen)
+    input.remove()
+    app.root.unmount()
+  }
+})
+
+it('a replaced account session discards the retained Chat without selecting another conversation', async () => {
+  const app = await routedGroupInfo()
+  const session = require('../accounts/session').accountStatus
+  const revision = session.revision
+  try {
+    await clickRoutedGroupInfo(app)
+    app.select.mockClear()
+    session.revision++
+    await flushPromises()
+    expect(app.root.findComponent(ChatPage).exists()).toBe(false)
+    expect(app.select).not.toHaveBeenCalled()
+  } finally {
+    app.root.unmount()
+    session.revision = revision
+  }
 })

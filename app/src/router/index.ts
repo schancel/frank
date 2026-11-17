@@ -234,8 +234,12 @@ export default () => {
     // Only a committed route owns selection/read state. Publishing from beforeEach lets
     // selection observers replace in-flight query navigation or mark canceled targets read.
     if (failure || startupRestoration.value.phase !== 'restored') return
-    // Viewing a profile is not opening its conversation or marking its messages read.
-    if (to.path.startsWith('/chat/') && to.query.info === 'true') return
+    // Viewing a profile or group Info does not open its conversation or mark messages read.
+    if (
+      to.name === 'group-info' ||
+      (to.path.startsWith('/chat/') && to.query.info === 'true')
+    )
+      return
     const address =
       to.path.startsWith('/chat/') && typeof to.params.address === 'string'
         ? to.params.address
@@ -245,6 +249,7 @@ export default () => {
       return (
         current.path.startsWith('/chat/') &&
         current.params.address === address &&
+        current.name !== 'group-info' &&
         current.query.info !== 'true'
       )
     })

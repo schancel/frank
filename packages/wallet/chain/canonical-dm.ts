@@ -2832,6 +2832,21 @@ export async function restoreOutgoingClaims(
   await payer.finishRestore()
 }
 
+/** Tells the caller the relay stored its message (`onDelivered`), before the send's slower tail:
+ * settling its payments and the note to self. Delivery only. Not waited for: the caller's own
+ * bookkeeping never holds back a broadcast or the note; its failure is logged, not ours. */
+function reportDelivered(
+  params: { onDelivered?: (result: DirectMessageSendResult) => void | Promise<void> },
+  result: DirectMessageSendResult,
+): void {
+  if (!params.onDelivered) return
+  void Promise.resolve()
+    .then(() => params.onDelivered!(result))
+    .catch(error => {
+      console.warn('[monad-canonical-dm] the caller could not record a delivered message:', error)
+    })
+}
+
 function unpaidResult(payloadDigest: string): DirectMessageSendResult {
   return {
     payloadDigest,
@@ -3120,57 +3135,67 @@ async function send(
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
       // The message is delivered. A sealed one leaves no outbox row, so the account's other
-      // devices learn of it from a note to self. That note is a separate fact: if it does not get
-      // through now, the send still reports delivered, and the envelope is kept (under the
-      // message ID, named or drawn) as owing the note, which every later reconcile pass retries.
+      // devices learn of it from a note to self. That note is a separate fact: the envelope is
+      // first kept durably (under the message ID, named or drawn) as delivered and owing the
+      // note, and only then is the caller told of the delivery. If the note does not get through
+      // now, or the app stops while it goes out, every later reconcile pass retries it
+      // (`owedSelfCopies`), whether or not the caller ever names this message again.
       const sealedOriginal = selfAddressed
         ? undefined
         : sealedOriginalPayload(originalDelivery)
-      if (sealedOriginal) {
-        const sentAt = accepted.mailbox_committed_at_ms ?? Date.now()
-        try {
-          await deliverSealedSelfCopy(owner, directory, {
-            payload: sealedOriginal,
-            context: originalContext,
-            digest,
-            recipientSubject: peer.subject,
-            messageId: toHex(messageId),
-            sentAt,
-            transactions: [],
-          })
-        } catch (error) {
-          // One that can never be sent is kept with its reason (`selfCopyOf`), not retried.
-          const cannot = selfCopyCannotSucceed(error)
-          if (!cannot)
-            console.warn(
-              '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
-              error,
-            )
-          const failed = cannot ? reportSelfCopyFailure(digest, error) : undefined
-          const owedName = name ?? toHex(messageId)
-          const { selfCopyOwed: _owed, ...envelope } = owner.messages.unpaid(owedName) ?? {
-            digest,
-            delivery: toHex(originalDelivery),
-            context: toHex(originalContext),
-            recipientSubject: peer.subject,
-            boundary: originalBoundary,
-          }
-          await owner.messages.setUnpaid(owedName, {
-            ...envelope,
-            outcome: 'delivered',
-            ...(failed === undefined
-              ? { selfCopyOwed: true as const, sentAt }
-              : { selfCopyFailed: failed }),
-          })
+      if (!sealedOriginal) {
+        if (name) {
+          const envelope = owner.messages.unpaid(name)!
+          await owner.messages.setUnpaid(name, envelope.hostBound
+            ? { ...envelope, outcome: 'delivered' }
+            : undefined)
+        }
+        reportDelivered(params, unpaidResult(digest))
+        return unpaidResult(digest)
+      }
+      const sentAt = accepted.mailbox_committed_at_ms ?? Date.now()
+      const owedName = name ?? toHex(messageId)
+      const { selfCopyOwed: _owed, ...envelope } = owner.messages.unpaid(owedName) ?? {
+        digest,
+        delivery: toHex(originalDelivery),
+        context: toHex(originalContext),
+        recipientSubject: peer.subject,
+        boundary: originalBoundary,
+      }
+      const delivered = { ...envelope, outcome: 'delivered' as const }
+      await owner.messages.setUnpaid(owedName, {
+        ...delivered,
+        selfCopyOwed: true as const,
+        sentAt,
+      })
+      reportDelivered(params, unpaidResult(digest))
+      try {
+        await deliverSealedSelfCopy(owner, directory, {
+          payload: sealedOriginal,
+          context: originalContext,
+          digest,
+          recipientSubject: peer.subject,
+          messageId: toHex(messageId),
+          sentAt,
+          transactions: [],
+        })
+      } catch (error) {
+        // One that can never be sent is kept with its reason (`selfCopyOf`), not retried.
+        if (!selfCopyCannotSucceed(error)) {
+          console.warn(
+            '[monad-canonical-dm] the note to self for a sealed message was not delivered; it is sent again later:',
+            error,
+          )
           return unpaidResult(digest)
         }
+        await owner.messages.setUnpaid(owedName, {
+          ...delivered,
+          selfCopyFailed: reportSelfCopyFailure(digest, error),
+        })
+        return unpaidResult(digest)
       }
-      if (name) {
-        const envelope = owner.messages.unpaid(name)!
-        await owner.messages.setUnpaid(name, envelope.hostBound
-          ? { ...envelope, outcome: 'delivered' }
-          : undefined)
-      }
+      // The note is out: no longer owed. A host-bound envelope keeps its delivered receipt.
+      await owner.messages.setUnpaid(owedName, delivered.hostBound ? delivered : undefined)
       return unpaidResult(digest)
     }
     if (stampValueWei !== undefined && (stampValueWei <= 0n || stampValueWei >= 1n << 256n))
@@ -3288,6 +3313,12 @@ async function send(
       throw error
     }
     const signedPayments = row.payments
+    const result: DirectMessageSendResult = {
+      payloadDigest: digest,
+      stampValueWei,
+      stampPayments: payments(signedPayments.map(payment => getBytes(payment.rawTx))),
+      preparationTxHashes: [],
+    }
     let ended!: () => void
     work.busy = new Promise<void>(resolve => (ended = resolve))
     work.creating = undefined
@@ -3324,6 +3355,9 @@ async function send(
             ? 'payment-taken'
             : submitted.awaitingFunding ? 'awaiting-funding' : 'awaiting-delivery',
         )
+      // The relay holds the message: the caller may say so now. Its payments settle below and on
+      // the chain; that is a separate, later fact.
+      reportDelivered(params, result)
       row = await owner.lifetime(() => settleSharedPayments(owner, row))
       // The message and its payment are out; telling the account's other devices is not a
       // condition of that. A note that does not get through now is sent by the resend pass.
@@ -3339,13 +3373,7 @@ async function send(
       work.busy = undefined
       ended()
     }
-    const transactions = signedPayments.map(payment => getBytes(payment.rawTx))
-    return {
-      payloadDigest: digest,
-      stampValueWei,
-      stampPayments: payments(transactions),
-      preparationTxHashes: [],
-    }
+    return result
 
 
   } catch (error) {

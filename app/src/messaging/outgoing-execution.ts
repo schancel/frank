@@ -668,17 +668,23 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
       if (!stillCurrent()) return { state: 'busy' }
       let ownDigest: string | undefined
       let result: DirectMessageSendResult | undefined
+      // What the relay was seen to store, and shown as sent, before `send` resolved.
+      let delivered: DirectMessageSendResult | undefined
+      // Its recording, which the wallet does not wait for: awaited before `send`'s own answer
+      // or failure is acted on.
+      let deliveryRecorded: Promise<void> | undefined
       let lastSendError: unknown
       let allCallsUnattempted = true
       const maxSendAttempts = 3
 
+      // The subject rides only on the first message of a conversation that has one and on
+      // the first message after a rename; ordinary messages omit it.
+      let subject: string | undefined
       for (let sendAttempt = 1; sendAttempt <= maxSendAttempts; sendAttempt++) {
         if (!stillCurrent()) return { state: 'busy' }
         const cancellable = ports.presentation.cancellable(id)
         try {
-          // The subject rides only on the first message of a conversation that has one and on
-          // the first message after a rename; ordinary messages omit it.
-          const subject = ports.presentation.subject(message.conversationId)
+          subject = ports.presentation.subject(message.conversationId)
           const wireItems = ports.presentation.wakeupItems(
             wallet,
             address,
@@ -730,12 +736,46 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
                 { strict: true },
               )
             },
+            // The relay stored it: the bubble says sent now, not once the payments have been
+            // broadcast and read back and the note to self is out, which can take many seconds
+            // more. Settlement stays its own, later fact. A financial message is confirmed only
+            // after its payment is submitted (below), so it does not take this.
+            ...(financial
+              ? {}
+              : {
+                  onDelivered: (sent: DirectMessageSendResult) =>
+                    (deliveryRecorded = (async () => {
+                      if (!stillCurrent()) return
+                      ports.presentation.endWaiting(id)
+                      await ports.confirm({
+                        address,
+                        id,
+                        payloadDigest: sent.payloadDigest,
+                        stampValueWei: sent.stampValueWei,
+                        stampPayments: sent.stampPayments,
+                      })
+                      delivered = sent
+                    })()),
+                }),
           })
+          await deliveryRecorded?.catch(error =>
+            ports.log.warn('[sendDirectMessage delivery not recorded]:', error),
+          )
           if (subject !== undefined && message.conversationId !== undefined) {
             ports.presentation.subjectCarried(message.conversationId, subject)
           }
           break
         } catch (error) {
+          await deliveryRecorded?.catch(() => undefined)
+          if (delivered) {
+            // The relay stored it; what failed after (its payments' settling, the note to self) is
+            // the wallet's reconciliation to finish. Never a reason to call it failed or send again.
+            ports.log.warn('[sendDirectMessage after delivery]:', error)
+            if (subject !== undefined && message.conversationId !== undefined)
+              ports.presentation.subjectCarried(message.conversationId, subject)
+            result = delivered
+            break
+          }
           lastSendError = error
           allCallsUnattempted &&=
             ownDigest === undefined && isDirectMessageNotAttempted(error)
@@ -874,14 +914,15 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
           return { state: 'payment-pending' }
         }
       }
-      await ports.confirm({
-        address,
-        id,
-        payloadDigest: result.payloadDigest,
-        stampValueWei: result.stampValueWei,
-        stampPayments: result.stampPayments,
-        ...(financial ? { assertCurrent: assertFinancialCurrent } : {}),
-      })
+      if (delivered?.payloadDigest !== result.payloadDigest)
+        await ports.confirm({
+          address,
+          id,
+          payloadDigest: result.payloadDigest,
+          stampValueWei: result.stampValueWei,
+          stampPayments: result.stampPayments,
+          ...(financial ? { assertCurrent: assertFinancialCurrent } : {}),
+        })
       return { state: 'sent', payloadDigest: result.payloadDigest }
     },
   }

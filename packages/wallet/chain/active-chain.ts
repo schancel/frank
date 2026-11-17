@@ -549,6 +549,13 @@ export interface DirectMessageClient {
      * replay or handoff. Requires messageId. A rejection holds the stored bytes and claims;
      * retry with this callback or reconcileAttempts to authorize the same envelope. Free terminal receipts are retained so a later repeat cannot reseal. */
     onEnvelopeDurable?: (payloadDigest: string) => void | Promise<void>;
+    /** Called at most once, as soon as the relay has stored this message, with what `send` will
+     * resolve to: before its payments are broadcast or read back from the chain and before the
+     * note to the account's other devices goes out, which can take many seconds more. It states
+     * relay delivery only, never payment settlement. Awaited; a rejection is logged and changes
+     * nothing about the send. A client may never call it: the send's resolution then is the
+     * first sign of delivery. */
+    onDelivered?: (result: DirectMessageSendResult) => void | Promise<void>;
   }): Promise<DirectMessageSendResult>;
   /** Re-sends the SAME exact bytes of every still-live earlier attempt (idempotent and free: the
    * relay answers 200 for an already-delivered set, and 503 while it is pending), then reports

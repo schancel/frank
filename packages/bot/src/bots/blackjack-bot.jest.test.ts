@@ -160,6 +160,19 @@ describe("BlackjackDealerBot", () => {
     expect(h.item("text").text).toContain(`bet between 0.04285 MONT and 0.2498 MONT.`);
   });
 
+  test("limits within one display digit are shown exactly, never reading backwards", async () => {
+    const h = harness();
+    // Smallest bet 2 x 0.021420000000000001 = 0.042840000000000002 (shown rounded up: 0.04285).
+    h.feeFloor(21_420_000_000_000_001n);
+    // Largest bet 0.042844 (shown rounded down: 0.04284), just above the smallest.
+    (h.ctx as any).getBalance = async () => 4n * 42_844_000_000_000_000n + 20_000_000_000_000_000n;
+    const t = table(h, new BlackjackDealerBot());
+    await t.open();
+    expect(h.item("text").text).toContain(
+      `bet between 0.042840000000000002 MONT and 0.042844 MONT.`
+    );
+  });
+
   // F2: the dealer said "bet between 0.04284 and 0.12" and the app agreed, but the dealer itself
   // dealt any bet; the bet minimum is the shared stake rule (twice the payment floor) on both sides.
   test("a bet below the offer's smallest bet is not taken by the hand and is returned in full", async () => {

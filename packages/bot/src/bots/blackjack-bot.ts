@@ -285,10 +285,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       { gameId, peer, conversationId },
       0,
       built.item,
-      `Blackjack: bet between ${ctx.formatAmount(minBet, { round: "up" })} and ${ctx.formatAmount(
-        maxBet,
-        { round: "down" }
-      )}. Your bet is what your bet message pays the dealer.`
+      `Blackjack: bet between ${betRange(ctx, minBet, maxBet)}. Your bet is what your bet message pays the dealer.`
     );
   }
 
@@ -506,4 +503,15 @@ export class BlackjackDealerBot implements FrankBotDefinition {
           )} the hand did not accept.`;
     return { item: step.item, text, payWei: step.payWei };
   }
+}
+
+/** "<min> and <max>", readable. When the two are within one display digit, rounding the smallest
+ * bet up and the largest down could read backwards; then both are shown exactly. */
+function betRange(ctx: BotContext, minBet: bigint, maxBet: bigint): string {
+  const low = ctx.formatAmount(minBet, { round: "up" });
+  const high = ctx.formatAmount(maxBet, { round: "down" });
+  const reversed = parseFloat(low) > parseFloat(high);
+  return reversed
+    ? `${ctx.formatAmount(minBet)} and ${ctx.formatAmount(maxBet)}`
+    : `${low} and ${high}`;
 }

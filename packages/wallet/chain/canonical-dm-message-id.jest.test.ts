@@ -633,6 +633,52 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     expect(opened.every(m => m.stampValueWei === 0n)).toBe(true)
   })
 
+  // The relay's delivery is a fact before the send's tail (settling its payments, the note to
+  // self) ends: the caller learns it then, once, with what the send resolves to.
+  it.each([
+    ['paid', undefined],
+    ['free', 0n],
+  ] as const)('reports a %s message delivered as soon as the relay stores it', async (_kind, stampValue) => {
+    let resolved = false
+    const seen: Array<{ result: DirectMessageSendResult; resolved: boolean; outcome?: string }> = []
+    const onDelivered = jest.fn(async (result: DirectMessageSendResult) => {
+      const row = (await rows()).find(stored => stored.digest === result.payloadDigest)
+      seen.push({ result, resolved, outcome: row?.outcome })
+    })
+    const sent = attempt({
+      messageId: ID_A,
+      sealedSender: true,
+      ...(stampValue === undefined ? {} : { stampValue }),
+      onDelivered,
+    }).then(outcome => {
+      resolved = true
+      return outcome
+    })
+    const { result, error } = await sent
+    expect(error).toBeUndefined()
+    expect(onDelivered).toHaveBeenCalledTimes(1)
+    expect(seen[0].resolved).toBe(false)
+    expect(seen[0].result).toEqual(result)
+    // A paid message's row already records the relay's delivery when the caller is told.
+    if (stampValue === undefined) expect(seen[0].outcome).toBe('delivered')
+    expect((await received()).map(m => m.messageId)).toEqual([ID_A])
+  })
+
+  it('a caller that cannot record the delivery does not change the send', async () => {
+    const onDelivered = jest.fn(async () => {
+      throw new Error('host storage failed')
+    })
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    try {
+      const { result, error } = await attempt({ messageId: ID_A, onDelivered })
+      expect(error).toBeUndefined()
+      expect(result?.payloadDigest).toBeTruthy()
+      expect(onDelivered).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
   // PIN (A6): a caller that passes no `messageId` behaves as on main.
   it('pin: without a message ID the wallet draws a fresh random one for every send, as before', async () => {
     const first = await attempt()

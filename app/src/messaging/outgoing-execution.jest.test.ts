@@ -497,3 +497,74 @@ it.each([
     if (cut === 'pending-bind') expect(f.send).not.toHaveBeenCalled()
   },
 )
+
+describe('relay delivery is shown as soon as the wallet reports it', () => {
+  it('confirms the message when the relay stores it, before the send finishes settling', async () => {
+    const f = fixture()
+    let finishSettling!: () => void
+    const settling = new Promise<void>(resolve => (finishSettling = resolve))
+    let reported!: () => void
+    const deliveredReported = new Promise<void>(resolve => (reported = resolve))
+    f.send.mockImplementation(async params => {
+      await params.onAttemptCreated?.('original')
+      // The relay stored it; the payments are still being broadcast and read back.
+      await params.onDelivered?.(receipt)
+      reported()
+      await settling
+      return receipt
+    })
+    const run = f.engine.runOutgoing(request)
+    await deliveredReported
+    // The bubble is sent while the wallet's send is still settling its payments.
+    expect(f.ports.confirm).toHaveBeenCalledTimes(1)
+    expect(f.records.get('original')?.status).toBe('confirmed')
+    finishSettling()
+    await expect(run).resolves.toEqual({
+      state: 'sent',
+      payloadDigest: 'original',
+    })
+    // Confirmed once, not again when the send resolves.
+    expect(f.ports.confirm).toHaveBeenCalledTimes(1)
+    expect(f.ports.confirm).toHaveBeenCalledWith(
+      expect.objectContaining({
+        address: 'peer',
+        id: 'local',
+        payloadDigest: 'original',
+        stampValueWei: 1n,
+      }),
+    )
+  })
+
+  it('keeps a delivered message sent when the settling after delivery fails', async () => {
+    const f = fixture()
+    f.send.mockImplementation(async params => {
+      await params.onAttemptCreated?.('original')
+      await params.onDelivered?.(receipt)
+      throw new Error('node unreachable while settling')
+    })
+    await expect(f.engine.runOutgoing(request)).resolves.toEqual({
+      state: 'sent',
+      payloadDigest: 'original',
+    })
+    expect(f.send).toHaveBeenCalledTimes(1)
+    expect(f.ports.confirm).toHaveBeenCalledTimes(1)
+    expect(f.ports.classifySendFailure).not.toHaveBeenCalled()
+    expect(f.events).not.toContain('state:error:original')
+    expect(f.ports.presentation.subjectCarried).toHaveBeenCalledTimes(1)
+  })
+
+  it('still confirms on resolution when the wallet never reports delivery early', async () => {
+    const f = fixture()
+    await expect(f.engine.runOutgoing(request)).resolves.toEqual({
+      state: 'sent',
+      payloadDigest: 'original',
+    })
+    expect(f.ports.confirm).toHaveBeenCalledTimes(1)
+  })
+
+  it('leaves a financial message to be confirmed only after its payment is submitted', async () => {
+    const f = fixture(true)
+    await f.engine.runOutgoing(request)
+    expect(f.send.mock.calls[0][0].onDelivered).toBeUndefined()
+  })
+})

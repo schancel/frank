@@ -2832,6 +2832,19 @@ export async function restoreOutgoingClaims(
   await payer.finishRestore()
 }
 
+/** Tells the caller the relay stored its message (`onDelivered`), before the send's slower tail:
+ * settling its payments and the note to self. Delivery only; the caller's failure is not ours. */
+async function reportDelivered(
+  params: { onDelivered?: (result: DirectMessageSendResult) => void | Promise<void> },
+  result: DirectMessageSendResult,
+): Promise<void> {
+  try {
+    await params.onDelivered?.(result)
+  } catch (error) {
+    console.warn('[monad-canonical-dm] the caller could not record a delivered message:', error)
+  }
+}
+
 function unpaidResult(payloadDigest: string): DirectMessageSendResult {
   return {
     payloadDigest,
@@ -3119,6 +3132,7 @@ async function send(
       // Anything but delivered is the caller's error to act on; the envelope stays for its repeat.
       if (accepted.phase !== 'delivered')
         throw new UnpaidDirectMessageNotDeliveredError(accepted.phase)
+      await reportDelivered(params, unpaidResult(digest))
       // The message is delivered. A sealed one leaves no outbox row, so the account's other
       // devices learn of it from a note to self. That note is a separate fact: if it does not get
       // through now, the send still reports delivered, and the envelope is kept (under the
@@ -3288,6 +3302,12 @@ async function send(
       throw error
     }
     const signedPayments = row.payments
+    const result: DirectMessageSendResult = {
+      payloadDigest: digest,
+      stampValueWei,
+      stampPayments: payments(signedPayments.map(payment => getBytes(payment.rawTx))),
+      preparationTxHashes: [],
+    }
     let ended!: () => void
     work.busy = new Promise<void>(resolve => (ended = resolve))
     work.creating = undefined
@@ -3324,6 +3344,9 @@ async function send(
             ? 'payment-taken'
             : submitted.awaitingFunding ? 'awaiting-funding' : 'awaiting-delivery',
         )
+      // The relay holds the message: the caller may say so now. Its payments settle below and on
+      // the chain; that is a separate, later fact.
+      await reportDelivered(params, result)
       row = await owner.lifetime(() => settleSharedPayments(owner, row))
       // The message and its payment are out; telling the account's other devices is not a
       // condition of that. A note that does not get through now is sent by the resend pass.
@@ -3339,13 +3362,7 @@ async function send(
       work.busy = undefined
       ended()
     }
-    const transactions = signedPayments.map(payment => getBytes(payment.rawTx))
-    return {
-      payloadDigest: digest,
-      stampValueWei,
-      stampPayments: payments(transactions),
-      preparationTxHashes: [],
-    }
+    return result
 
 
   } catch (error) {

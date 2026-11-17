@@ -93,7 +93,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
         {
           type: "text",
           text: `Welcome to Satoshi Dice.\n\n${diceHelp(
-            ctx.formatAmount(await this.limit(ctx))
+            ctx.formatAmount(await this.limit(ctx), { round: "down" })
           )}`,
         },
       ]);
@@ -152,7 +152,7 @@ export class SatoshiDiceBot implements FrankBotDefinition {
     // is ever a stake.
     await replyFree(msgCtx, [
       await this.offer(ctx, msgCtx.peerAddress),
-      { type: "text", text: diceHelp(ctx.formatAmount(await this.limit(ctx))) },
+      { type: "text", text: diceHelp(ctx.formatAmount(await this.limit(ctx), { round: "down" })) },
     ]);
   }
 
@@ -229,7 +229,8 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       return refused(
         "below-minimum",
         `The smallest stake at this table is ${ctx.formatAmount(
-          minWagerWei
+          minWagerWei,
+          { round: "up" }
         )}, and a win must pay at least that. No roll was made.`
       );
     // The most a roll pays is what the bank has available now: worked out again here, when
@@ -239,7 +240,8 @@ export class SatoshiDiceBot implements FrankBotDefinition {
       return refused(
         "payout-limit",
         `That stake could win more than the table limit of ${ctx.formatAmount(
-          limitWei
+          limitWei,
+          { round: "down" }
         )} per roll. No roll was made.`
       );
     // The stake is what this message is confirmed, on chain, to have paid. Never what it says.

@@ -131,9 +131,11 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
         return no(`the challenge offers bets up to ${amount(maxBetWei)}, below the table minimum of ${amount(minWei)}`)
       }
       const said = text?.text ?? ''
-      if (!said.includes(`bet between ${amount(minWei)} and ${amount(maxBetWei)}`)) {
+      // The table's limits are written shortened: the smallest bet rounded up, the largest down.
+      const table = `bet between ${amount(minWei, { round: 'up' })} and ${amount(maxBetWei, { round: 'down' })}`
+      if (!said.includes(table)) {
         return no(
-          `the challenge's text does not name the table (bet between ${amount(minWei)} and ${amount(maxBetWei)}): ${JSON.stringify(said.slice(0, 120))}`,
+          `the challenge's text does not name the table (${table}): ${JSON.stringify(said.slice(0, 120))}`,
         )
       }
       return (
@@ -154,7 +156,7 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
       if (table.serverSecret !== undefined) return no('the table gives away the secret of its roll before the bet')
       const said = text?.text ?? ''
       const named = namedAfter(said, 'The most one roll pays is')
-      const limit = expected.diceMaxPayoutWei === undefined ? named : amount(expected.diceMaxPayoutWei)
+      const limit = expected.diceMaxPayoutWei === undefined ? named : amount(expected.diceMaxPayoutWei, { round: 'down' })
       if (!named || named !== limit || !/Your stake is what your bet message pays/.test(said)) {
         return no(`the help does not name the table limit${limit ? ` of ${limit}` : ''} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
       }
@@ -178,7 +180,7 @@ export function classifyReply(bot: string, reply: BotReply, expected: ReplyExpec
       }
       const said = text?.text ?? ''
       const named = namedAfter(said, 'Your stake is what your move message pays me, up to')
-      const limit = expected.rpsMaxWagerWei === undefined ? named : amount(expected.rpsMaxWagerWei)
+      const limit = expected.rpsMaxWagerWei === undefined ? named : amount(expected.rpsMaxWagerWei, { round: 'down' })
       if (!named || named !== limit) {
         return no(`the help does not name the table limit${limit ? ` of ${limit}` : ''} and how a stake is paid: ${JSON.stringify(said.slice(0, 120))}`)
       }

@@ -159,6 +159,8 @@ describe("RpsBot", () => {
     const { mine } = await match(h, bot, "win");
     await bot.onMessage(h.message([mine], [h.pay(STAKE)]), h.ctx);
     expect(h.sent[0].valueWei).toBe(STAKE);
+    // The limit (0.009999999999999999) is rounded down: rounded up it would read as the stake.
+    expect(h.item("text").text).toContain("over the table limit of 0.009999 MONT.");
     expect(h.sent[0].items.some((i) => i.type === "rps" && i.action === "resolve")).toBe(false);
   });
 
@@ -223,6 +225,13 @@ describe("RpsBot", () => {
     expect(
       (h.sent[0].items.find((i) => i.type === "text") as { text: string }).text
     ).toContain("up to 0.5 MONT:");
+    // A limit with all its digits reads shortened and rounded down: never more than allowed.
+    balance = 2n * 510_496_892_794_540_437n + 1n + RESERVE;
+    h.sent.length = 0;
+    await bot.onMessage(h.message([{ type: "text", text: "hi" }]), h.ctx);
+    expect(
+      (h.sent[0].items.find((i) => i.type === "text") as { text: string }).text
+    ).toContain("up to 0.5104 MONT:");
     const refused = await match(h, bot, "win");
     balance = STAKE * 2n + RESERVE - 1n;
     await bot.onMessage(h.message([refused.mine], [h.pay(STAKE)]), h.ctx);

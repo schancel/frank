@@ -335,7 +335,7 @@ describe("SatoshiDiceBot", () => {
         h.sent[0].items.find((i) => i.type === "text") as { text: string }
       ).text;
     };
-    expect(await said()).toContain("The most one roll pays is 3.0 MONT.");
+    expect(await said()).toContain("The most one roll pays is 3 MONT.");
     // The bank shrinks: the next statement of the table says so.
     balance = 10n ** 18n / 2n + RESERVE;
     expect(await said()).toContain("The most one roll pays is 0.5 MONT.");

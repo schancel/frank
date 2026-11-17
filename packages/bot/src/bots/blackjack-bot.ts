@@ -285,8 +285,9 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       { gameId, peer, conversationId },
       0,
       built.item,
-      `Blackjack: bet between ${ctx.formatAmount(minBet)} and ${ctx.formatAmount(
-        maxBet
+      `Blackjack: bet between ${ctx.formatAmount(minBet, { round: "up" })} and ${ctx.formatAmount(
+        maxBet,
+        { round: "down" }
       )}. Your bet is what your bet message pays the dealer.`
     );
   }
@@ -449,7 +450,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       return built && "item" in built
         ? {
             item: built.item,
-            text: `Challenge accepted. Bet up to ${ctx.formatAmount(wanted)}.`,
+            text: `Challenge accepted. Bet up to ${ctx.formatAmount(wanted, { round: "down" })}.`,
           }
         : undefined;
     }
@@ -477,12 +478,14 @@ export class BlackjackDealerBot implements FrankBotDefinition {
             ? `Your bet of ${ctx.formatAmount(
                 state.wagerWei
               )} is below this table's smallest bet as it stands now (${ctx.formatAmount(
-                minBet
+                minBet,
+                { round: "up" }
               )}): the network's fee rose so far that its payout could not be paid. It was not dealt and is returned with this message.`
             : `Your bet of ${ctx.formatAmount(
                 state.wagerWei
               )} is more than the dealer can cover right now (${ctx.formatAmount(
-                maxBet
+                maxBet,
+                { round: "down" }
               )}), so it was not dealt. It is returned with this message.`,
           payWei: refund.payWei,
         };

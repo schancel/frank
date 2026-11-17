@@ -1421,8 +1421,12 @@ export default defineComponent({
       ) {
         const text = this.$t('chatInput.insufficientBalanceForStamp', {
           unit: activeChain.unit,
-          need: activeChain.toDisplayAmount(stampValue),
-          have: activeChain.toDisplayAmount(this.availableBalanceWei),
+          need: formatDisplayNumber(activeChain, stampValue, 'up'),
+          have: formatDisplayNumber(
+            activeChain,
+            this.availableBalanceWei,
+            'down',
+          ),
         })
         errorNotify(new Error(text), { safeMessage: text })
         return
@@ -1568,8 +1572,12 @@ export default defineComponent({
       ) {
         const text = this.$t('chatInput.insufficientBalanceForStamp', {
           unit: activeChain.unit,
-          need: activeChain.toDisplayAmount(stampValue),
-          have: activeChain.toDisplayAmount(this.availableBalanceWei),
+          need: formatDisplayNumber(activeChain, stampValue, 'up'),
+          have: formatDisplayNumber(
+            activeChain,
+            this.availableBalanceWei,
+            'down',
+          ),
         })
         errorNotify(new Error(text), { safeMessage: text })
         return

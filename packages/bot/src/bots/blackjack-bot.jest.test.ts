@@ -147,6 +147,19 @@ describe("BlackjackDealerBot", () => {
     expect(h.item("text").text).toContain(`bet between 0.04284 MONT and 0.245 MONT`);
   });
 
+  test("the offer's limits read shortened: the smallest bet rounded up, the largest rounded down", async () => {
+    const h = harness();
+    h.feeFloor(21_420_000_000_000_001n);
+    // (balance - 0.02 reserve) / 4 = 0.249893446397270218 MON.
+    (h.ctx as any).getBalance = async () => 4n * 249_893_446_397_270_218n + 20_000_000_000_000_000n;
+    const t = table(h, new BlackjackDealerBot());
+    await t.open();
+    const challenge = h.item("blackjack-hand") as any;
+    expect(challenge.minBetWei).toBe("42840000000000002");
+    expect(challenge.maxBetWei).toBe("249893446397270218");
+    expect(h.item("text").text).toContain(`bet between 0.04285 MONT and 0.2498 MONT.`);
+  });
+
   // F2: the dealer said "bet between 0.04284 and 0.12" and the app agreed, but the dealer itself
   // dealt any bet; the bet minimum is the shared stake rule (twice the payment floor) on both sides.
   test("a bet below the offer's smallest bet is not taken by the hand and is returned in full", async () => {
@@ -198,7 +211,8 @@ describe("BlackjackDealerBot", () => {
     const refund = h.sent[h.sent.length - 1];
     expect((h.item("blackjack-hand", refund) as HandItem).action).toBe("refund");
     expect(refund.valueWei).toBe(FLOOR);
-    expect(h.item("text", refund).text).toContain("below this table's smallest bet as it stands now (0.021420000000000001 MONT)");
+    // The floor (0.021420000000000001) is shown rounded up: a bet of the shown amount clears it.
+    expect(h.item("text", refund).text).toContain("below this table's smallest bet as it stands now (0.02143 MONT)");
     expect(t.state()?.phase).toBe("refunded");
     expect(h.sent.some((m) => (h.item("blackjack-hand", m) as HandItem)?.action === "deal")).toBe(false);
   });

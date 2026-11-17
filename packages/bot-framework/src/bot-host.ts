@@ -1138,7 +1138,9 @@ export class FrankBotHost {
       ) {
         return;
       }
-      const remainingText = sender.context.formatAmount(funderBal);
+      const remainingText = sender.context.formatAmount(funderBal, {
+        round: "down",
+      });
       const thresholdText = sender.context.formatAmount(
         this.options.fundingAlertBelowWei
       );

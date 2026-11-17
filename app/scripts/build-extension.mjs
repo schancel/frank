@@ -694,14 +694,16 @@ export function buildExtensions(argv = process.argv.slice(2)) {
     : -1
 
   const newestSrcMtime = getNewestMtimeMs(path.join(appDir, 'src'))
+  const appBuildMissing = pwaMtime <= 0 && spaMtime <= 0
   if (
     !argv.includes('--skip-pwa-build') &&
     !process.env.JEST_WORKER_ID &&
-    pwaMtime > 0 &&
-    newestSrcMtime > pwaMtime
+    (appBuildMissing || (pwaMtime > 0 && newestSrcMtime > pwaMtime))
   ) {
     console.log(
-      '[build:extension] Detected source changes newer than dist/pwa; rebuilding dist/pwa first...',
+      appBuildMissing
+        ? '[build:extension] No dist/pwa or dist/spa yet; building dist/pwa first...'
+        : '[build:extension] Detected source changes newer than dist/pwa; rebuilding dist/pwa first...',
     )
     const res = spawnSync('yarn', ['build:pwa', '--skip-extensions'], {
       cwd: appDir,
@@ -721,6 +723,14 @@ export function buildExtensions(argv = process.argv.slice(2)) {
       : spaMtime > 0
       ? spaDist
       : null
+
+  if (!staticSourceDir && !process.env.JEST_WORKER_ID) {
+    // Without the app build the popup is an empty page: never package that as an extension.
+    console.error(
+      '[build:extension] No app build to package (dist/pwa or dist/spa). Run `yarn build:pwa` first, or drop --skip-pwa-build.',
+    )
+    process.exit(1)
+  }
 
   const pwaDownloadsDir =
     staticSourceDir && !process.env.JEST_WORKER_ID

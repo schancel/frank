@@ -126,6 +126,24 @@ describe("FaucetBot paid welcome", () => {
     expect(f.settlements()).toEqual([AMOUNT]);
   });
 
+  test("a transient error at sign-up is retried by the waiting schedule and pays once", async () => {
+    const f = harness();
+    const getBalance = f.ctx.getBalance;
+    f.ctx.getBalance = async () => {
+      throw new Error("upstream RPC error 429");
+    };
+    const b = bot();
+    await b.onNewUser(user(), f.ctx);
+    expect(f.sent).toHaveLength(0);
+    expect(JSON.parse(f.data.get("waiting_for_grant") ?? "[]")).toEqual([PLAYER]);
+    f.ctx.getBalance = getBalance;
+    const waiting = b.schedules.find((s) => s.id === "faucet-waiting")!;
+    await waiting.handler(f.ctx);
+    await waiting.handler(f.ctx);
+    expect(f.settlements()).toEqual([AMOUNT]);
+    expect(JSON.parse(f.data.get("waiting_for_grant") ?? "[]")).toEqual([]);
+  });
+
   test("ambiguous submission keeps the same message ID across restart and repeated requests", async () => {
     const f = harness();
     const ids: (string | undefined)[] = [];

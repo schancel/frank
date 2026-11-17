@@ -2367,6 +2367,16 @@ describe('stores/chats.ts (ticket #42)', () => {
       jest.spyOn(document, 'hasFocus').mockReturnValue(false)
     }
 
+    it('notifies exactly once for one message repeated in one batch', async () => {
+      const chats = useChatStore()
+      notifyingContact()
+      const wrapper = makeWrapper({ index: 'repeated-row' })
+
+      await chats.receiveMessages([wrapper, { ...wrapper }])
+
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+    })
+
     it.each([undefined, null, false, 0, ''])(
       'counts only filed inbound rows alongside a falsy ghost (%p)',
       async ghostValue => {

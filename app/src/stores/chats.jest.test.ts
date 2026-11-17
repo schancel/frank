@@ -2712,6 +2712,105 @@ describe('stores/chats.ts (ticket #42)', () => {
     expect(chats.chats[RECIPIENT_ADDRESS]?.messages).toHaveLength(0)
   })
 
+  // The wallet can put the same note to self on the relay twice (the app stopped after the note
+  // was sent and before the wallet recorded it, and it was sent again). Both rows are the one
+  // message the account sent, under its digest and message ID; a read can hold both.
+  describe('a row repeated in one read', () => {
+    const conversationId = '44444444-4444-4444-8444-000000000001'
+    const selfCopy = (
+      index: string,
+      receivedTime: number,
+    ): ReceivedMessageWrapper => ({
+      outbound: true,
+      senderAddress: SENDER_ADDRESS,
+      copartyAddress: RECIPIENT_ADDRESS,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      copartyPubKey: {} as any,
+      index,
+      stampValue: 0,
+      conversationId,
+      message: {
+        outbound: true,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'sent from the phone' }],
+        serverTime: 1_000,
+        receivedTime,
+        outpoints: [],
+        stampValueWei: 0n,
+        senderAddress: SENDER_ADDRESS,
+        destinationAddress: RECIPIENT_ADDRESS,
+        conversationId,
+        logicalMessageId: 'sent-message-id',
+      },
+    })
+    const inbound = (
+      index: string,
+      receivedTime: number,
+    ): ReceivedMessageWrapper => ({
+      outbound: false,
+      senderAddress: RECIPIENT_ADDRESS,
+      copartyAddress: RECIPIENT_ADDRESS,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      copartyPubKey: {} as any,
+      index,
+      stampValue: 0,
+      conversationId,
+      message: {
+        outbound: false,
+        status: 'confirmed',
+        items: [{ type: 'text', text: 'hello' }],
+        serverTime: 1_000,
+        receivedTime,
+        outpoints: [],
+        stampValueWei: 0n,
+        senderAddress: RECIPIENT_ADDRESS,
+        destinationAddress: SENDER_ADDRESS,
+        conversationId,
+        logicalMessageId: 'inbound-message-id',
+        contentDigest: 'c'.repeat(64),
+      },
+    })
+    const held = (chats: ReturnType<typeof useChatStore>, digest: string) =>
+      Object.values(chats.conversations).flatMap(
+        conv => conv?.messages.filter(m => m.payloadDigest === digest) ?? [],
+      )
+
+    it('keeps one bubble of a note to self read twice in one batch, and suppresses nothing', async () => {
+      const chats = useChatStore()
+      await chats.receiveMessages([
+        selfCopy('sent-twice', 2_000),
+        selfCopy('sent-twice', 2_001),
+      ])
+      expect(held(chats, 'sent-twice')).toHaveLength(1)
+      expect(
+        mockMessageStore.saveMessage.mock.calls.filter(
+          ([row]) => row.index === 'sent-twice',
+        ),
+      ).toHaveLength(1)
+      expect(chats.messages['sent-twice']).toBeDefined()
+      expect(mockMessageStore.suppressAndDelete).not.toHaveBeenCalled()
+    })
+
+    it('keeps one bubble of a note to self read again in a later batch', async () => {
+      const chats = useChatStore()
+      await chats.receiveMessages([selfCopy('sent-again', 2_000)])
+      await chats.receiveMessages([selfCopy('sent-again', 2_001)])
+      expect(held(chats, 'sent-again')).toHaveLength(1)
+      expect(mockMessageStore.suppressAndDelete).not.toHaveBeenCalled()
+    })
+
+    it('keeps one bubble of a received message repeated in one batch, and suppresses nothing', async () => {
+      const chats = useChatStore()
+      await chats.receiveMessages([
+        inbound('received-twice', 2_000),
+        inbound('received-twice', 2_000),
+      ])
+      expect(held(chats, 'received-twice')).toHaveLength(1)
+      expect(chats.messages['received-twice']).toBeDefined()
+      expect(mockMessageStore.suppressAndDelete).not.toHaveBeenCalled()
+    })
+  })
+
   describe('readAll (ticket #368)', () => {
     it('opening a chat that has no messages yet is not an error-level console event', () => {
       const chats = useChatStore()

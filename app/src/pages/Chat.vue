@@ -300,6 +300,7 @@
             icon="arrow_downward"
             :aria-label="$t('a11y.scrollToLatest')"
             @mousedown.prevent="buttonScrollBottom"
+            @click="onScrollBottomClick"
             color="accent"
           />
         </q-page-sticky>
@@ -1246,6 +1247,11 @@ export default defineComponent({
       this.bottom = true
     },
     // Used by sticky QButton to scroll to bottom
+    // Pointer presses scroll on mousedown; keyboard and programmatic clicks (detail 0) land here.
+    onScrollBottomClick(event?: Event) {
+      if (event && (event as MouseEvent).detail > 0) return
+      this.buttonScrollBottom()
+    },
     buttonScrollBottom() {
       this.cancelHistoryAnchor()
       const scrollArea = this.chatScroll

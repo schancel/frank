@@ -542,6 +542,7 @@
           :disable="disable || Boolean(stampUnavailable) || overBudget"
           :loading="disable"
           @mousedown.prevent="sendMessage"
+          @click="onSendClick"
         />
       </div>
     </q-toolbar>
@@ -917,6 +918,14 @@ export default defineComponent({
       this.typedStamp = null
       this.replacedCharacter = false
       this.$emit('sendMessage', replaceLoneSurrogates(this.innerMessage))
+    },
+    // Pointer and touch presses send on mousedown (default prevented so the textarea keeps focus
+    // and the mobile keyboard stays open), and the browser then also fires a click with
+    // detail >= 1. Keyboard (Enter/Space) and programmatic or assistive-technology clicks have no
+    // preceding mousedown and a click detail of 0, so only those send here: once per activation.
+    onSendClick(event?: Event) {
+      if (event && (event as MouseEvent).detail > 0) return
+      this.sendMessage()
     },
     blackjackClicked() {
       this.closeAttachMenu()

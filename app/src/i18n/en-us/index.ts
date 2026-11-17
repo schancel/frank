@@ -100,6 +100,8 @@ export const rawEnUS = {
       'Your post was published, but refreshing failed. Reload to see it. Do not post it again.',
     postOutcomeUnknown:
       'Your post may have been published. Reload to check for it. Do not post it again.',
+    postStatusCheckFailed:
+      'Could not check whether your post was published. Try again.',
     votedRefreshFailed:
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
     voteOutcomeUnknown:

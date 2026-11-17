@@ -57,6 +57,7 @@ jest.mock('src/stores/forum', () => ({
           : undefined,
       pushNewTopic: jest.fn(),
       putMessage: (...args: unknown[]) => mockPutMessage(...args),
+      refreshOperationStatus: jest.fn(async () => undefined),
       fetchMessage: jest.fn(
         async ({ payloadDigest }: { payloadDigest: string }) =>
           store.getMessage(payloadDigest),
@@ -1559,6 +1560,24 @@ describe('CreatePost outcomes', () => {
     await flushPromises()
 
     expect(errorNotify).toHaveBeenCalledWith(err)
+  })
+
+  it('a failed status check says the check failed, never that the post failed', async () => {
+    const { wrapper } = mountPage()
+    const forum = useForumStore() as unknown as {
+      refreshOperationStatus: jest.Mock
+    }
+    const err = new Error('relay unreachable')
+    forum.refreshOperationStatus.mockRejectedValueOnce(err)
+
+    await (
+      wrapper.vm as unknown as { refreshPostStatus(): Promise<void> }
+    ).refreshPostStatus()
+    await flushPromises()
+
+    expect(errorNotify).toHaveBeenCalledWith(err, {
+      fallbackKey: 'stampPreparation.postStatusCheckFailed',
+    })
   })
 })
 

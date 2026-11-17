@@ -627,8 +627,9 @@ export default defineComponent({
         // ownership until an exact operation result can identify it.
       } catch (error) {
         if (current()) {
+          // Checking failed; the post's outcome is still unknown, so nothing here says it failed.
           errorNotify(error, {
-            safeMessage: forumFailureText(error, key => this.$t(key)),
+            fallbackKey: 'stampPreparation.postStatusCheckFailed',
           })
         }
       } finally {

@@ -154,6 +154,8 @@ export const rawFrFR = {
       'Votre message a été publié, mais l’actualisation a échoué. Rechargez pour le voir. Ne le publiez pas à nouveau.',
     postOutcomeUnknown:
       'Votre message a peut-être été publié. Rechargez pour le vérifier. Ne le publiez pas à nouveau.',
+    postStatusCheckFailed:
+      'Impossible de vérifier si votre message a été publié. Réessayez.',
     votedRefreshFailed:
       'Votre vote a été envoyé, mais l’actualisation a échoué. Rechargez pour le voir. Ne votez pas à nouveau.',
     voteOutcomeUnknown:

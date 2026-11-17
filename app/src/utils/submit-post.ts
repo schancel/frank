@@ -46,7 +46,10 @@ export async function submitPost(params: {
       // The burn landed; only reading the post back failed. One notice (not also "created"), and
       // leave the form like a success: keeping the draft would invite a second burn.
       params.onOutcome?.('submitted')
-      params.infoNotify(params.messages?.refreshFailed ?? err.message)
+      params.infoNotify(
+        params.messages?.refreshFailed ??
+          'Your post was published, but it could not be shown yet. Reload to see it.',
+      )
       params.navigateBack()
       return 'submitted'
     }

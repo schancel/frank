@@ -675,6 +675,18 @@ const RELAY_UPSTREAM_RATE_LIMIT_BASE_DELAY_MS = 1_000;
 /** A longer Retry-After is not waited out inside one request: the caller sees the 429. */
 const RELAY_UPSTREAM_RATE_LIMIT_MAX_DELAY_MS = 10_000;
 
+function isUpstreamRateLimited(response: { readonly body: Uint8Array | null }): boolean {
+  try {
+    return (
+      response.body !== null &&
+      (JSON.parse(new TextDecoder().decode(response.body)) as { error?: unknown })
+        ?.error === "rpc_upstream_rate_limited"
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** The wait before asking a throttled read again, or undefined when it should not be asked again
  * here: only the relay's `rpc_upstream_rate_limited` (the provider behind the relay said 429)
  * clears within seconds. The relay's own hourly quota does not. A Retry-After header is honoured
@@ -708,6 +720,49 @@ export function relayUpstreamRateLimitDelayMs(
     RELAY_UPSTREAM_RATE_LIMIT_MAX_DELAY_MS,
     base / 2 + Math.random() * (base / 2)
   );
+}
+
+/** The longest a throttled relay route is left alone by every read in this process. */
+export const RELAY_UPSTREAM_COOLDOWN_MAX_MS = 60_000;
+// Per relay route (one canonical chain's RPC on one relay): until when its upstream provider
+// asked to be left alone. Shared by every connection to the route, so one 429 slows every read
+// of that chain instead of each read retrying on its own.
+const relayUpstreamCooldownUntil = new Map<string, number>();
+
+/** How long reads of `route` still wait for its upstream's rate limit (0: none). */
+export function relayUpstreamCooldownRemainingMs(route: string, now = Date.now()): number {
+  const until = relayUpstreamCooldownUntil.get(route);
+  if (until === undefined) return 0;
+  if (now >= until) {
+    relayUpstreamCooldownUntil.delete(route);
+    return 0;
+  }
+  return until - now;
+}
+
+/** Records the relay's `rpc_upstream_rate_limited` for `route`: its Retry-After when given
+ * (capped), else `fallbackMs`. Never shortens a cooldown already running. */
+function noteRelayUpstreamRateLimited(
+  route: string,
+  response: { readonly headers: Readonly<Record<string, string>> },
+  fallbackMs: number,
+  now = Date.now()
+): void {
+  const retryAfter = Number(response.headers["retry-after"]?.trim() ?? "");
+  const waitMs = Math.min(
+    RELAY_UPSTREAM_COOLDOWN_MAX_MS,
+    Number.isFinite(retryAfter) && retryAfter >= 0 && response.headers["retry-after"]?.trim()
+      ? retryAfter * 1000
+      : fallbackMs
+  );
+  const until = now + waitMs;
+  if ((relayUpstreamCooldownUntil.get(route) ?? 0) < until)
+    relayUpstreamCooldownUntil.set(route, until);
+}
+
+/** Test hook: forget every route's cooldown. */
+export function resetRelayUpstreamCooldownsForTest(): void {
+  relayUpstreamCooldownUntil.clear();
 }
 
 /** Builds an ethers connection to a relay family route. The first customer request obtains one
@@ -801,6 +856,42 @@ export function createMonadRelayRpcConnection(
 
         while (true) {
           attempts++;
+          const isReadOnlyRequest = (() => {
+            if (!currentRequest.body) return true;
+            try {
+              const reqText = new TextDecoder().decode(currentRequest.body);
+              return !reqText.includes("eth_sendRawTransaction");
+            } catch {
+              return false;
+            }
+          })();
+          // A read of a route whose upstream is throttled waits out the shared cooldown (with a
+          // little jitter so waiting reads do not return in lockstep), or, when that is longer
+          // than one request waits, answers as the relay would without asking it. A request
+          // carrying a transaction is never held or answered here.
+          if (isReadOnlyRequest) {
+            const remaining = relayUpstreamCooldownRemainingMs(rpcUrl);
+            if (remaining > RELAY_UPSTREAM_RATE_LIMIT_MAX_DELAY_MS) {
+              return {
+                statusCode: 429,
+                statusMessage: "Too Many Requests",
+                headers: {
+                  "content-type": "application/json",
+                  "retry-after": String(Math.ceil(remaining / 1000)),
+                },
+                body: new TextEncoder().encode(
+                  JSON.stringify({ error: "rpc_upstream_rate_limited" })
+                ),
+              };
+            }
+            if (remaining > 0) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, remaining + Math.random() * 250)
+              );
+              if (destroyed || signal?.cancelled)
+                throw new Error("relay rpc request cancelled");
+            }
+          }
           const response = await relayRpcTransport(currentRequest, signal);
           if (response.statusCode === 401 && !destroyed) {
             if (cachedCapability?.rpcUrl === currentRequest.url) {
@@ -820,16 +911,6 @@ export function createMonadRelayRpcConnection(
             }
             return retryResponse;
           }
-
-          const isReadOnlyRequest = (() => {
-            if (!currentRequest.body) return true;
-            try {
-              const reqText = new TextDecoder().decode(currentRequest.body);
-              return !reqText.includes("eth_sendRawTransaction");
-            } catch {
-              return false;
-            }
-          })();
 
           const hasTransientRpcRateLimit =
             response.statusCode === 200 &&
@@ -861,21 +942,26 @@ export function createMonadRelayRpcConnection(
           // The relay's upstream provider throttled a read. Unlike the relay's own hourly
           // quota (`rpc_hourly_quota`), this clears within seconds. A read changes nothing, so
           // it is asked again; a request carrying a transaction is never repeated here.
-          if (
-            response.statusCode === 429 &&
-            isReadOnlyRequest &&
-            rateLimitRetries < RELAY_UPSTREAM_RATE_LIMIT_RETRIES &&
-            !destroyed &&
-            !signal?.cancelled
-          ) {
+          if (response.statusCode === 429) {
             const delayMs = relayUpstreamRateLimitDelayMs(
               response,
               rateLimitRetries
             );
-            if (delayMs !== undefined) {
+            // Every read of this route now waits for the upstream, not only this one.
+            if (delayMs !== undefined)
+              noteRelayUpstreamRateLimited(rpcUrl, response, delayMs);
+            else if (isUpstreamRateLimited(response))
+              noteRelayUpstreamRateLimited(rpcUrl, response, RELAY_UPSTREAM_COOLDOWN_MAX_MS);
+            if (
+              delayMs !== undefined &&
+              isReadOnlyRequest &&
+              rateLimitRetries < RELAY_UPSTREAM_RATE_LIMIT_RETRIES &&
+              !destroyed &&
+              !signal?.cancelled
+            ) {
+              // The shared cooldown at the top of the loop is the wait.
               rateLimitRetries++;
-              await new Promise((resolve) => setTimeout(resolve, delayMs));
-              if (!destroyed && !signal?.cancelled) continue;
+              continue;
             }
           }
 

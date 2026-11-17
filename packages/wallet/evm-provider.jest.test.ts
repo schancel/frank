@@ -7,6 +7,8 @@ import {
   MonadJsonRpcProvider,
   createMonadJsonRpcProvider,
   createMonadRelayRpcConnection,
+  relayUpstreamCooldownRemainingMs,
+  resetRelayUpstreamCooldownsForTest,
   issueMonadRelayRpcCapability,
   monadProtocolIdentity,
   RELAXED_CANCELLATION_POLL_INTERVAL_MS,
@@ -2140,6 +2142,7 @@ describe("relay upstream rate limit (rpc_upstream_rate_limited)", () => {
     const open = server;
     server = undefined;
     if (open) await new Promise<void>((resolve) => open.close(() => resolve()));
+    resetRelayUpstreamCooldownsForTest();
   });
 
   /** A relay whose bearer RPC answers each request with `answer(attempt)`. */
@@ -2277,6 +2280,46 @@ describe("relay upstream rate limit (rpc_upstream_rate_limited)", () => {
     ]);
     expect(response.statusCode).toBe(429);
     expect(node.attempts()).toBe(1);
+  });
+
+  it("one throttled read slows every read of the route: others wait or answer without asking", async () => {
+    let throttle = true;
+    const seen: number[] = [];
+    const node = await relay(() => {
+      seen.push(Date.now());
+      if (throttle) {
+        throttle = false;
+        return throttled({ "Retry-After": "1" });
+      }
+      return { status: 200, body: "0x42" };
+    });
+    const started = Date.now();
+    const first = request(node.url, "eth_getBalance", balance);
+    // A second connection (another wallet of the same chain) asks once the 429 is in.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    const second = request(node.url, "eth_getBalance", balance);
+    const [a, b] = await Promise.all([first, second]);
+    expect(a.statusCode).toBe(200);
+    expect(b.statusCode).toBe(200);
+    // One throttled attempt, then one each after the shared second-long cooldown.
+    expect(node.attempts()).toBe(3);
+    expect(Math.min(...seen.slice(1)) - started).toBeGreaterThanOrEqual(950);
+  });
+
+  it("answers reads of a route under a long cooldown without reaching the relay", async () => {
+    const node = await relay(() => throttled({ "Retry-After": "30" }));
+    expect((await request(node.url, "eth_getBalance", balance)).statusCode).toBe(429);
+    expect(node.attempts()).toBe(1);
+    expect(relayUpstreamCooldownRemainingMs(node.url)).toBeGreaterThan(25_000);
+    for (let i = 0; i < 5; i++) {
+      const response = await request(node.url, "eth_blockNumber", []);
+      expect(response.statusCode).toBe(429);
+      expect(JSON.parse(response.bodyText).error).toBe("rpc_upstream_rate_limited");
+    }
+    expect(node.attempts()).toBe(1);
+    // A transaction is never held back by a read cooldown.
+    await request(node.url, "eth_sendRawTransaction", ["0x02f8"]);
+    expect(node.attempts()).toBe(2);
   });
 
   it("does not retry the relay's own hourly quota", async () => {

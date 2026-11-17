@@ -405,10 +405,10 @@ export function getDefaultRelayBaseUrl(): string {
       window.location.hostname === "127.0.0.1" ||
       window.location.hostname === "localhost";
     if (isLoopback) {
-      const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
-      if (window.location.port && window.location.port !== port) {
-        return window.location.origin;
-      }
+      // A loopback relay named in configuration is used directly: it accepts any origin, and it
+      // names that address in what it signs (a group's write policy names its host), so asking
+      // it through the dev server's proxy (the page origin) fails those checks. The page origin
+      // is only the fallback for a dev server without a loopback relay configured (a tunnel).
       if (configured) {
         try {
           const parsed = new URL(configured);
@@ -421,6 +421,10 @@ export function getDefaultRelayBaseUrl(): string {
         } catch {
           // ignore
         }
+      }
+      const port = readEnv("FRANK_DEMO_RELAY_PORT") ?? "8098";
+      if (window.location.port && window.location.port !== port) {
+        return window.location.origin;
       }
       return `http://127.0.0.1:${port}`;
     }

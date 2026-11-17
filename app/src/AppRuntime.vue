@@ -476,7 +476,11 @@ export default defineComponent({
       // thread through `composeFocusRequest` below.
       if (!conversationId || navigationPending()) return
       const current = router.currentRoute.value
-      if (!current.path.startsWith('/chat/') || current.query.info === 'true')
+      if (
+        !current.path.startsWith('/chat/') ||
+        current.query.info === 'true' ||
+        current.name === 'group-info'
+      )
         return
       const routeAddress = current.params.address
       const routedDefault =
@@ -514,6 +518,7 @@ export default defineComponent({
         const isAlreadyOnChatView =
           currentRoute.path.startsWith('/chat/') &&
           currentRoute.query.info !== 'true' &&
+          currentRoute.name !== 'group-info' &&
           (routeAddress === conversationId ||
             routedDefault?.id === conversationId)
         if (!isAlreadyOnChatView) {

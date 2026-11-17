@@ -37,6 +37,11 @@ jest.mock('./router/routes', () => ({
   createRoutes: () => [
     { path: '/forum', component: { template: '<div>Forum</div>' } },
     { path: '/chat/:address', component: { template: '<div>Chat</div>' } },
+    {
+      path: '/chat/:address/info',
+      name: 'group-info',
+      component: { template: '<div>Group info</div>' },
+    },
   ],
 }))
 // Router diagnostics/devtools are ESM-only; keep the actual router and its guards.
@@ -484,6 +489,14 @@ describe('App exact conversation route authority (#1237)', () => {
       await settleNavigation()
       expect(router.currentRoute.value.path).toBe(`/chat/${second.id}`)
       expect(router.currentRoute.value.params.address).toBe(second.id)
+
+      // From that conversation's Info page, the notification opens the chat itself.
+      await router.push(`/chat/${second.id}/info`)
+      await settleNavigation()
+      expect(router.currentRoute.value.name).toBe('group-info')
+      await desktopNotify.mock.calls.at(-1)[3]()
+      await settleNavigation()
+      expect(router.currentRoute.value.path).toBe(`/chat/${second.id}`)
 
       await router.push('/forum')
       await settleNavigation()

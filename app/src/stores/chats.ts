@@ -8285,10 +8285,17 @@ export const useChatStore = defineStore('chats', {
       toNotify: Set<string>,
       lease?: DeliveryLease,
     ): Promise<void> {
-      const notifiableInboundCount = messageWrappers.filter(wrapper => {
-        const stored = this.messages[wrapper.index]
-        return toNotify.has(wrapper.index) && !!stored && !stored.outbound
-      }).length
+      // A row repeated in one read is one stored message: count and notify distinct indexes.
+      const notifiableInboundIndexes = new Set(
+        messageWrappers
+          .filter(wrapper => {
+            const stored = this.messages[wrapper.index]
+            return toNotify.has(wrapper.index) && !!stored && !stored.outbound
+          })
+          .map(wrapper => wrapper.index),
+      )
+      const notifiableInboundCount = notifiableInboundIndexes.size
+      const handledIndexes = new Set<string>()
       for (const messageWrapper of messageWrappers) {
         const {
           copartyAddress,
@@ -8298,6 +8305,8 @@ export const useChatStore = defineStore('chats', {
         } = messageWrapper
         const stored = this.messages[index]
         if (!toNotify.has(index) || !stored || stored.outbound) continue
+        if (handledIndexes.has(index)) continue
+        handledIndexes.add(index)
         // The notification decision may predate a stop() that lands while earlier wrappers of
         // this batch are still being notified. Contacts refresh and desktop notifications act on
         // whatever generation currently owns the stores, so a cancelled lease must not run them.

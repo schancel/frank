@@ -18,6 +18,7 @@ import type {
   SwapRecordItem,
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
+import { findWalletStateNetworks } from '@frank/wallet/storage/wallet-state-location'
 import { accountSession } from './session'
 import {
   RelayWalletRouteUnavailableError,
@@ -396,6 +397,35 @@ function isSecondaryRecoveryNonFatal(error: unknown): boolean {
   return true
 }
 
+/** First retry after a failed recovery open of a peer that was not already open, doubling per
+ * consecutive failure up to the cap. A peer that opens is not opened again (it stays cached), so
+ * this only spaces out an unreachable or misconfigured peer; it never drops its recovery. */
+export const SECONDARY_RECOVERY_RETRY_MS = 60_000
+export const SECONDARY_RECOVERY_RETRY_MAX_MS = 10 * 60_000
+// Per peer network, for one account scope. Cleared by a successful open.
+const recoveryRetry = new Map<
+  string,
+  { scope: string; failures: number; notBeforeMs: number }
+>()
+function recoveryRetryDue(chainIdentifier: string, scope: string): boolean {
+  const retry = recoveryRetry.get(chainIdentifier)
+  return !retry || retry.scope !== scope || Date.now() >= retry.notBeforeMs
+}
+function noteRecoveryOpenFailed(chainIdentifier: string, scope: string) {
+  const previous = recoveryRetry.get(chainIdentifier)
+  const failures = (previous?.scope === scope ? previous.failures : 0) + 1
+  recoveryRetry.set(chainIdentifier, {
+    scope,
+    failures,
+    notBeforeMs:
+      Date.now() +
+      Math.min(
+        SECONDARY_RECOVERY_RETRY_MAX_MS,
+        SECONDARY_RECOVERY_RETRY_MS * 2 ** Math.min(failures - 1, 20),
+      ),
+  })
+}
+
 /** Active-session recovery of secondary EVM journals. Network looks and self-note retries use
  * the original signed members; this path never constructs or authorizes another payment. */
 export async function recoverSecondaryEvmWallets(
@@ -437,9 +467,32 @@ export async function recoverSecondaryEvmWallets(
   } catch {
     hostRelayBaseUrl = ''
   }
+  // A peer with no local wallet state on this host has nothing to recover: no journal, no
+  // operation, no stored coin. It is not opened (opening reads and verifies its chain). A peer
+  // already open this session is always looked at; "cannot tell" counts as state present.
+  let storageBase: string | false = false
+  let scope: string | undefined
+  try {
+    storageBase = loadMonadChainConfigFromEnv().walletStorageLocation
+    scope = scopeOf(hostRelayBaseUrl)
+  } catch {
+    storageBase = false
+  }
+  const withState =
+    typeof storageBase === 'string'
+      ? await findWalletStateNetworks(
+          storageBase,
+          peers.map(peer => peer.id),
+        )
+      : undefined
   const errors: string[] = []
   for (const peer of peers) {
     if (isPopup && !opened.has(peer.id)) continue
+    const alreadyOpen = opened.has(peer.id)
+    if (!alreadyOpen) {
+      if (withState && !withState.has(peer.id)) continue
+      if (scope !== undefined && !recoveryRetryDue(peer.id, scope)) continue
+    }
     try {
       if (hostRelayBaseUrl && typeof fetch === 'function') {
         try {
@@ -450,7 +503,16 @@ export async function recoverSecondaryEvmWallets(
           }
         }
       }
-      const openedWallet = await openEvmWallet(peer.id)
+      let openedWallet: OpenEvmWallet
+      try {
+        openedWallet = await openEvmWallet(peer.id)
+      } catch (error) {
+        // A failed open is evicted from the cache; without this it was opened (and its chain
+        // identity read) again on every reconciliation tick.
+        if (scope !== undefined) noteRecoveryOpenFailed(peer.id, scope)
+        throw error
+      }
+      if (scope !== undefined) recoveryRetry.delete(peer.id)
       if (
         accountSession.peekWallet() !== primary ||
         openedWallet.wallet.chainIdentifier !== peer.id

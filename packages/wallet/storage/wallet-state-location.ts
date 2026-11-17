@@ -113,3 +113,52 @@ export interface EarlierWalletState {
   /** Locations earlier builds wrote for this wallet, still present and no longer read. */
   readonly earlierLocations: readonly string[]
 }
+
+/**
+ * Which of these canonical networks hold any wallet state under `base`, for any owner. Looked
+ * for by name, never opened (the same look as {@link findEarlierWalletState}): a browser lists
+ * its IndexedDB databases `level-js-<base>-<network>-<owner>/<namespace>`, a Node host its
+ * `<base>-<network>-<owner>` directories. Undefined when the host cannot list them, so a caller
+ * deciding whether recovery may skip a network treats "cannot tell" as "present".
+ */
+export async function findWalletStateNetworks(
+  base: string,
+  chainIdentifiers: readonly string[],
+): Promise<Set<string> | undefined> {
+  // An owner is `evm-<0x address>` (canonical roles) or a 0x identity key; nothing else follows
+  // the network, so `monad-testnet` never matches state of a longer network name.
+  const ownerAt = (rest: string) => /^(?:evm-)?0x[0-9a-f]+(?:\/|$)/i.test(rest)
+  const present = (names: readonly string[], prefix: string) =>
+    new Set(
+      chainIdentifiers.filter(id =>
+        names.some(name => {
+          const head = `${prefix}-${id}-`
+          return name.startsWith(head) && ownerAt(name.slice(head.length))
+        }),
+      ),
+    )
+  const globals = globalThis as {
+    window?: unknown
+    indexedDB?: { databases?: () => Promise<{ name?: string }[]> }
+  }
+  try {
+    if (globals.window !== undefined && globals.indexedDB !== undefined) {
+      if (typeof globals.indexedDB.databases !== 'function') return undefined
+      const names = (await globals.indexedDB.databases()).flatMap(database =>
+        database.name === undefined ? [] : [database.name],
+      )
+      return present(names, `level-js-${base}`)
+    }
+    if (globals.window !== undefined) return undefined
+    // Keep Node's filesystem modules outside browser bundles.
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { existsSync, readdirSync } = require('fs') as typeof import('fs')
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const { basename, dirname } = require('path') as typeof import('path')
+    const directory = dirname(base)
+    if (!existsSync(directory)) return new Set()
+    return present(readdirSync(directory), basename(base))
+  } catch {
+    return undefined
+  }
+}

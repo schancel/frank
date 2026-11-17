@@ -45,4 +45,16 @@ describe("a bot's amounts are written in its chain's unit", () => {
     expect(amounts.parseAmount("0.245")).toBe(245_000_000_000_000_000n);
     expect(() => amounts.parseAmount("a lot")).toThrow();
   });
+
+  it("shortens a limit rounded down and a minimum rounded up, only when asked", () => {
+    const amounts = chainAmounts(chainOf("monad-testnet"));
+    const limit = 510_496_892_794_540_437n;
+    expect(amounts.formatAmount(limit)).toBe("0.510496892794540437 MONT");
+    expect(amounts.formatAmount(limit, { round: "down" })).toBe("0.5104 MONT");
+    expect(amounts.formatAmount(limit, { round: "up" })).toBe("0.5105 MONT");
+    // An amount with no more digits than shown reads the same either way.
+    expect(amounts.formatAmount(245_000_000_000_000_000n, { round: "up" })).toBe("0.245 MONT");
+    expect(amounts.formatAmount(0n, { round: "down" })).toBe("0 MONT");
+    expect(amounts.formatAmount(1n, { round: "up" })).toBe("0.000000000000000001 MONT");
+  });
 });

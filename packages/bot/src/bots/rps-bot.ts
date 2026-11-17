@@ -78,7 +78,7 @@ export class RpsBot implements FrankBotDefinition {
     try {
       await sendFree(ctx, user.address, [
         await this.start(ctx, user.address),
-        { type: "text", text: `Welcome to RPS Arena.\n\n${rpsHelp(ctx.formatAmount(await this.limit(ctx)))}` },
+        { type: "text", text: `Welcome to RPS Arena.\n\n${rpsHelp(ctx.formatAmount(await this.limit(ctx), { round: "down" }))}` },
       ]);
     } catch (err) {
       console.warn(`[rps] Failed to welcome ${user.address}:`, err);
@@ -171,7 +171,7 @@ export class RpsBot implements FrankBotDefinition {
         );
       }
       const start = await this.start(ctx, peer);
-      const help = rpsHelp(ctx.formatAmount(await this.limit(ctx)));
+      const help = rpsHelp(ctx.formatAmount(await this.limit(ctx), { round: "down" }));
       if (received.confirmedWei === 0n && received.unconfirmed.length === 0) {
         await replyFree(msgCtx, [start, { type: "text", text: help }]);
         // Nothing reached the bot: the message is settled with nothing kept.
@@ -233,7 +233,8 @@ export class RpsBot implements FrankBotDefinition {
     if (wagerWei > 0n && wagerWei < minWagerWei)
       return refused(
         `The smallest stake at this table is ${ctx.formatAmount(
-          minWagerWei
+          minWagerWei,
+          { round: "up" }
         )}. Nothing was played.`
       );
     // The largest stake is what the bank can pay twice over now: worked out again here, when
@@ -242,7 +243,8 @@ export class RpsBot implements FrankBotDefinition {
     if (wagerWei > limitWei)
       return refused(
         `That stake is over the table limit of ${ctx.formatAmount(
-          limitWei
+          limitWei,
+          { round: "down" }
         )}. Nothing was played.`
       );
     // The stake is what this message is confirmed, on chain, to have paid. Never what it says.

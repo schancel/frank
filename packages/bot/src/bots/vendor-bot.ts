@@ -129,7 +129,7 @@ export class VendorBot implements FrankBotDefinition {
       return refused(`There is no item "${request.itemId}". Nothing was sold.`);
     if (received.unconfirmed.length > 0 || received.confirmedWei < item.priceWei)
       return refused(
-        `"${item.itemId}" costs ${ctx.formatAmount(item.priceWei)} and ${ctx.formatAmount(
+        `"${item.itemId}" costs ${ctx.formatAmount(item.priceWei, { round: "up" })} and ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with your message. Nothing was sold.`
       );

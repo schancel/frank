@@ -19,10 +19,11 @@ jest.mock('../accounts/session', () => ({
 }))
 jest.mock('../utils/clients', () => ({ useMonadWallet: () => ({}) }))
 jest.mock('@frank/wallet/chain', () => {
+  const { formatEther, parseEther } = jest.requireActual('ethers')
   const chain = {
     activeChain: {
-      fromDisplayAmount: (s: string) => BigInt(s),
-      toDisplayAmount: (n: bigint) => n.toString(),
+      fromDisplayAmount: (s: string) => parseEther(s),
+      toDisplayAmount: (n: bigint) => formatEther(n),
       unit: 'MONT',
     },
   }
@@ -69,13 +70,32 @@ describe('error notifications show app-authored messages', () => {
       address: '0xPeer',
       stampAmount: '500',
       isDefaultStampMode: true,
-      availableBalanceWei: 197n,
+      availableBalanceWei: 197_000_000_000_000_000_000n,
     }
     await page.methods.sendMessage.call(self, 'hello')
     expect(createNotification).toHaveBeenCalledTimes(1)
     expect(createNotification).toHaveBeenCalledWith(
       expect.objectContaining({
         message: 'Not enough MONT: need 500 MONT, have 197 MONT',
+      }),
+    )
+  })
+
+  it('reads the shortfall rounded so it never understates it: need up, have down', async () => {
+    const self = {
+      $t,
+      stampUnavailable: '',
+      conversation: undefined,
+      recipientAddress: '0xPeer',
+      address: '0xPeer',
+      stampAmount: '0.501499526965636987',
+      isDefaultStampMode: true,
+      availableBalanceWei: 139_404_169_000_000_000n,
+    }
+    await page.methods.sendMessage.call(self, 'hello')
+    expect(createNotification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        message: 'Not enough MONT: need 0.5015 MONT, have 0.1394 MONT',
       }),
     )
   })

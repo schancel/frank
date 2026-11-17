@@ -285,9 +285,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       { gameId, peer, conversationId },
       0,
       built.item,
-      `Blackjack: bet between ${ctx.formatAmount(minBet)} and ${ctx.formatAmount(
-        maxBet
-      )}. Your bet is what your bet message pays the dealer.`
+      `Blackjack: bet between ${betRange(ctx, minBet, maxBet)}. Your bet is what your bet message pays the dealer.`
     );
   }
 
@@ -449,7 +447,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
       return built && "item" in built
         ? {
             item: built.item,
-            text: `Challenge accepted. Bet up to ${ctx.formatAmount(wanted)}.`,
+            text: `Challenge accepted. Bet up to ${ctx.formatAmount(wanted, { round: "down" })}.`,
           }
         : undefined;
     }
@@ -477,12 +475,14 @@ export class BlackjackDealerBot implements FrankBotDefinition {
             ? `Your bet of ${ctx.formatAmount(
                 state.wagerWei
               )} is below this table's smallest bet as it stands now (${ctx.formatAmount(
-                minBet
+                minBet,
+                { round: "up" }
               )}): the network's fee rose so far that its payout could not be paid. It was not dealt and is returned with this message.`
             : `Your bet of ${ctx.formatAmount(
                 state.wagerWei
               )} is more than the dealer can cover right now (${ctx.formatAmount(
-                maxBet
+                maxBet,
+                { round: "down" }
               )}), so it was not dealt. It is returned with this message.`,
           payWei: refund.payWei,
         };
@@ -503,4 +503,15 @@ export class BlackjackDealerBot implements FrankBotDefinition {
           )} the hand did not accept.`;
     return { item: step.item, text, payWei: step.payWei };
   }
+}
+
+/** "<min> and <max>", readable. When the two are within one display digit, rounding the smallest
+ * bet up and the largest down could read backwards; then both are shown exactly. */
+function betRange(ctx: BotContext, minBet: bigint, maxBet: bigint): string {
+  const low = ctx.formatAmount(minBet, { round: "up" });
+  const high = ctx.formatAmount(maxBet, { round: "down" });
+  const reversed = parseFloat(low) > parseFloat(high);
+  return reversed
+    ? `${ctx.formatAmount(minBet)} and ${ctx.formatAmount(maxBet)}`
+    : `${low} and ${high}`;
 }

@@ -171,7 +171,8 @@ export class RaffleBot implements FrankBotDefinition {
             ? `Round ${round.raffleId.slice(0, 8)}: ${round.entrants.length} of ${
                 round.maxEntries
               } entries. Entry is ${ctx.formatAmount(
-                BigInt(round.entryPriceWei)
+                BigInt(round.entryPriceWei),
+                { round: "up" }
               )}, paid with your entry message; the winner takes all ${ctx.formatAmount(
                 BigInt(round.entryPriceWei) * BigInt(round.maxEntries)
               )}. Use the card to enter.`
@@ -268,7 +269,7 @@ export class RaffleBot implements FrankBotDefinition {
     // An entry is a confirmed payment of the entry price. Nothing else is.
     if (received.unconfirmed.length > 0 || received.confirmedWei < price)
       return refused(
-        `Entry is ${ctx.formatAmount(price)} and ${ctx.formatAmount(
+        `Entry is ${ctx.formatAmount(price, { round: "up" })} and ${ctx.formatAmount(
           received.confirmedWei
         )} is confirmed as paid with your message. You are not entered.`
       );

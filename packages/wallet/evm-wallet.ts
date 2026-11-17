@@ -29,7 +29,8 @@ import type {
   RecipientAssetPaymentItem,
   StealthItem,
 } from "@frank/cashweb/types/messages";
-import type { ContactPayment } from "./storage/evm-coin-store";
+import type { ContactPayment, RecordStore } from "./storage/evm-coin-store";
+import type { HeldPeerNote } from "./evm-received-coin-manager";
 import type { EvmLegacyConsolidator } from "./chain/evm-legacy-consolidator";
 import type { EvmBlockWatcher } from "./evm-block-watcher";
 import type { EvmCoinListSync } from "./evm-coin-list-sync";
@@ -167,6 +168,8 @@ export class EvmWalletInternals {
   /** What the account sent, as its notes to itself report it (History's cross-device record). */
   notedSends?: EvmNotedSends;
   readonly waitingSelfNotes = new Map<string, number>();
+  /** Notes to self about other networks, kept until those networks' wallets apply them. */
+  heldPeerNotes?: RecordStore<HeldPeerNote>;
 
   clearOnClose(): void {
     this.canonicalClientFactory = undefined;

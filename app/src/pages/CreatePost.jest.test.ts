@@ -1536,7 +1536,7 @@ describe('CreatePost outcomes', () => {
     expect(router.go).not.toHaveBeenCalled()
   }, 10000)
 
-  it('notifies error with safeMessage when offering parsing fails in post()', async () => {
+  it('a failed offering parse shows the generic notice, not the parser text', async () => {
     const { wrapper } = mountPage()
     const vm = wrapper.vm as any
     mockDisplayToRawAmount.mockImplementationOnce(() => {
@@ -1546,12 +1546,10 @@ describe('CreatePost outcomes', () => {
     await vm.post()
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
-      safeMessage: 'invalid FixedNumber string value',
-    })
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error))
   })
 
-  it('notifies error with safeMessage when loadParent fails', async () => {
+  it('a failed parent load shows the generic notice, not the relay text', async () => {
     const { page } = await mountRoutedPage('/new-post/parent')
     const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
     const err = new Error('Network error loading parent')
@@ -1560,9 +1558,7 @@ describe('CreatePost outcomes', () => {
     await page().get('[data-test="retry-parent"]').trigger('click')
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith(err, {
-      safeMessage: 'Network error loading parent',
-    })
+    expect(errorNotify).toHaveBeenCalledWith(err)
   })
 })
 

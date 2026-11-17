@@ -104,6 +104,8 @@ describe('submitPost with an unknown paid outcome', () => {
         .mockRejectedValue(
           new TopicPostOutcomeUnknownError(abandoned.message, abandoned),
         ),
+      // Never asked: its words describe a failed request, not a post that may have landed.
+      failureText: () => 'It did not go through yet.',
       errorNotify,
       infoNotify,
       navigateBack,
@@ -113,7 +115,7 @@ describe('submitPost with an unknown paid outcome', () => {
     expect(outcome).toBe('unknown-outcome')
     expect(onOutcome).toHaveBeenCalledWith('unknown-outcome')
     expect(errorNotify).toHaveBeenCalledWith(abandoned, {
-      safeMessage: undefined,
+      fallbackKey: 'stampPreparation.postOutcomeUnknown',
     })
     expect(infoNotify).not.toHaveBeenCalled()
     expect(navigateBack).not.toHaveBeenCalled()

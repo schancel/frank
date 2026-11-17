@@ -35,7 +35,11 @@ export async function submitPost(params: {
       // and let the caller retain its process-lifetime duplicate-submission reservation.
       params.onOutcome?.('unknown-outcome')
       const cause = err.cause
-      params.errorNotify(cause, { safeMessage: params.failureText?.(cause) })
+      // The cause says why the request failed, not whether the post landed: say what the page
+      // says, that it may have been published.
+      params.errorNotify(cause, {
+        fallbackKey: 'stampPreparation.postOutcomeUnknown',
+      })
       return 'unknown-outcome'
     }
     if (err instanceof BurnRefreshError) {

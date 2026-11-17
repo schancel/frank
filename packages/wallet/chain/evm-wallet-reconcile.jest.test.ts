@@ -423,3 +423,20 @@ test("an idle balance poll makes no head, block or fee read while its observatio
   await wallet.getBalanceParts!();
   expect(jest.mocked(provider.getBlock).mock.calls.length).toBeGreaterThan(before);
 });
+
+test("a seed this device generated does no initial seed walk; a restored one walks in full", async () => {
+  const walkReads = async (options?: { seedGeneratedAtMs: number }) => {
+    await wallet.close();
+    jest.restoreAllMocks();
+    cfg = { ...cfg, walletStorageLocation: join(root, `wallet-${options ? "generated" : "restored"}`) };
+    wallet = (await createEvmChain(cfg).createWallet(roots(), options)) as EvmChainWalletHandle;
+    state = node(wallet);
+    await wallet.getBalance();
+    return jest.mocked(wallet.provider.getTransactionCount).mock.calls.length;
+  };
+  const generated = await walkReads({ seedGeneratedAtMs: Date.now() });
+  const restored = await walkReads();
+  // The restored device walks both branches to the gap (SEED_DISCOVERY_GAP = 50 each).
+  expect(restored).toBeGreaterThanOrEqual(100);
+  expect(generated).toBeLessThan(10);
+});

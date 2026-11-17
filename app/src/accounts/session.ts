@@ -31,10 +31,12 @@ import {
   type RelayUtxoChain,
   type SupportedCurve,
   type WalletHandle,
+  type WalletOpenOptions,
   createChainAdapter,
   isCanonicalChainId,
   resolveChainAdapter,
 } from '@frank/wallet/chain'
+import { seedGeneratedHereAt } from './seed-origin'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import type { HistoricalBip39Seed } from '@frank/wallet/evm-wallet-material'
 import { BIP39_DERIVATION, BIP39_RECOVERY_FORMAT } from '@frank/account-vault'
@@ -249,6 +251,7 @@ export function createAccountSession(deps: {
   open: () => Promise<AccountCustody>
   createWallet: (
     roots: MonadRootBundle | HistoricalBip39Seed,
+    options?: WalletOpenOptions,
   ) => Promise<RuntimeWallet>
   /** Private family construction; material stays inside the custody composition boundary. */
   createEvmWallet?: (
@@ -483,7 +486,11 @@ export function createAccountSession(deps: {
             messaging: find('messaging-encryption'),
           }
       atStage('wallet-open')
-      candidate = await deps.createWallet(material)
+      candidate = await deps.createWallet(material, {
+        seedGeneratedAtMs: seedGeneratedHereAt(
+          capability.account.receipt.context.accountId,
+        ),
+      })
       check(token)
       atStage('application-restore')
       await deps.restoreApplicationState?.({
@@ -683,9 +690,9 @@ export function createAccountSession(deps: {
         }
         candidate = await (deps.createEvmWallet
           ? deps.createEvmWallet(config, material)
-          : (createEvmChain(config).createWallet(
-              material,
-            ) as Promise<EvmChainWalletHandle>))
+          : (createEvmChain(config).createWallet(material, {
+              seedGeneratedAtMs: seedGeneratedHereAt(walletAccount),
+            }) as Promise<EvmChainWalletHandle>))
         const owned = candidate
         const close = owned.close.bind(owned)
         owned.close = async () => {
@@ -1904,7 +1911,7 @@ export const accountSession = createAccountSession({
       return Promise.reject(new CustodyError('unavailable'))
     return openAccountCustody({ namespace: 'local-account-v1' })
   },
-  createWallet: roots => activeChain.createWallet(roots),
+  createWallet: (roots, options) => activeChain.createWallet(roots, options),
   restoreApplicationState: restoreRecoveredProfile,
 })
 export const accountStatus = accountSession.state

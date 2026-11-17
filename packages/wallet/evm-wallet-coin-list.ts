@@ -60,7 +60,13 @@ export function installEvmWalletCoinList(params: {
   coinStore: RecordStore<EvmCoin>
   /** The deterministic branch keyring (`m/44'/60'/0'/0/i`). Given, every full refresh walks both
    * seed branches for accounts in use on chain, so a restored device finds them all. */
-  seedDiscovery?: { keyring: MonadHdKeyring; gap?: number }
+  seedDiscovery?: {
+    keyring: MonadHdKeyring
+    gap?: number
+    /** This device generated the seed then (`WalletOpenOptions.seedGeneratedAtMs`): a store with
+     * no recorded walk counts as walked at that time. Nothing is written for it. */
+    generatedAtMs?: number
+  }
   /** Where this wallet's background merges go: watched once found, and looked for by each walk
    * from the accounts the merges emptied. */
   mergeTargets?: EvmMergeTargets
@@ -166,11 +172,23 @@ export function installEvmWalletCoinList(params: {
     // reopened store is not walked again before its first balance read.
     ...(params.seedDiscovery
       ? {
-          lastDiscoveredAtMs: () => changePool.seedWalkedAtMs(),
+          lastDiscoveredAtMs: () =>
+            changePool.seedWalkedAtMs() ?? params.seedDiscovery!.generatedAtMs,
           recordDiscovered: async (atMs: number) => {
             changePool.recordSeedWalk(atMs)
             await changePool.flush()
           },
+          // Activity on this chain: any coin (a spent one included), any allocated or recovered
+          // change account, any deterministic pool account, or the deposit roots having been
+          // seen holding or spending a coin.
+          hasActivity: () =>
+            coinList.all().length > 0 ||
+            changePool.records().length > 0 ||
+            changePool.recoveredAccounts().length > 0 ||
+            changePool.nextUnusedIndex() > 0 ||
+            pool.records().length > 0 ||
+            coinList.latestOf(mainAccount.address) !== undefined ||
+            coinList.latestOf(identity.address.raw) !== undefined,
         }
       : {}),
     list: coinList,

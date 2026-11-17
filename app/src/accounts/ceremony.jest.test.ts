@@ -10,6 +10,7 @@ import {
 } from '@frank/account-recovery'
 import { createAccountCeremony, recoveryErrorMessage } from './ceremony'
 import { accountSession } from './session'
+import { seedGeneratedHereAt } from './seed-origin'
 import { assertLegacyUnchanged } from './legacy'
 
 jest.mock('./session', () => ({
@@ -107,6 +108,7 @@ test('independently pinned descriptor mismatch consumes restore rather than chan
   b.ceremony.cancel()
 })
 test('restore without descriptor recovers valid roots and stages account', async () => {
+  const restoreStorage = withMemoryLocalStorage()
   const f = await signup()
   const restore = createAccountCeremony()
   const res = await restore.beginRestore()
@@ -115,7 +117,10 @@ test('restore without descriptor recovers valid roots and stages account', async
   expect(accountSession.stage).toHaveBeenCalledTimes(1)
   const staged = jest.mocked(accountSession.stage).mock.calls[0][0]
   expect(staged.displayName).toBe('')
+  // A restored seed may have history on chain: never marked, so its wallets walk in full.
+  expect(seedGeneratedHereAt(staged.accountId)).toBeUndefined()
   f.ceremony.cancel()
+  restoreStorage()
 })
 test('stages the account root with the roots and wipes its own copy afterwards', async () => {
   const f = await signup()
@@ -380,7 +385,22 @@ test('ten mixed root/historical strings require explicit selection before stagin
   }
 })
 
+
+// Node test environment: a minimal in-memory localStorage for the device-local seed mark.
+function withMemoryLocalStorage() {
+  const data = new Map<string, string>()
+  const previous = (globalThis as { localStorage?: unknown }).localStorage
+  ;(globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+    removeItem: (key: string) => void data.delete(key),
+  }
+  return () => {
+    ;(globalThis as { localStorage?: unknown }).localStorage = previous
+  }
+}
 test('createDirect stages new account root immediately without backup shares', async () => {
+  const restoreStorage = withMemoryLocalStorage()
   const ceremony = createAccountCeremony()
   try {
     const outcome = await ceremony.createDirect('Alice')
@@ -392,8 +412,11 @@ test('createDirect stages new account root immediately without backup shares', a
     expect(staged.accountRoot).toBeInstanceOf(Uint8Array)
     expect(staged.accountRoot.length).toBe(32)
     expect(staged.metadata).toBeDefined()
+    // A seed generated here: its wallets need no initial walk of the seed's branches.
+    expect(seedGeneratedHereAt(staged.accountId)).toEqual(expect.any(Number))
   } finally {
     ceremony.cancel()
+    restoreStorage()
   }
 })
 

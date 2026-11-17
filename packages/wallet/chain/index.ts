@@ -214,6 +214,7 @@ export type {
   ReceivedPaymentStatus,
   ReceivedCoinSweep,
   MessagePayment,
+  WalletOpenOptions,
 } from "./active-chain";
 export {
   ContactPaymentPendingError,

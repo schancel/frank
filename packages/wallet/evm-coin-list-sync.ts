@@ -43,8 +43,9 @@ import { fundsSettleBlocks } from './chain/evm-spend-rule'
 const SEED_DISCOVERY = 'seed-discovery'
 
 /** Another device's new change accounts are found by walking the change branch again, in the
- * background, at most this often. */
-export const SEED_REWALK_MS = 60_000
+ * background, at most this often, and only on a chain where this wallet has activity
+ * (owner ruling, 2026-11-16, revisiting #1879/#1890: was 60 s on every chain). */
+export const SEED_REWALK_MS = 10 * 60_000
 
 export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
@@ -93,6 +94,11 @@ export class EvmCoinListSync {
        * accounts itself and returns the other accounts it found, which are read into the list
        * first. */
       readonly recordDiscovered?: (atMs: number) => Promise<void>
+      /** Whether this wallet has any activity on this chain (coins, allocated or recovered
+       * accounts). The periodic change-branch walk runs only then; absent: always. A chain with
+       * none has nothing another device could have spent change from that this one would miss
+       * beyond its deposit roots, which every pass reads. */
+      readonly hasActivity?: () => boolean
     },
   ) {}
 
@@ -249,7 +255,8 @@ export class EvmCoinListSync {
       this.stopped ||
       this.discovering ||
       walkedAt === undefined ||
-      Date.now() - walkedAt < maxAgeMs
+      Date.now() - walkedAt < maxAgeMs ||
+      (this.config.hasActivity !== undefined && !this.config.hasActivity())
     )
       return
     this.discover('change').catch(() => undefined)

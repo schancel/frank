@@ -160,7 +160,7 @@ import type {
   HistoricalBip39Seed,
   MonadWalletMaterial,
 } from "../evm-wallet-material";
-import type { HDSeed } from "./active-chain";
+import type { HDSeed, WalletOpenOptions } from "./active-chain";
 import { EvmChangePool } from "../evm-change-pool";
 import { EvmSubAccountPool } from "../evm-account-pool";
 import { EvmNativeSources } from "../evm-native-sources";
@@ -1870,7 +1870,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
 
     async createWallet(
-      seed: HDSeed | MonadRootBundle | HistoricalBip39Seed
+      seed: HDSeed | MonadRootBundle | HistoricalBip39Seed,
+      options: WalletOpenOptions = {}
     ): Promise<EvmChainWalletHandle> {
       const material = createMonadWalletMaterial(seed);
       if (config.requireBoundWalletState === true && material.canonicalRoles === undefined) {
@@ -2261,7 +2262,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             changeKeyring,
             // Every full refresh walks the seed's branches for accounts in use on chain: a
             // restored device finds what the seed controls without the old device's store.
-            seedDiscovery: config.seedDiscovery === false ? undefined : { keyring },
+            seedDiscovery: config.seedDiscovery === false ? undefined : {
+              keyring,
+              // A seed this device generated has no chain history to walk for.
+              ...(options.seedGeneratedAtMs === undefined ? {} : { generatedAtMs: options.seedGeneratedAtMs }),
+            },
             journal: evmTransactionSetJournal(topicOwner),
             // The runtime's changePool allocator persisted every derivation claim before
             // signing; cancellation cleanup can retire its journal without reusing keys.

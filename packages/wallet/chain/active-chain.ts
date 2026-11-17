@@ -919,6 +919,16 @@ export interface NativeAssetChain {
   getHtlcAddress?(): string;
 }
 
+/** Facts the host knows about the account when it opens a wallet. */
+export interface WalletOpenOptions {
+  /** This device generated the account's seed at this time (epoch ms). A brand-new wallet store
+   * first read within minutes of it (`NEW_SEED_NO_WALK_MS`) skips the initial gap-limit walk and
+   * records that as its walk; any other store (an older mark, a store with state but no walk
+   * record) walks in full. Absent for a restored, synced or imported account, which walks in
+   * full. Manual reconcile always walks. */
+  readonly seedGeneratedAtMs?: number;
+}
+
 /** Full Frank application capability set. The selected implementation remains Monad. */
 export interface ActiveChain extends NativeAssetChain {
   readonly capabilities: ChainCapabilities & {
@@ -929,7 +939,8 @@ export interface ActiveChain extends NativeAssetChain {
   /** Default raw native-chain value burned for a topic post or vote. */
   readonly defaultTopicVoteValue: bigint;
   createWallet(
-    roots: MonadRootBundle | HistoricalBip39Seed
+    roots: MonadRootBundle | HistoricalBip39Seed,
+    options?: WalletOpenOptions
   ): Promise<NativeWalletHandle & WalletHandle & { close(): Promise<void> }>;
   /** @deprecated Legacy recovery compatibility. #699 owns the app switch and deletion. */
   createWallet(seed: HDSeed): Promise<NativeWalletHandle & WalletHandle>;

@@ -13,6 +13,11 @@ import type {
   EvmTransactionSetPolicy,
 } from './evm-transaction-set-types'
 
+/** How old a fee quote a spendable-balance read may reuse. The balance loop asks every poll; a
+ * new quote per ask was one of the RPC batches an idle wallet sent. Construction always reads a
+ * new quote (`refresh()`). */
+export const SPENDABLE_POLICY_MAX_AGE_MS = 30_000
+
 export function installEvmTransactionSetRuntime(
   params: Omit<Parameters<typeof installEvmWalletCoinList>[0], 'watcher'> & {
     onCancellationCheckpoint?: import('./evm-transaction-set-types').EvmTransactionSetPreparerOptions['onCancellationCheckpoint']
@@ -162,9 +167,21 @@ export function installEvmTransactionSetRuntime(
   }
   // A periodic tick joins the current complete pass. It must never enqueue another sync pass
   // behind one whose completion a balance caller already awaits.
-  const refresh = (): Promise<void> => {
+  const refresh = (options: { policyMaxAgeMs?: number } = {}): Promise<void> => {
     if (stopped) return Promise.resolve()
-    return (refreshing ??= Promise.race([
+    // A recorded policy failure is always read again: it must not linger behind a recent quote.
+    const policy =
+      options.policyMaxAgeMs !== undefined && policyFailure === undefined
+        ? transactionSetPolicy.refreshIfOlderThan(options.policyMaxAgeMs)
+        : transactionSetPolicy.refresh()
+    // The policy part is per caller (the cache itself joins a quote being read): a display read
+    // may reuse a recent quote (`SPENDABLE_POLICY_MAX_AGE_MS`); construction always reads anew.
+    const policyPass = policy.then(
+      () => { policyFailure = undefined },
+      error => { policyFailure = { error } },
+    )
+    // The coin pass is shared: a periodic tick joins the one already running.
+    const coinPass = (refreshing ??= Promise.race([
       Promise.allSettled([
         (async () => {
           if (!initialized) {
@@ -180,20 +197,22 @@ export function installEvmTransactionSetRuntime(
             ])
           }
         })(),
-        transactionSetPolicy.refresh(),
-      ]).then(([coins, policy]) => {
+      ]).then(([coins]) => {
         coinFailure = coins.status === 'rejected' ? { error: coins.reason } : undefined
-        policyFailure = policy.status === 'rejected' ? { error: policy.reason } : undefined
       }),
       stoppedRefresh,
     ]).finally(() => {
       refreshing = undefined
     }))
+    return Promise.race([
+      Promise.all([coinPass, policyPass]).then(() => undefined),
+      stoppedRefresh,
+    ])
   }
   // A program offering a payable amount needs a complete current observation, unlike an
   // ordinary send that can use other trusted inputs while one observation is unavailable.
   const refreshSpendable = async (): Promise<void> => {
-    await refresh()
+    await refresh({ policyMaxAgeMs: SPENDABLE_POLICY_MAX_AGE_MS })
     assertFundingObserved()
   }
   return {

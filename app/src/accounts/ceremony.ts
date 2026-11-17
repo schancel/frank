@@ -38,6 +38,7 @@ import { assertLegacyUnchanged, legacyStatus } from './legacy'
 import { CustodyError, type ExpectedActive } from './custody'
 import { bip39Descriptor } from './custody/bip39'
 import { markAccountBackedUp } from './backup-status'
+import { recordSeedGeneratedHere } from './seed-origin'
 
 function identityOf(account: RecoveredAccountBackup): MonadIdentity {
   return 'seed' in account
@@ -178,6 +179,9 @@ export function createAccountCeremony() {
         await accountSession.cancelPending(captured.attemptId)
       if (isRestore) {
         markAccountBackedUp(captured.accountId)
+      } else {
+        // A seed generated just now: its wallets have no chain history to walk for.
+        recordSeedGeneratedHere(captured.accountId)
       }
       return {
         isRestore,

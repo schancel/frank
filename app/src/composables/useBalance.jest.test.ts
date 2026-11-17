@@ -159,6 +159,37 @@ describe('useBalance', () => {
     b.unmount()
   })
 
+  it('reads a zero-balance wallet once per poll interval, not every few seconds', async () => {
+    mockGetBalance.mockResolvedValue(0n)
+    mount(Consumer)
+    await advance(0)
+    expect(mockGetBalance).toHaveBeenCalledTimes(1)
+    await advance(BALANCE_POLL_MS - 1)
+    expect(mockGetBalance).toHaveBeenCalledTimes(1)
+    await advance(1)
+    expect(mockGetBalance).toHaveBeenCalledTimes(2)
+    // One read per BALANCE_POLL_MS over the following minute (the old loop read every 3 s).
+    for (let t = 0; t < 60_000; t += 1000) await advance(1000)
+    expect(mockGetBalance).toHaveBeenCalledTimes(2 + 60_000 / BALANCE_POLL_MS)
+  })
+
+  it('coalesces consumers that mount after a recent read into the running loop', async () => {
+    mount(Consumer)
+    await advance(0)
+    expect(mockGetBalance).toHaveBeenCalledTimes(1)
+    // Screens mounting one after another (not concurrently) within the interval.
+    for (let i = 0; i < 5; i++) {
+      mount(Consumer)
+      await advance(1000)
+    }
+    expect(mockGetBalance).toHaveBeenCalledTimes(1)
+    await advance(BALANCE_POLL_MS)
+    expect(mockGetBalance).toHaveBeenCalledTimes(2)
+    // An explicit refresh still reads at once.
+    await refresh()
+    expect(mockGetBalance).toHaveBeenCalledTimes(3)
+  })
+
   it('stops when the last consumer unmounts and restarts on the next mount', async () => {
     const a = mount(Consumer)
     const b = mount(Consumer)

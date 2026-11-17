@@ -69,6 +69,7 @@ import {
   type RuntimeWallet,
 } from './session'
 import { watch } from 'vue'
+import { recordSeedGeneratedHere } from './seed-origin'
 import { importBip39Wallet as legacyImport } from './legacy'
 import {
   CustodyError,
@@ -163,7 +164,7 @@ function fixture(
       compressedPubKey: new Uint8Array(33).fill(0x02),
     },
   } as unknown as RuntimeWallet
-  const createWallet = jest.fn(async () => wallet)
+  const createWallet = jest.fn(async (..._args: unknown[]) => wallet)
   let invalidate!: () => void
   const unlisten = jest.fn()
   const session = createAccountSession({
@@ -190,6 +191,38 @@ function fixture(
     account,
   }
 }
+
+// Node test environment: a minimal in-memory localStorage for the device-local seed mark.
+function withMemoryLocalStorage() {
+  const data = new Map<string, string>()
+  const previous = (globalThis as { localStorage?: unknown }).localStorage
+  ;(globalThis as { localStorage?: unknown }).localStorage = {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => void data.set(key, value),
+    removeItem: (key: string) => void data.delete(key),
+  }
+  return () => {
+    ;(globalThis as { localStorage?: unknown }).localStorage = previous
+  }
+}
+test('tells the wallet the seed was generated on this device only when it was', async () => {
+  const restore = withMemoryLocalStorage()
+  const restored = fixture()
+  await restored.session.initialize()
+  expect(restored.createWallet.mock.calls[0][1]).toEqual({
+    seedGeneratedAtMs: undefined,
+  })
+  recordSeedGeneratedHere('a', 1_700_000_000_000)
+  try {
+    const generated = fixture()
+    await generated.session.initialize()
+    expect(generated.createWallet.mock.calls[0][1]).toEqual({
+      seedGeneratedAtMs: 1_700_000_000_000,
+    })
+  } finally {
+    restore()
+  }
+})
 test('opens the active capability once, maps typed roots, wipes copies and revalidates acquisitions of one owned wallet', async () => {
   const f = fixture()
   await Promise.all([f.session.initialize(), f.session.initialize()])

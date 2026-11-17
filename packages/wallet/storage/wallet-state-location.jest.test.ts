@@ -18,6 +18,7 @@ import {
   DEFAULT_WALLET_STATE_BASE,
   EARLIER_BROWSER_WALLET_STATE_BASE,
   earlierWalletStateLocations,
+  findWalletStateNetworks,
   evmWalletStateOwner,
   findEarlierWalletState,
   walletStateLocation,
@@ -225,5 +226,42 @@ describe('wallet state on disk', () => {
     expect(existsSync(join(earlier, 'evm-coin-list-v1'))).toBe(true)
     expect(readdirSync(earlier)).toEqual(['evm-coin-list-v1'])
     expect(wallet.getReceivedPayments!()).toEqual([])
+  })
+})
+
+
+describe('findWalletStateNetworks', () => {
+  const owner = 'evm-0x' + 'ab'.repeat(20)
+  it('finds a network by its state directories, for any owner, never a longer-named network', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'frank-state-networks-'))
+    try {
+      const base = join(dir, 'state')
+      mkdirSync(join(dir, `state-ethereum-sepolia-${owner}`, 'coins'), { recursive: true })
+      mkdirSync(join(dir, `state-monad-testnet-extra-${owner}`), { recursive: true })
+      const found = await findWalletStateNetworks(base, ['ethereum-sepolia', 'monad-testnet', 'hyperliquid-testnet'])
+      expect(found).toEqual(new Set(['ethereum-sepolia']))
+      expect(await findWalletStateNetworks(join(dir, 'missing', 'state'), ['ethereum-sepolia'])).toEqual(new Set())
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('reads browser database names only, and says it cannot tell when the host cannot list them', async () => {
+    const g = globalThis as { window?: unknown; indexedDB?: unknown }
+    const saved = { window: g.window, indexedDB: g.indexedDB }
+    try {
+      g.window = {}
+      g.indexedDB = { databases: async () => [
+        { name: `level-js-frank-wallet-state-hyperliquid-testnet-${owner}/native-operation-journal` },
+        { name: 'level-js-frank-wallet-state-ethereum-sepolia-notanowner/coins' },
+      ] }
+      expect(await findWalletStateNetworks('frank-wallet-state', ['hyperliquid-testnet', 'ethereum-sepolia']))
+        .toEqual(new Set(['hyperliquid-testnet']))
+      g.indexedDB = {}
+      expect(await findWalletStateNetworks('frank-wallet-state', ['hyperliquid-testnet'])).toBeUndefined()
+    } finally {
+      g.window = saved.window
+      g.indexedDB = saved.indexedDB
+    }
   })
 })

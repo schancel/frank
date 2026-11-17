@@ -43,8 +43,17 @@ import { fundsSettleBlocks } from './chain/evm-spend-rule'
 const SEED_DISCOVERY = 'seed-discovery'
 
 /** Another device's new change accounts are found by walking the change branch again, in the
- * background, at most this often. */
-export const SEED_REWALK_MS = 60_000
+ * background, at most this often, and only on a chain where this wallet has activity
+ * (owner ruling, 2026-11-16, revisiting #1879/#1890: was 60 s on every chain). */
+export const SEED_REWALK_MS = 10 * 60_000
+
+/** A seed this device generated counts as walked, without walking, only when its wallet's first
+ * read comes this soon after generation (owner ruling, 2026-11-16). The create flow opens the
+ * wallet seconds after the seed exists, when the seed truly has no history anywhere. Later (a
+ * reload hours on, a chain first opened weeks after), the seed may have been restored and used on
+ * another device, so the store walks in full like any other. Ten minutes covers a slow first open
+ * and is far shorter than restoring the seed elsewhere and putting funds on chain. */
+export const NEW_SEED_NO_WALK_MS = 10 * 60_000
 
 export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
@@ -93,6 +102,16 @@ export class EvmCoinListSync {
        * accounts itself and returns the other accounts it found, which are read into the list
        * first. */
       readonly recordDiscovered?: (atMs: number) => Promise<void>
+      /** For a store never walked: the time to record as its walk instead of walking, when the
+       * store is brand-new and holds a seed this device generated moments ago (see
+       * `NEW_SEED_NO_WALK_MS`); undefined otherwise, and the store walks in full. Recorded through
+       * `recordDiscovered`, so later opens use the stored fact. */
+      readonly newSeedWalkedAtMs?: () => number | undefined
+      /** Whether this wallet has any activity on this chain (coins, allocated or recovered
+       * accounts). The periodic change-branch walk runs only then; absent: always. A chain with
+       * none has nothing another device could have spent change from that this one would miss
+       * beyond its deposit roots, which every pass reads. */
+      readonly hasActivity?: () => boolean
     },
   ) {}
 
@@ -236,7 +255,33 @@ export class EvmCoinListSync {
    * the seed controls is known (not necessarily read). */
   seedDiscovered(): Promise<void> | undefined {
     if (!this.config.discover || this.walkedAt() !== undefined) return undefined
-    return this.discover()
+    if (this.discovering) return this.discovering
+    const newSeedAt = this.config.newSeedWalkedAtMs?.()
+    if (newSeedAt === undefined) return this.discover()
+    return (this.discovering = this.recordNewSeed(newSeedAt))
+  }
+
+  /** A brand-new store of a seed generated here: recorded as walked at generation, nothing read. */
+  private async recordNewSeed(atMs: number): Promise<void> {
+    this.discoveredOnce = true
+    this.discoveredAt = atMs
+    try {
+      await this.config.recordDiscovered?.(atMs)
+    } catch (error) {
+      // Counted as walked for this session only. The next open finds no record and a mark too
+      // old to skip by, so it walks in full.
+      console.warn('[evm-coin-list] recording the new seed walk failed:', error)
+    } finally {
+      this.discovering = undefined
+    }
+  }
+
+  /** The user's reconcile: walks both seed branches now, whatever any record or mark says, then
+   * reads every account. A failed walk rejects. */
+  async walkSeed(): Promise<void> {
+    while (this.discovering) await this.discovering.catch(() => undefined)
+    await this.discover('all')
+    await this.refresh({ all: true })
   }
 
   /** Another device of the account allocates change accounts this one hears of only from the
@@ -249,7 +294,8 @@ export class EvmCoinListSync {
       this.stopped ||
       this.discovering ||
       walkedAt === undefined ||
-      Date.now() - walkedAt < maxAgeMs
+      Date.now() - walkedAt < maxAgeMs ||
+      (this.config.hasActivity !== undefined && !this.config.hasActivity())
     )
       return
     this.discover('change').catch(() => undefined)

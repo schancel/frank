@@ -40,7 +40,12 @@ import {
 } from '../accounts/relay-wallet-route'
 import { readTempoPathUsdBalance } from '../accounts/tempo-wallets'
 import { formatUnits } from 'ethers'
-import { useBalance, APP_STATE_EVENT, BALANCE_POLL_MS } from './useBalance'
+import {
+  useBalance,
+  APP_STATE_EVENT,
+  BALANCE_POLL_MS,
+  nextBalanceDelay,
+} from './useBalance'
 import { useSafeOracleStore } from '../stores/oracle'
 import { walletSupport } from '../utils/wallet-support'
 import { WALLET_CONFIGS } from '../utils/wallet-configs'
@@ -207,8 +212,42 @@ function secondaryChainIdentifier(chain: string): string | undefined {
     ? entry.id
     : undefined
 }
+// Mounted wallet lists that are on screen. A list off screen (the drawer showing another tab)
+// keeps its last observations and reads nothing: those rows are display only.
 let multichainListConsumers = 0
 let secondaryBatchGeneration = 0
+
+// When each secondary row is next due for a background read, per account revision. A success
+// waits the poll interval; a failure backs off like the primary balance (`nextBalanceDelay`), so
+// an unhealthy chain is not asked again every 15 s. Only the background loop consults this;
+// an explicit refresh or a mounted reader of one chain reads at once.
+const backgroundDue = new Map<
+  string,
+  { revision: number; failures: number; dueAtMs: number }
+>()
+function noteBackgroundRead(key: string, revision: number, ok: boolean) {
+  const previous = backgroundDue.get(key)
+  const failures = ok
+    ? 0
+    : (previous?.revision === revision ? previous.failures : 0) + 1
+  backgroundDue.set(key, {
+    revision,
+    failures,
+    dueAtMs: Date.now() + nextBalanceDelay(failures),
+  })
+}
+function backgroundReadDue(chain: string): boolean {
+  const key = isSolanaChain(chain)
+    ? solanaNetworkId()
+    : secondaryChainIdentifier(chain)
+  if (!key) return false
+  const due = backgroundDue.get(key)
+  return (
+    due === undefined ||
+    due.revision !== accountStatus.revision ||
+    Date.now() >= due.dueAtMs
+  )
+}
 
 function isExtensionPopup(): boolean {
   return (
@@ -231,21 +270,26 @@ function secondaryRows(includeAllConfigs = true): string[] {
   ].filter(id => secondaryChainIdentifier(id) !== undefined)
 }
 
-function fetchSecondaryBalances(force: boolean) {
+/** One background pass. `ignoreDue` (account change) reads every row now; otherwise a row is
+ * read only once its success interval or failure backoff has passed. */
+function fetchSecondaryBalances(force: boolean, ignoreDue = false) {
   const batchGen = ++secondaryBatchGeneration
+  const due = (chain: string) => ignoreDue || backgroundReadDue(chain)
   const requested = [...new Set([...requestedChains].map(c => c.value))]
   for (const chain of requested) {
-    if (!isPrimaryChain(chain)) {
+    if (!isPrimaryChain(chain) && due(chain)) {
       void fetchChainBalance(chain, force)
     }
   }
   if (isExtensionPopup() || multichainListConsumers === 0) {
     return
   }
-  if (!requested.some(c => isSolanaChain(c))) {
+  if (!requested.some(c => isSolanaChain(c)) && due('solana')) {
     void fetchChainBalance('solana', force)
   }
-  const rows = secondaryRows(true).filter(chain => !requested.includes(chain))
+  const rows = secondaryRows(true).filter(
+    chain => !requested.includes(chain) && due(chain),
+  )
   void (async () => {
     for (const chain of rows) {
       if (
@@ -357,6 +401,7 @@ export async function fetchChainBalance(
         )
         if (!isCurrent()) return
         adapter?.getWallet().setCachedBalance(balance)
+        noteBackgroundRead(chainIdentifier, revision, true)
         const formattedBalance = adapter
           ? `${adapter.toDisplayAmount(balance)} ${adapter.unit}`
           : `${formatUnits(balance, 6)} PathUSD`
@@ -393,6 +438,7 @@ export async function fetchChainBalance(
       const balance = await wallet.getBalance()
       if (!isCurrent()) return
       adapter?.getWallet().setCachedBalance(balance)
+      noteBackgroundRead(chainIdentifier, revision, true)
       secondaryStates[chainIdentifier] = {
         revision,
         balance,
@@ -407,6 +453,7 @@ export async function fetchChainBalance(
       }
     } catch (err) {
       if (!isCurrent()) return
+      noteBackgroundRead(chainIdentifier, revision, false)
       const routeMissing = err instanceof RelayWalletRouteUnavailableError
       if (isChainUnreachableError(err)) {
         console.debug(
@@ -494,6 +541,7 @@ export async function fetchChainBalance(
         fetchSolanaBalance(options).then(
           res => {
             if (!isCurrent()) return
+            noteBackgroundRead(scope.networkId, scope.revision, true)
             solanaWallet.setCachedBalance(res.lamports)
             solanaState.value = {
               balance: res.lamports,
@@ -508,6 +556,7 @@ export async function fetchChainBalance(
           },
           err => {
             if (!isCurrent()) return
+            noteBackgroundRead(scope.networkId, scope.revision, false)
             console.debug('Failed to fetch Solana balance', err)
             solanaState.value = {
               ...solanaState.value,
@@ -530,6 +579,7 @@ export async function fetchChainBalance(
       ])
     } catch (err) {
       if (!isCurrent()) return
+      noteBackgroundRead(scope.networkId, scope.revision, false)
       if (!(err instanceof RelayWalletRouteUnavailableError)) {
         console.debug('Failed to acquire Solana balance address', err)
       }
@@ -580,7 +630,7 @@ function acquireMultichain() {
   if (multichainConsumers === 1) {
     stopStatusWatch = watch(
       () => [accountStatus.status, accountStatus.revision],
-      () => fetchSecondaryBalances(true),
+      () => fetchSecondaryBalances(true, true),
       { flush: 'sync' },
     )
     if (typeof document !== 'undefined') {
@@ -734,16 +784,35 @@ export function getChainTokens(chainName: string): TokenItem[] {
 /**
  * Registry-wide multichain balance hook for drawer / multi-wallet views.
  */
-export function useMultichainBalance() {
+export function useMultichainBalance(
+  visible: Readonly<Ref<boolean>> | (() => boolean) = () => true,
+) {
   const monad = useBalance()
 
   if (getCurrentInstance()) {
+    // Background reads of every row only while this list is on screen; hidden, its rows keep
+    // their last observation (or stay unavailable) and nothing is read for them.
+    let counted = false
+    let stopVisibleWatch: (() => void) | undefined
+    const setCounted = (shown: boolean) => {
+      if (shown === counted) return
+      counted = shown
+      multichainListConsumers = Math.max(
+        0,
+        multichainListConsumers + (shown ? 1 : -1),
+      )
+      if (shown) fetchSecondaryBalances(false)
+      else secondaryBatchGeneration++
+    }
     onMounted(() => {
-      multichainListConsumers++
       acquireMultichain()
+      stopVisibleWatch = watch(visible, shown => setCounted(Boolean(shown)), {
+        immediate: true,
+      })
     })
     onUnmounted(() => {
-      multichainListConsumers = Math.max(0, multichainListConsumers - 1)
+      stopVisibleWatch?.()
+      setCounted(false)
       releaseMultichain()
     })
   }

@@ -46,7 +46,7 @@ import {
   EvmCoinList,
   type StoredEvmListCoin,
 } from "../evm-coin-list";
-import { installEvmTransactionSetRuntime } from "../evm-transaction-set-runtime";
+import { installEvmTransactionSetRuntime, SPENDABLE_POLICY_MAX_AGE_MS } from "../evm-transaction-set-runtime";
 import { receivedAccountBalanceSnapshot } from "../evm-wallet-coin-list";
 import { evmTransactionSetJournal } from "../evm-transaction-set-journal";
 import { observeRetainedForumSpend } from "../evm-forum-operation";
@@ -160,7 +160,7 @@ import type {
   HistoricalBip39Seed,
   MonadWalletMaterial,
 } from "../evm-wallet-material";
-import type { HDSeed } from "./active-chain";
+import type { HDSeed, WalletOpenOptions } from "./active-chain";
 import { EvmChangePool } from "../evm-change-pool";
 import { EvmSubAccountPool } from "../evm-account-pool";
 import { EvmNativeSources } from "../evm-native-sources";
@@ -1874,7 +1874,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
 
     async createWallet(
-      seed: HDSeed | MonadRootBundle | HistoricalBip39Seed
+      seed: HDSeed | MonadRootBundle | HistoricalBip39Seed,
+      options: WalletOpenOptions = {}
     ): Promise<EvmChainWalletHandle> {
       const material = createMonadWalletMaterial(seed);
       if (config.requireBoundWalletState === true && material.canonicalRoles === undefined) {
@@ -2265,7 +2266,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             changeKeyring,
             // Every full refresh walks the seed's branches for accounts in use on chain: a
             // restored device finds what the seed controls without the old device's store.
-            seedDiscovery: config.seedDiscovery === false ? undefined : { keyring },
+            seedDiscovery: config.seedDiscovery === false ? undefined : {
+              keyring,
+              // A seed this device generated moments ago, on a brand-new store, has no chain
+              // history to walk for (`NEW_SEED_NO_WALK_MS`).
+              ...(options.seedGeneratedAtMs === undefined ? {} : { generatedAtMs: options.seedGeneratedAtMs }),
+            },
             journal: evmTransactionSetJournal(topicOwner),
             // The runtime's changePool allocator persisted every derivation claim before
             // signing; cancellation cleanup can retire its journal without reusing keys.
@@ -2593,7 +2599,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           ];
 
           let primaryBalanceCache:
-            | { parts: BalanceParts; key: string; cachedAtMs: number }
+            | { parts: BalanceParts; key: string; ownedKey: string; cachedAtMs: number }
             | undefined;
           const balanceHead = spendRuleHeadReader(provider, config.spendRuleHead);
           const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
@@ -2737,9 +2743,17 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               const seedWalk = transactionSetRuntime.coinListSync.seedDiscovered();
               if (seedWalk) await seedWalk;
               else transactionSetRuntime.coinListSync.rediscoverIfOlderThan(SEED_REWALK_MS);
-              if (receivedCoinFloorWei() === 0n)
-                await transactionSetRuntime.transactionSetPolicy.refresh().catch(() => undefined);
               const owned = ownedBalanceAccounts();
+              // A recent complete observation of the same owned set answers without any request:
+              // no head, block or fee read. Every financial change invalidates it (and bumps the
+              // owned key), so it can only repeat what the chain said moments ago.
+              if (primaryBalanceCache?.ownedKey === owned.key &&
+                  Date.now() - primaryBalanceCache.cachedAtMs < PRIMARY_BALANCE_CACHE_TTL_MS)
+                return primaryBalanceCache.parts;
+              // The fee quote only classifies small received coins: read once while none is known,
+              // never on every balance read (the payment paths keep it current).
+              if (receivedCoinFloorWei() === 0n)
+                await transactionSetRuntime.transactionSetPolicy.refreshIfOlderThan(SPENDABLE_POLICY_MAX_AGE_MS).catch(() => undefined);
               const head = await balanceHead();
               const block = await provider.getBlock(head);
               if (!block?.hash || block.number !== head) throw new Error('Owned balance canonical block unavailable');
@@ -2747,8 +2761,6 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (generation !== balanceReadGeneration || ownedBalanceAccounts().key !== owned.key)
                 throw new Error('Owned balance observation changed; refresh again');
               const key = JSON.stringify([owned.key, head, block.hash]);
-              if (primaryBalanceCache?.key === key && Date.now() - primaryBalanceCache.cachedAtMs < PRIMARY_BALANCE_CACHE_TTL_MS)
-                return primaryBalanceCache.parts;
               const amounts = new Map<string, bigint>();
               // Bounded concurrency, complete coverage: budget exhaustion rejects the whole
               // read. A failed address never becomes a successful zero or a partial cache.
@@ -2778,7 +2790,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 }
               }
               const totalBalance = balanceOfParts(parts), observedAt = Date.now();
-              primaryBalanceCache = { key, parts, cachedAtMs: observedAt };
+              primaryBalanceCache = { key, ownedKey: owned.key, parts, cachedAtMs: observedAt };
               lastBalanceObservation = { balance: totalBalance, observedAt, parts };
               if (balanceObsStorageKey) {
                 try { globalThis.localStorage?.setItem(balanceObsStorageKey, JSON.stringify({ balance: totalBalance.toString(), observedAt })); }
@@ -3381,8 +3393,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   recordReceivedCoins(wallet, messages),
                 receivedCoins: () => coinStore.all(),
                 coinListAccounts: () => coinList.all().map((coin) => coin.account),
+                // Always a full walk of both branches, whatever the store recorded or the
+                // seed mark says: the documented way to find accounts a store lost.
                 walkSeed: async () => {
-                  await transactionSetRuntime.coinListSync.refresh({ all: true });
+                  await transactionSetRuntime.coinListSync.walkSeed();
                   transactionSetRuntime.coinListSync.assertFundingObserved();
                 },
                 operations: () => topicOwner!.nativeJournal!.list(),

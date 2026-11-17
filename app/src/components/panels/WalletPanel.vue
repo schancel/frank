@@ -215,7 +215,9 @@ const route = useRoute()
 const showRelayUnavailable = shallowRef(false)
 const instance = getCurrentInstance()
 const { getCustomName } = useWalletNames()
-const { getPresentation } = useMultichainBalance()
+// Rows read their chains in the background only while the panel is on screen.
+const props = defineProps<{ shown?: boolean }>()
+const { getPresentation } = useMultichainBalance(() => props.shown ?? true)
 /** A wallet the relay does not serve, with no balance ever read: nothing to show for it. */
 function relayUnavailable(wallet: string): boolean {
   const presentation = getPresentation(wallet)
@@ -279,8 +281,6 @@ function nativeBalanceTitle(wallet: string): string {
     ? `${amount}. ${instance?.proxy?.$t('accountRecovery.balance_stale')}`
     : amount
 }
-
-defineProps<{ shown?: boolean }>()
 
 const selectedChain = computed(() => {
   const currentPath = route?.path ?? ''

@@ -267,7 +267,7 @@ it.each([429, 'NETWORK_ERROR'])('keeps a failed read observable when invalidated
 })
 
 describe('the seed walk', () => {
-  async function walking(options: { walkedAtMs?: number; found?: string[] } = {}) {
+  async function walking(options: { walkedAtMs?: number; found?: string[]; active?: () => boolean; newSeedAt?: () => number | undefined } = {}) {
     const f = await fixture()
     const walks: ('all' | 'change')[] = []
     const recorded: number[] = []
@@ -286,6 +286,8 @@ describe('the seed walk', () => {
         recorded.push(atMs)
         walkedAtMs = atMs
       },
+      ...(options.active ? { hasActivity: options.active } : {}),
+      ...(options.newSeedAt ? { newSeedWalkedAtMs: options.newSeedAt } : {}),
     })
     return { ...f, sync, walks, recorded }
   }
@@ -307,6 +309,61 @@ describe('the seed walk', () => {
     await f.sync.refresh({ all: true })
     await new Promise(resolve => setImmediate(resolve))
     expect(f.walks).toEqual(['all', 'change'])
+  })
+
+  it('re-walks the change branch every 10 minutes, and only on a chain with activity', async () => {
+    expect(SEED_REWALK_MS).toBe(10 * 60_000)
+    let now = 1_000_000
+    jest.spyOn(Date, 'now').mockImplementation(() => now)
+    let active = false
+    // A seed this device generated: counted as walked at creation, no initial walk.
+    const f = await walking({ walkedAtMs: now, active: () => active })
+    expect(f.sync.seedDiscovered()).toBeUndefined()
+    await f.sync.refresh({ all: true })
+    now += 60_000
+    await f.sync.refresh({ all: true })
+    expect(f.walks).toEqual([])
+    // Old enough, but nothing here yet: still no walk (the deposit roots are read every pass).
+    now += SEED_REWALK_MS
+    await f.sync.refresh({ all: true })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(f.walks).toEqual([])
+    // Once the wallet has activity on the chain, another device's change accounts are looked for.
+    active = true
+    await f.sync.refresh({ all: true })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(f.walks).toEqual(['change'])
+  })
+
+  it('a brand-new store of a seed generated here records the walk once instead of walking', async () => {
+    jest.spyOn(Date, 'now').mockImplementation(() => 2_000_000)
+    let asked = 0
+    const f = await walking({ newSeedAt: () => (asked++, 1_990_000) })
+    await Promise.all([f.sync.seedDiscovered(), f.sync.seedDiscovered(), f.sync.refresh({ all: true })])
+    expect(f.walks).toEqual([])
+    // Recorded as a real walk at generation: later opens use the stored fact, not the mark.
+    expect(f.recorded).toEqual([1_990_000])
+    expect(asked).toBe(1)
+    expect(f.sync.seedDiscovered()).toBeUndefined()
+  })
+
+  it('walks in full when the store is not brand-new or the mark is not recent', async () => {
+    const f = await walking({ newSeedAt: () => undefined })
+    await f.sync.refresh({ all: true })
+    expect(f.walks).toEqual(['all'])
+  })
+
+  it('the user reconcile walks both branches whatever the store recorded', async () => {
+    jest.spyOn(Date, 'now').mockImplementation(() => 2_000_000)
+    const f = await walking({ newSeedAt: () => 1_990_000 })
+    await f.sync.refresh({ all: true })
+    expect(f.walks).toEqual([])
+    await f.sync.walkSeed()
+    expect(f.walks).toEqual(['all'])
+    expect(f.recorded).toEqual([1_990_000, 2_000_000])
+    const recorded = await walking({ walkedAtMs: 1_999_000 })
+    await recorded.sync.walkSeed()
+    expect(recorded.walks).toEqual(['all'])
   })
 
   it('a store the walk was recorded in is not walked before its first read', async () => {

@@ -386,3 +386,79 @@ test("a closed wallet refuses", async () => {
   await expect(reconcileEvmWallet(wallet)).rejects.toThrow(/closed/);
   wallet = (await createEvmChain(cfg).createWallet(roots())) as EvmChainWalletHandle;
 });
+
+test("an idle balance poll makes no head, block or fee read while its observation is fresh, and reuses a recent fee quote", async () => {
+  const provider = wallet.provider;
+  const first = await wallet.getBalanceParts!();
+  const blocks = jest.mocked(provider.getBlock).mock.calls.length;
+  const heads = jest.mocked(provider.getBlockNumber).mock.calls.length;
+  const fees = jest.mocked(provider.getFeeData).mock.calls.length;
+  const balances = jest.mocked(provider.getBalance).mock.calls.length;
+  // A second consumer moments later: the same observation, no request at all.
+  expect(await wallet.getBalanceParts!()).toBe(first);
+  expect(jest.mocked(provider.getBlock).mock.calls.length).toBe(blocks);
+  expect(jest.mocked(provider.getBlockNumber).mock.calls.length).toBe(heads);
+  expect(jest.mocked(provider.getFeeData).mock.calls.length).toBe(fees);
+  expect(jest.mocked(provider.getBalance).mock.calls.length).toBe(balances);
+
+  // Once the observation is older than its short TTL, it is read again, but the fee quote the
+  // first read took is reused (the balance never asks for a new one each poll).
+  const now = Date.now();
+  const clock = jest.spyOn(Date, "now").mockReturnValue(now + 5_000);
+  try {
+    await wallet.getBalanceParts!();
+    expect(jest.mocked(provider.getBlock).mock.calls.length).toBeGreaterThan(blocks);
+    expect(jest.mocked(provider.getFeeData).mock.calls.length).toBe(fees);
+    // Two spendable reads within the quote's max age: at most one fee read between them.
+    await wallet.getSpendableBalance!();
+    const afterFirstSpendable = jest.mocked(provider.getFeeData).mock.calls.length;
+    await wallet.getSpendableBalance!();
+    expect(jest.mocked(provider.getFeeData).mock.calls.length).toBe(afterFirstSpendable);
+  } finally {
+    clock.mockRestore();
+  }
+  // A financial change invalidates the cache at once.
+  wallet.invalidateBalanceCache!();
+  const before = jest.mocked(provider.getBlock).mock.calls.length;
+  await wallet.getBalanceParts!();
+  expect(jest.mocked(provider.getBlock).mock.calls.length).toBeGreaterThan(before);
+});
+
+describe("a seed this device generated", () => {
+  /** Opens the wallet at `name`'s storage and counts the nonce reads of its first balance read:
+   * a walk of both branches to the gap (SEED_DISCOVERY_GAP = 50 each) makes at least 100. */
+  const openAndRead = async (name: string, options?: { seedGeneratedAtMs: number }) => {
+    await wallet.close();
+    jest.restoreAllMocks();
+    cfg = { ...cfg, walletStorageLocation: join(root, `wallet-${name}`) };
+    wallet = (await createEvmChain(cfg).createWallet(roots(), options)) as EvmChainWalletHandle;
+    state = node(wallet);
+    await wallet.getBalance();
+    return jest.mocked(wallet.provider.getTransactionCount).mock.calls.length;
+  };
+
+  test("a brand-new store opened just after generation does no walk and records one; a restored seed walks", async () => {
+    expect(await openAndRead("generated", { seedGeneratedAtMs: Date.now() })).toBeLessThan(10);
+    // Recorded in the store: the next open, with or without the mark, trusts it.
+    expect(await openAndRead("generated")).toBeLessThan(10);
+    expect(await openAndRead("restored")).toBeGreaterThanOrEqual(100);
+  });
+
+  test("a chain first opened later walks in full, whatever the mark", async () => {
+    // The seed may since have been restored and used on another device on this chain.
+    expect(
+      await openAndRead("secondary", { seedGeneratedAtMs: Date.now() - 24 * 60 * 60_000 })
+    ).toBeGreaterThanOrEqual(100);
+  });
+
+  test("the user reconcile walks the seed in full despite the mark", async () => {
+    const opened = await openAndRead("reconciled", { seedGeneratedAtMs: Date.now() });
+    expect(opened).toBeLessThan(10);
+    mailbox([]);
+    const summary = await reconcileEvmWallet(wallet);
+    expect(summary.failures).toEqual([]);
+    expect(
+      jest.mocked(wallet.provider.getTransactionCount).mock.calls.length - opened
+    ).toBeGreaterThanOrEqual(100);
+  });
+});

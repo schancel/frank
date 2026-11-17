@@ -17,6 +17,20 @@ import {
   RelayOperatorCheckpointUnavailableError,
   requireRelayOperatorCheckpoint,
 } from './relay-wallet-route'
+// Which peer networks hold local wallet state (`findWalletStateNetworks`); undefined: the host
+// cannot tell, which recovery treats as present.
+let mockStateNetworks: string[] | undefined
+const mockFindWalletStateNetworks = jest.fn(
+  async (_base: string, ids: readonly string[]) =>
+    mockStateNetworks === undefined
+      ? undefined
+      : new Set(ids.filter(id => mockStateNetworks!.includes(id))),
+)
+jest.mock('@frank/wallet/storage/wallet-state-location', () => ({
+  ...jest.requireActual('@frank/wallet/storage/wallet-state-location'),
+  findWalletStateNetworks: (base: string, ids: readonly string[]) =>
+    mockFindWalletStateNetworks(base, ids),
+}))
 const mockState = {
   status: 'ready',
   account: { receipt: { context: { accountId: 'a' } } },
@@ -128,6 +142,7 @@ beforeEach(async () => {
   await closeOpenedEvmWallets()
   jest.clearAllMocks()
   mockEnabledPeerNetworks.clear()
+  mockStateNetworks = undefined
   mockSessionOverride = undefined
   mockState.status = 'ready'
   mockState.revision++
@@ -1048,4 +1063,88 @@ it('recovers an enabled secondary journal without signing another payment', asyn
   expect(mockCreate).toHaveBeenCalledTimes(1)
   expect(reobserve).toHaveBeenCalledTimes(2)
   expect(flush).toHaveBeenCalledTimes(2)
+})
+
+describe('secondary recovery opens only peers with local state', () => {
+  beforeEach(() => {
+    mockStateNetworks = []
+  })
+
+  it('skips a peer with no state, still recovers one with a journal, and backs off a failing open', async () => {
+    mockEnabledPeerNetworks.add('ethereum-sepolia')
+    mockEnabledPeerNetworks.add('hyperliquid-testnet')
+    const reobserve = jest.fn(async () => undefined)
+    const flush = jest.fn(async () => [])
+    mockCreate.mockImplementation(async ({ config }) => ({
+      family: 'evm',
+      chainIdentifier: config.chainIdentifier,
+      close: jest.fn(async () => undefined),
+      reobserveNativeOperations: reobserve,
+      flushNativeSync: flush,
+    }))
+    // No state anywhere: nothing is opened, however many ticks run.
+    await recoverSecondaryEvmWallets(mockPrimary as never)
+    await recoverSecondaryEvmWallets(mockPrimary as never)
+    expect(mockCreate).not.toHaveBeenCalled()
+
+    expect(mockFindWalletStateNetworks).toHaveBeenCalledWith(
+      'configured-host-store',
+      expect.arrayContaining(['ethereum-sepolia', 'hyperliquid-testnet']),
+    )
+    // Sepolia holds a journal from an earlier session: it is opened and its original
+    // operations looked at; Hyperliquid, with none, is still not opened.
+    mockStateNetworks = ['ethereum-sepolia']
+    await recoverSecondaryEvmWallets(mockPrimary as never)
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(mockCreate.mock.calls[0][0].config.chainIdentifier).toBe(
+      'ethereum-sepolia',
+    )
+    expect(reobserve).toHaveBeenCalledTimes(1)
+    expect(flush).toHaveBeenCalledTimes(1)
+    // Open: looked at every tick, never reopened.
+    await recoverSecondaryEvmWallets(mockPrimary as never)
+    expect(mockCreate).toHaveBeenCalledTimes(1)
+    expect(flush).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not reopen a peer whose open failed on every tick, and retries it later', async () => {
+    mockEnabledPeerNetworks.add('ethereum-sepolia')
+    mockStateNetworks = ['ethereum-sepolia']
+    mockCreate.mockRejectedValue(new Error('rpc identity 503'))
+    const debug = jest
+      .spyOn(console, 'debug')
+      .mockImplementation(() => undefined)
+    const now = Date.now()
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(now)
+    try {
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      for (let i = 0; i < 5; i++)
+        await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+          () => undefined,
+        )
+      expect(mockCreate).toHaveBeenCalledTimes(1)
+      clock.mockReturnValue(now + 60_000)
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
+      expect(mockCreate).toHaveBeenCalledTimes(2)
+      // The second failure doubles the wait.
+      clock.mockReturnValue(now + 60_000 + 60_000)
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
+      expect(mockCreate).toHaveBeenCalledTimes(2)
+      clock.mockReturnValue(now + 60_000 + 120_000)
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
+      expect(mockCreate).toHaveBeenCalledTimes(3)
+    } finally {
+      clock.mockRestore()
+      debug.mockRestore()
+    }
+  })
 })

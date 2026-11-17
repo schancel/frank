@@ -424,19 +424,41 @@ test("an idle balance poll makes no head, block or fee read while its observatio
   expect(jest.mocked(provider.getBlock).mock.calls.length).toBeGreaterThan(before);
 });
 
-test("a seed this device generated does no initial seed walk; a restored one walks in full", async () => {
-  const walkReads = async (options?: { seedGeneratedAtMs: number }) => {
+describe("a seed this device generated", () => {
+  /** Opens the wallet at `name`'s storage and counts the nonce reads of its first balance read:
+   * a walk of both branches to the gap (SEED_DISCOVERY_GAP = 50 each) makes at least 100. */
+  const openAndRead = async (name: string, options?: { seedGeneratedAtMs: number }) => {
     await wallet.close();
     jest.restoreAllMocks();
-    cfg = { ...cfg, walletStorageLocation: join(root, `wallet-${options ? "generated" : "restored"}`) };
+    cfg = { ...cfg, walletStorageLocation: join(root, `wallet-${name}`) };
     wallet = (await createEvmChain(cfg).createWallet(roots(), options)) as EvmChainWalletHandle;
     state = node(wallet);
     await wallet.getBalance();
     return jest.mocked(wallet.provider.getTransactionCount).mock.calls.length;
   };
-  const generated = await walkReads({ seedGeneratedAtMs: Date.now() });
-  const restored = await walkReads();
-  // The restored device walks both branches to the gap (SEED_DISCOVERY_GAP = 50 each).
-  expect(restored).toBeGreaterThanOrEqual(100);
-  expect(generated).toBeLessThan(10);
+
+  test("a brand-new store opened just after generation does no walk and records one; a restored seed walks", async () => {
+    expect(await openAndRead("generated", { seedGeneratedAtMs: Date.now() })).toBeLessThan(10);
+    // Recorded in the store: the next open, with or without the mark, trusts it.
+    expect(await openAndRead("generated")).toBeLessThan(10);
+    expect(await openAndRead("restored")).toBeGreaterThanOrEqual(100);
+  });
+
+  test("a chain first opened later walks in full, whatever the mark", async () => {
+    // The seed may since have been restored and used on another device on this chain.
+    expect(
+      await openAndRead("secondary", { seedGeneratedAtMs: Date.now() - 24 * 60 * 60_000 })
+    ).toBeGreaterThanOrEqual(100);
+  });
+
+  test("the user reconcile walks the seed in full despite the mark", async () => {
+    const opened = await openAndRead("reconciled", { seedGeneratedAtMs: Date.now() });
+    expect(opened).toBeLessThan(10);
+    mailbox([]);
+    const summary = await reconcileEvmWallet(wallet);
+    expect(summary.failures).toEqual([]);
+    expect(
+      jest.mocked(wallet.provider.getTransactionCount).mock.calls.length - opened
+    ).toBeGreaterThanOrEqual(100);
+  });
 });

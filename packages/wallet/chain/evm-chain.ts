@@ -2264,7 +2264,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // restored device finds what the seed controls without the old device's store.
             seedDiscovery: config.seedDiscovery === false ? undefined : {
               keyring,
-              // A seed this device generated has no chain history to walk for.
+              // A seed this device generated moments ago, on a brand-new store, has no chain
+              // history to walk for (`NEW_SEED_NO_WALK_MS`).
               ...(options.seedGeneratedAtMs === undefined ? {} : { generatedAtMs: options.seedGeneratedAtMs }),
             },
             journal: evmTransactionSetJournal(topicOwner),
@@ -3388,8 +3389,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   recordReceivedCoins(wallet, messages),
                 receivedCoins: () => coinStore.all(),
                 coinListAccounts: () => coinList.all().map((coin) => coin.account),
+                // Always a full walk of both branches, whatever the store recorded or the
+                // seed mark says: the documented way to find accounts a store lost.
                 walkSeed: async () => {
-                  await transactionSetRuntime.coinListSync.refresh({ all: true });
+                  await transactionSetRuntime.coinListSync.walkSeed();
                   transactionSetRuntime.coinListSync.assertFundingObserved();
                 },
                 operations: () => topicOwner!.nativeJournal!.list(),

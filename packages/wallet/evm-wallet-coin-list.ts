@@ -1,7 +1,11 @@
 /** Wallet inventory composition, independent of canonical messaging and fund-ahead. */
 import type { Provider, Wallet } from 'ethers'
 import type { EvmCoinList, EvmListCoin } from './evm-coin-list'
-import { EvmCoinListSync, type CoinListSource } from './evm-coin-list-sync'
+import {
+  EvmCoinListSync,
+  NEW_SEED_NO_WALK_MS,
+  type CoinListSource,
+} from './evm-coin-list-sync'
 import type { EvmBlockWatcher } from './evm-block-watcher'
 import type { EvmSubAccountPool } from './evm-account-pool'
 import type { EvmChangePool } from './evm-change-pool'
@@ -63,8 +67,9 @@ export function installEvmWalletCoinList(params: {
   seedDiscovery?: {
     keyring: MonadHdKeyring
     gap?: number
-    /** This device generated the seed then (`WalletOpenOptions.seedGeneratedAtMs`): a store with
-     * no recorded walk counts as walked at that time. Nothing is written for it. */
+    /** This device generated the seed then (`WalletOpenOptions.seedGeneratedAtMs`). Only a
+     * brand-new store (no walk record, nothing in it) read within `NEW_SEED_NO_WALK_MS` of that
+     * skips its initial walk, and records the skip as a walk at that time. */
     generatedAtMs?: number
   }
   /** Where this wallet's background merges go: watched once found, and looked for by each walk
@@ -166,29 +171,38 @@ export function installEvmWalletCoinList(params: {
     // Not yet coins of the list: read before the walk is recorded as done.
     return [...merged, ...funded.map(found => found.account)]
   })
+  // Activity on this chain: any coin (a spent one included), any allocated or recovered change
+  // account, any deterministic pool account past `unfunded` (the open itself derives unfunded
+  // ones), or the deposit roots having been seen holding or spending a coin.
+  const hasActivity = () =>
+    coinList.all().length > 0 ||
+    changePool.records().length > 0 ||
+    changePool.recoveredAccounts().length > 0 ||
+    changePool.nextUnusedIndex() > 0 ||
+    pool.records().some(record => record.status !== 'unfunded') ||
+    coinList.latestOf(mainAccount.address) !== undefined ||
+    coinList.latestOf(identity.address.raw) !== undefined
   const sync = new EvmCoinListSync({
     discover,
     // The change pool keeps the time of the last completed walk with what it found, so a
     // reopened store is not walked again before its first balance read.
     ...(params.seedDiscovery
       ? {
-          lastDiscoveredAtMs: () =>
-            changePool.seedWalkedAtMs() ?? params.seedDiscovery!.generatedAtMs,
+          lastDiscoveredAtMs: () => changePool.seedWalkedAtMs(),
           recordDiscovered: async (atMs: number) => {
             changePool.recordSeedWalk(atMs)
             await changePool.flush()
           },
-          // Activity on this chain: any coin (a spent one included), any allocated or recovered
-          // change account, any deterministic pool account, or the deposit roots having been
-          // seen holding or spending a coin.
-          hasActivity: () =>
-            coinList.all().length > 0 ||
-            changePool.records().length > 0 ||
-            changePool.recoveredAccounts().length > 0 ||
-            changePool.nextUnusedIndex() > 0 ||
-            pool.records().length > 0 ||
-            coinList.latestOf(mainAccount.address) !== undefined ||
-            coinList.latestOf(identity.address.raw) !== undefined,
+          hasActivity,
+          // Brand-new means nothing at all in the store: an existing store without a walk record
+          // (an older build's, or one whose walk never completed) may hold what another device
+          // did, so it walks.
+          newSeedWalkedAtMs: () => {
+            const atMs = params.seedDiscovery!.generatedAtMs
+            if (atMs === undefined || hasActivity()) return undefined
+            const ageMs = Date.now() - atMs
+            return ageMs >= 0 && ageMs <= NEW_SEED_NO_WALK_MS ? atMs : undefined
+          },
         }
       : {}),
     list: coinList,

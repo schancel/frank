@@ -1,6 +1,7 @@
 import { Wallet, Transaction } from 'ethers'
 import { InMemorySubAccountPoolStore } from './storage/sub-account-pool-storage'
 import { installEvmWalletCoinList } from './evm-wallet-coin-list'
+import { NEW_SEED_NO_WALK_MS } from './evm-coin-list-sync'
 import { EvmCoinList } from './evm-coin-list'
 import { EvmBlockWatcher } from './evm-block-watcher'
 import { EvmChangePool } from './evm-change-pool'
@@ -125,4 +126,69 @@ it('registers root, identity, deterministic, received and change sources without
   })
   expect(coinList.latestOf(change.address)?.changeIndex).toBe(7)
   expect(sync.keyOf(change.address)).toBe(change.privateKey)
+})
+
+describe('a seed this device generated', () => {
+  const NOW = 1_800_000_000_000
+  /** A wallet's inventory on an empty chain; `walkReads` counts the seed walk's nonce reads. */
+  async function open(options: { generatedAtMs?: number; changePool?: EvmChangePool } = {}) {
+    jest.spyOn(Date, 'now').mockImplementation(() => NOW)
+    const keyring = MonadHdKeyring.fromMnemonic(mnemonic)
+    const changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
+    const changePool = options.changePool ?? new EvmChangePool({ keyring: changeKeyring })
+    const mainAccount = new Wallet('0x' + '11'.repeat(32))
+    const provider = {
+      getBalance: jest.fn(async () => 0n),
+      getTransactionCount: jest.fn(async () => 0),
+    }
+    const sync = installEvmWalletCoinList({
+      mainAccount,
+      identity: MonadIdentity.fromSeed({ mnemonic }),
+      pool: new EvmSubAccountPool({
+        store: new InMemorySubAccountPoolStore(),
+        keyring,
+        mainAccountAddress: mainAccount.address,
+      }),
+      changePool,
+      changeKeyring,
+      coinStore: new MemoryRecordStore<EvmCoin>(),
+      coinList: await EvmCoinList.open(new MemoryRecordStore()),
+      provider: provider as never,
+      watcher: { current: async () => 100 } as EvmBlockWatcher,
+      seedDiscovery: {
+        keyring,
+        ...(options.generatedAtMs === undefined ? {} : { generatedAtMs: options.generatedAtMs }),
+      },
+    })
+    await sync.refresh({ all: true })
+    return { sync, changePool, walkReads: () => provider.getTransactionCount.mock.calls.length }
+  }
+  afterEach(() => jest.restoreAllMocks())
+
+  it('a brand-new store opened minutes after generation does not walk, and records the walk', async () => {
+    const generatedAtMs = NOW - 2 * 60_000
+    const f = await open({ generatedAtMs })
+    expect(f.walkReads()).toBeLessThan(10)
+    // Stored as a real walk at generation: a later open, mark or none, trusts it.
+    expect(f.changePool.seedWalkedAtMs()).toBe(generatedAtMs)
+    const reopened = await open({ changePool: f.changePool })
+    expect(reopened.walkReads()).toBeLessThan(10)
+  })
+
+  it('walks in full when the mark is older than the window (a chain first opened later)', async () => {
+    const f = await open({ generatedAtMs: NOW - NEW_SEED_NO_WALK_MS - 1 })
+    // Both branches to the gap (50 each).
+    expect(f.walkReads()).toBeGreaterThanOrEqual(100)
+    expect(f.changePool.seedWalkedAtMs()).toBe(NOW)
+  })
+
+  it('walks in full when an existing store has state but no walk record, however recent the mark', async () => {
+    const changeKeyring = MonadChangeKeyring.fromMnemonic(mnemonic)
+    const changePool = new EvmChangePool({ keyring: changeKeyring })
+    changePool.applyRecoveredAccounts([{
+      index: 0, address: changeKeyring.deriveChangeAccount(0).address, nonce: 1, balanceWei: '0',
+    }])
+    const f = await open({ generatedAtMs: NOW - 60_000, changePool })
+    expect(f.walkReads()).toBeGreaterThanOrEqual(100)
+  })
 })

@@ -921,9 +921,11 @@ export interface NativeAssetChain {
 
 /** Facts the host knows about the account when it opens a wallet. */
 export interface WalletOpenOptions {
-  /** This device generated the account's seed at this time (epoch ms): a new seed has no chain
-   * history, so a wallet store with no recorded walk counts as walked then and does no initial
-   * gap-limit walk. Absent for a restored, synced or imported account, which walks in full. */
+  /** This device generated the account's seed at this time (epoch ms). A brand-new wallet store
+   * first read within minutes of it (`NEW_SEED_NO_WALK_MS`) skips the initial gap-limit walk and
+   * records that as its walk; any other store (an older mark, a store with state but no walk
+   * record) walks in full. Absent for a restored, synced or imported account, which walks in
+   * full. Manual reconcile always walks. */
   readonly seedGeneratedAtMs?: number;
 }
 

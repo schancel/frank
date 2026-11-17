@@ -1,7 +1,10 @@
 /**
  * Whether this device generated the account's seed, and when. A new seed has no chain history,
- * so its wallets skip the initial gap-limit walk of the seed's branches (owner ruling,
- * 2026-11-16). Restored, synced and imported accounts are never marked and walk in full.
+ * so a brand-new wallet store first read minutes after generation skips the initial gap-limit walk
+ * of the seed's branches and records that as its walk (owner ruling, 2026-11-16). The wallet
+ * decides by the time (`NEW_SEED_NO_WALK_MS`): a later open, or a chain first opened later, walks
+ * in full, because the seed may since have been used on another device. Restored, synced and
+ * imported accounts are never marked and walk in full.
  *
  * Device-local and advisory: the mark lives in this browser's storage, keyed by the local account
  * id (a fresh random id per ceremony attempt). Losing it (cleared storage, another browser) only

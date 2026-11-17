@@ -43,6 +43,14 @@ describe("RaffleBot", () => {
     h.sent.length = 0;
     await enter(h, bot, card.raffleId, ALICE);
     expect(JSON.parse(h.data.get("current_round")!).entrants).toEqual([ALICE]);
+    // Already in this round, a stale card is refunded with "already entered", no new card.
+    h.sent.length = 0;
+    await enter(h, bot, "00".repeat(16), ALICE);
+    expect(h.item("raffle", h.sent[0])).toMatchObject({
+      action: "error",
+      message: "You have already entered this round.",
+    });
+    expect(h.sent[0].valueWei).toBe(PRICE);
   });
 
   test("announces the round with its seed commitment before any entry", async () => {

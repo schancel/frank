@@ -79,6 +79,8 @@ export const rawEnUS = {
     stampPreparationWaiting: 'Waiting for the previous payment to confirm…',
     stampPreparationWaitingBlocks:
       'Waiting for the previous payment to confirm ({blocks} blocks to go)…',
+    groupPaymentsUnsupported:
+      'Payments cannot be sent in a group conversation. Nothing was sent.',
     sendContextChanged:
       'The account, chain or conversation changed. Review the action again.',
     chainUnreachable:

@@ -1221,6 +1221,7 @@ import type { EmailParty, EmailAttachment } from '@frank/codec'
 import {
   formatCompactAmount,
   formatDisplayAmount,
+  formatDisplayNumber,
 } from 'src/utils/chain-amount'
 import { STAMP_MULTIPLIER_TENTHS } from 'src/components/chat/ChatInput.vue'
 import { defaultStaticStampForChain } from '@frank/wallet/oracle'
@@ -1756,13 +1757,17 @@ export default defineComponent({
         this.availableBalanceWei !== undefined &&
         this.stampWei > this.availableBalanceWei
       ) {
-        return `Not enough ${
-          this.chainUnit
-        }: need ${activeChain.toDisplayAmount(this.stampWei)} ${
-          this.chainUnit
-        }, have ${activeChain.toDisplayAmount(this.availableBalanceWei)} ${
-          this.chainUnit
-        }`
+        // As Chat.vue: what is needed rounds up and what is held rounds down, so a shortfall
+        // never reads as enough.
+        return this.$t('chatInput.insufficientBalanceForStamp', {
+          unit: this.chainUnit,
+          need: formatDisplayNumber(activeChain, this.stampWei, 'up'),
+          have: formatDisplayNumber(
+            activeChain,
+            this.availableBalanceWei,
+            'down',
+          ),
+        })
       }
       return null
     },

@@ -133,6 +133,8 @@ export const rawFrFR = {
       'En attente de la confirmation du paiement précédent…',
     stampPreparationWaitingBlocks:
       'En attente de la confirmation du paiement précédent (encore {blocks} blocs)…',
+    groupPaymentsUnsupported:
+      'Les paiements ne peuvent pas être envoyés dans une conversation de groupe. Rien n’a été envoyé.',
     sendContextChanged:
       'Le compte, la chaîne ou la conversation a changé. Vérifiez à nouveau cette action.',
     chainUnreachable:

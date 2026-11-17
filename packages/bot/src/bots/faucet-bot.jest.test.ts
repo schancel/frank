@@ -1,5 +1,5 @@
 import { harness, PLAYER } from "./bot-harness.testutil";
-import { FaucetBot, MAX_AMOUNT_WEI } from "./faucet-bot";
+import { FAUCET_LOW_WELCOME, FaucetBot, MAX_AMOUNT_WEI } from "./faucet-bot";
 
 const AMOUNT = 50_000_000_000_000_000n;
 const RESERVE = 100_000_000_000_000_000n;
@@ -142,6 +142,28 @@ describe("FaucetBot paid welcome", () => {
     await waiting.handler(f.ctx);
     expect(f.settlements()).toEqual([AMOUNT]);
     expect(JSON.parse(f.data.get("waiting_for_grant") ?? "[]")).toEqual([]);
+  });
+
+  test("a retried sign-up that finds the faucet low tells the account once", async () => {
+    const f = harness();
+    f.ctx.getBalance = async () => {
+      throw new Error("upstream RPC error 429");
+    };
+    const b = bot();
+    await b.onNewUser(user(), f.ctx);
+    expect(f.sent).toHaveLength(0);
+    f.ctx.getBalance = async () => AMOUNT + RESERVE - 1n;
+    const waiting = b.schedules.find((s) => s.id === "faucet-waiting")!;
+    await waiting.handler(f.ctx);
+    expect(f.sent).toHaveLength(1);
+    expect(f.sent[0]).toMatchObject({ to: PLAYER, valueWei: 0n });
+    expect(f.item("text").text).toBe(FAUCET_LOW_WELCOME);
+    // Still low on later passes and after a restart: no repeated notice, still waiting.
+    await waiting.handler(f.ctx);
+    await bot().schedules.find((s) => s.id === "faucet-waiting")!.handler(f.ctx);
+    expect(f.sent).toHaveLength(1);
+    expect(f.paidOut()).toBe(0n);
+    expect(JSON.parse(f.data.get("waiting_for_grant") ?? "[]")).toEqual([PLAYER]);
   });
 
   test("ambiguous submission keeps the same message ID across restart and repeated requests", async () => {

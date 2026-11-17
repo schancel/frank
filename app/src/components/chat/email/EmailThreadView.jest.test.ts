@@ -1579,9 +1579,9 @@ describe('EmailThreadView', () => {
           .spyOn(notifications, 'errorNotify')
           .mockImplementation(() => undefined)
         const wrapper = mountView({
-          stampAmount: '20.6019',
+          stampAmount: '20.60181',
           defaultStampWei: 468_700_000_000_000_000n,
-          availableBalanceWei: 9_621_800_000_000_000_000n,
+          availableBalanceWei: 9_621_890_000_000_000_000n,
           defaultStampMode: false,
         })
         const vm = wrapper.vm as any
@@ -1592,7 +1592,9 @@ describe('EmailThreadView', () => {
           '[data-testid="email-insufficient-balance-warning"]',
         )
         expect(warning.exists()).toBe(true)
-        expect(warning.text()).toContain('Not enough')
+        // Localized and rounded as Chat.vue rounds it: need up, have down.
+        const reason = 'Not enough MONT: need 20.6019 MONT, have 9.6218 MONT'
+        expect(warning.text()).toContain(reason)
 
         const resetBtn = wrapper.find('[data-testid="email-reset-fee-btn"]')
         expect(resetBtn.exists()).toBe(true)
@@ -1600,7 +1602,9 @@ describe('EmailThreadView', () => {
         expect(wrapper.emitted('resetStampDefault')).toBeTruthy()
 
         await vm.handleSend()
-        expect(errorSpy).toHaveBeenCalled()
+        expect(errorSpy).toHaveBeenCalledWith(new Error(reason), {
+          safeMessage: reason,
+        })
         expect(wrapper.emitted('sendReply')).toBeFalsy()
         expect(vm.replyText).toBe('Draft that must not be lost')
         errorSpy.mockRestore()

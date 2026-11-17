@@ -17,6 +17,11 @@ export const MAX_AMOUNT_WEI = 1_000_000_000_000_000_000n; // 1 MON
 
 /** State key of the new accounts the faucet was too low to grant at sign-up. */
 const WAITING = "waiting_for_grant";
+/** State key prefix marking a waiting account already told the faucet is low. */
+const TOLD_LOW = "told_low:";
+/** What a new account is told, once, when the faucet is too low to grant it yet. */
+export const FAUCET_LOW_WELCOME =
+  "This is the Frank faucet. It is low right now, so your starter coins could not be sent yet. They are sent to you as soon as the faucet is topped up; you do not need to ask.";
 
 export interface FaucetBotOptions {
   /** What each profile is granted, once (`FAUCET_AMOUNT_WEI`). */
@@ -167,7 +172,11 @@ export class FaucetBot implements FrankBotDefinition {
     for (const address of waiting) {
       try {
         const outcome = await this.grant(ctx, address);
-        if (outcome === "low") still.push(address);
+        if (outcome === "low") {
+          still.push(address);
+          // A sign-up whose first attempt failed transiently reaches "low" only here.
+          await this.tellLow(ctx, address);
+        }
         if (outcome === "queued") queued = true;
       } catch (err) {
         still.push(address);
@@ -187,12 +196,8 @@ export class FaucetBot implements FrankBotDefinition {
       if (outcome === "low") {
         // Never silent: the new account is told, and granted once the faucet is topped up.
         await this.addWaiting(ctx, user.address);
-        await sendFree(ctx, user.address, [
-          {
-            type: "text",
-            text: "This is the Frank faucet. It is low right now, so your starter coins could not be sent yet. They are sent to you as soon as the faucet is topped up; you do not need to ask.",
-          },
-        ]);
+        // In the waiting turn, like the scheduled passes, so a pass running now can't tell it too.
+        await this.waitingTurn(() => this.tellLow(ctx, user.address));
       }
     } catch (err) {
       // A transient failure (an upstream RPC 429 reading the balance, a state write) must not
@@ -211,6 +216,19 @@ export class FaucetBot implements FrankBotDefinition {
           waitErr
         );
       }
+    }
+  }
+
+  /** Tells a waiting account, once, that the faucet is low; a failed notice is tried again on
+   * the next waiting pass. */
+  private async tellLow(ctx: BotContext, address: string): Promise<void> {
+    const key = `${TOLD_LOW}${address.toLowerCase()}`;
+    if ((await ctx.state.get(key)) !== undefined) return;
+    try {
+      await sendFree(ctx, address, [{ type: "text", text: FAUCET_LOW_WELCOME }]);
+      await ctx.state.put(key, "1");
+    } catch (err) {
+      console.warn(`[faucet] Low-faucet notice for ${address} not sent yet:`, err);
     }
   }
 

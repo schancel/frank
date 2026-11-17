@@ -1995,8 +1995,10 @@ export default defineComponent({
         // A group message carries no stamp. A follow-up whose meaning is a payment (a purchase
         // priced as its stamp) is refused rather than silently sent for free.
         const groupConversation = this.conversation?.kind === 'group'
-        if (groupConversation && (stampValueWei ?? 0n) !== 0n)
-          throw new Error('Group payments are unsupported')
+        if (groupConversation && (stampValueWei ?? 0n) !== 0n) {
+          appAuthoredFailure = this.$t('chat.groupPaymentsUnsupported')
+          throw new Error(appAuthoredFailure)
+        }
         const stampValue = groupConversation
           ? 0n
           : stampValueWei ?? activeChain.fromDisplayAmount(this.stampAmount)

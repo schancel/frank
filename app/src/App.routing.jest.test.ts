@@ -522,6 +522,51 @@ describe('App exact conversation route authority (#1237)', () => {
     }
   })
 
+  it("notifies for chat B while chat A's Info page is open, and the click opens B", async () => {
+    const { chats, first, other, router, wrapper } = await mountedApp()
+    try {
+      await router.push(`/chat/${first.id}/info`)
+      await settleNavigation()
+      expect(router.currentRoute.value.name).toBe('group-info')
+      // A desktop notification is for a window not in focus, as in the sibling test above.
+      jest.spyOn(document, 'hasFocus').mockReturnValue(false)
+      desktopNotify.mockClear()
+      await chats.receiveMessages([
+        {
+          index: 'info-page-receipt',
+          conversationId: other.id,
+          outbound: false,
+          senderAddress: OTHER,
+          copartyAddress: OTHER,
+          copartyPubKey: { toBuffer: () => new Uint8Array(33) },
+          stampValue: 0,
+          message: {
+            conversationId: other.id,
+            outbound: false,
+            status: 'confirmed',
+            senderAddress: OTHER,
+            items: [{ type: 'text', text: 'Message for B' }],
+            serverTime: 100,
+            receivedTime: 100,
+            outpoints: [],
+          },
+        },
+      ])
+      expect(desktopNotify).toHaveBeenCalledTimes(1)
+      // Viewing A's Info neither reads nor opens B.
+      expect(router.currentRoute.value.name).toBe('group-info')
+      expect(router.currentRoute.value.params.address).toBe(first.id)
+      await desktopNotify.mock.calls.at(-1)[3]()
+      await settleNavigation()
+      expect(router.currentRoute.value.path).toBe(`/chat/${other.id}`)
+      expect(chats.activeConversationId).toBe(other.id)
+      expect(other.messages).toHaveLength(1)
+      expect(first.messages).toHaveLength(0)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
   it.each([PEER, OTHER, '0x4444444444444444444444444444444444444444'])(
     'views profile %s without selecting, allocating or reading its conversation',
     async peer => {

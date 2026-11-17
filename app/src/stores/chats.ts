@@ -5836,7 +5836,18 @@ export const useChatStore = defineStore('chats', {
         }
       }
       const duplicates: ReceivedMessageWrapper[] = []
+      // A read can hold the same row twice: the wallet put a note to self on the relay again
+      // after a restart, and both notes carry the sent message's digest. Rows under one digest
+      // are one message: the first is kept and compared, and a later one is dropped here, never
+      // taken for a copy of the first (which would drop and suppress the message it repeats).
+      const compared = new Set<string>()
+      const repeats = new Set<ReceivedMessageWrapper>()
       for (const wrapper of deliverableWrappers) {
+        if (compared.has(wrapper.index)) {
+          repeats.add(wrapper)
+          continue
+        }
+        compared.add(wrapper.index)
         const conv = receivedConversations.get(wrapper.index)
         if (!conv || outboundMatches.has(wrapper.index)) continue
         if (wrapper.index in this.messages) continue
@@ -5874,6 +5885,10 @@ export const useChatStore = defineStore('chats', {
           duplicates.push(wrapper)
         else latestContent.set(key, content)
       }
+      if (repeats.size > 0)
+        deliverableWrappers = deliverableWrappers.filter(
+          wrapper => !repeats.has(wrapper),
+        )
       if (duplicates.length > 0) {
         for (const wrapper of duplicates) {
           suppressedDigests.add(wrapper.index)

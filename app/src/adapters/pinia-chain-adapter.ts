@@ -42,7 +42,7 @@ import { createCooperativeBatchYielder } from '@frank/wallet/chain/event-loop-yi
 import { applyWalletSyncItem } from '@frank/wallet/sync-dispatcher'
 import { accountSession } from '../accounts/session'
 import {
-  openEvmWallet,
+  openEvmWalletInBackground,
   peekOpenedEvmWallets,
   recoverSecondaryEvmWallets,
 } from '../accounts/evm-wallets'
@@ -272,9 +272,9 @@ export function startDirectMessagePolling({
         onForeignWalletSync: async item => {
           if (stopped || accountSession.peekWallet() !== wallet)
             throw new Error('Wallet sync session changed')
-          // Not behind the recovery backoff: a held note holds this poll's delivery, so the
-          // peer is opened again on every poll and the inbox resumes as soon as it answers.
-          const target = await openEvmWallet(item.chainIdentifier)
+          // A note the peer cannot take now is kept by the wallet and tried again later; it never
+          // holds the inbox. So a peer whose last open failed waits out its retry time.
+          const target = await openEvmWalletInBackground(item.chainIdentifier)
           if (
             stopped ||
             accountSession.peekWallet() !== wallet ||

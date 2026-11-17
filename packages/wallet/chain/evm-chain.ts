@@ -64,10 +64,27 @@ import {
   SWEEP_INCLUSION_WAIT_MS,
   TRANSFER_FAILURE_RECHECK_MS,
   consumeEvmSelfNotes,
+  applyHeldPeerNotes,
+  HELD_PEER_NOTES_NAMESPACE,
+  type HeldPeerNote,
   createEvmReceivedCoinAndContactManager,
   recordEvmReceivedCoins,
   sourceIsHeld,
 } from "../evm-received-coin-manager";
+const heldPeerNoteRetries = new WeakMap<object, Promise<void>>();
+/** One background pass at a time per wallet over its held notes about other networks. */
+function retryHeldPeerNotes(
+  wallet: EvmChainWalletHandle,
+  onForeignWalletSync: (item: WalletSyncItem) => Promise<void>
+): void {
+  if (heldPeerNoteRetries.has(wallet)) return;
+  const pass = applyHeldPeerNotes(wallet, onForeignWalletSync)
+    .catch((error) =>
+      console.debug("[wallet-sync] held notes for other networks not retried yet:", error)
+    )
+    .finally(() => heldPeerNoteRetries.delete(wallet));
+  heldPeerNoteRetries.set(wallet, pass);
+}
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,
@@ -1500,6 +1517,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               : scannedUntil,
           });
         }
+        // Notes about other networks kept from earlier reads, tried again in the background: a
+        // network that is down never holds this read.
+        const onForeign = params.onForeignWalletSync;
+        if (onForeign) retryHeldPeerNotes(wallet, onForeign);
         const noteYielder = createCooperativeBatchYielder();
         let noteStarted = false;
         for (const msg of canonicalReceived) {
@@ -2011,6 +2032,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             evmCoinListStore?.close(),
             notedSendStore?.close(),
             depositStore?.close(),
+            heldPeerNoteStore?.close(),
           ]);
         const pool = new EvmSubAccountPool({
           keyring,
@@ -2033,6 +2055,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
         let evmCoinListStore: RecordStore<StoredEvmListCoin> | undefined;
         let notedSendStore: RecordStore<NotedSend> | undefined;
         let depositStore: RecordStore<EvmDepositRow> | undefined;
+        let heldPeerNoteStore: RecordStore<HeldPeerNote> | undefined;
         let topicOwnerWallet: EvmChainWalletHandle | undefined;
         let destroyProvider: (() => void) | undefined;
         let destroyHttpClient: (() => void) | undefined;
@@ -2216,8 +2239,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             evmCoinListStore = new MemoryRecordStore<StoredEvmListCoin>();
             notedSendStore = new MemoryRecordStore<NotedSend>();
             depositStore = new MemoryRecordStore<EvmDepositRow>();
+            heldPeerNoteStore = new MemoryRecordStore<HeldPeerNote>();
           } else {
-            [coins, preparations, contactPayments, coinListState, evmCoinListStore, notedSendStore, depositStore] =
+            [coins, preparations, contactPayments, coinListState, evmCoinListStore, notedSendStore, depositStore, heldPeerNoteStore] =
               await Promise.all([
                 LevelRecordStore.open<EvmCoin>(
                   storageLocation,
@@ -2246,6 +2270,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 LevelRecordStore.open<EvmDepositRow>(
                   storageLocation,
                   EVM_EXTERNAL_DEPOSITS_NAMESPACE
+                ),
+                LevelRecordStore.open<HeldPeerNote>(
+                  storageLocation,
+                  HELD_PEER_NOTES_NAMESPACE
                 ),
               ]);
           }
@@ -3665,6 +3693,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           }
           walletInternals.material = material;
           walletInternals.notedSends = notedSends;
+          walletInternals.heldPeerNotes = heldPeerNoteStore;
           walletInternals.mainAccountAdmission = admission;
           if (material.canonicalRoles !== undefined)
             walletInternals.typed = true;

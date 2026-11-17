@@ -60,7 +60,8 @@ jest.mock('./level-message-store', () => ({
 
 const mockOpenForeignEvmWallet = jest.fn()
 jest.mock('../accounts/evm-wallets', () => ({
-  openEvmWallet: (...args: unknown[]) => mockOpenForeignEvmWallet(...args),
+  openEvmWalletInBackground: (...args: unknown[]) =>
+    mockOpenForeignEvmWallet(...args),
   recoverSecondaryEvmWallets: jest.fn(async () => []),
 }))
 
@@ -401,7 +402,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       }
     })
 
-    it('opens a failing peer again on every poll, holding the cursor, and delivers on the first poll after it answers', async () => {
+    it('reports a peer that cannot take its note to the wallet, which decides what waits, and applies it once the peer answers', async () => {
       const peek = jest
         .spyOn(accountSession, 'peekWallet')
         .mockReturnValue(wallet)
@@ -442,7 +443,7 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       const polling = startPolling(20)
       try {
         await advanceUntil(() => receive.mock.calls.length >= 1)
-        // Every poll tried the open (no backoff), and the poll right after it answered delivered.
+        // The peer open (behind its own retry time in the app) failed three times, then answered.
         expect(mockOpenForeignEvmWallet).toHaveBeenCalledTimes(4)
         const polls = fetch.mock.calls.map(call => call[0].sinceMs)
         expect(polls.slice(0, 4)).toEqual([0, 0, 0, 0])

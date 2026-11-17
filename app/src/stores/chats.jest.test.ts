@@ -1526,6 +1526,8 @@ describe('stores/chats.ts (ticket #42)', () => {
         // The store's own wrapper (it marks a waiting send); the caller's is called through it.
         onPreparationProgress: expect.any(Function),
         onAttemptCreated: expect.any(Function),
+        // Marks the message sent as soon as the relay has stored it.
+        onDelivered: expect.any(Function),
         // So that deleting the bubble can cancel a send that is still waiting.
         signal: expect.any(AbortSignal),
       })

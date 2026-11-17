@@ -10,6 +10,9 @@ describe("the default stamp AVU policy", () => {
     expect(DEFAULT_STAMP_TARGET_AVU).toBe("0.1");
     expect(stampPolicyConfig()).toEqual({ targetAvu: "0.1" });
     expect(stampPolicyConfig("0.25")).toEqual({ targetAvu: "0.25" });
+    // Quasar delivers QCLI_FRANK_DM_DEFAULT_STAMP_AVU=0.1 to the app as a number.
+    expect(stampPolicyConfig(0.1)).toEqual({ targetAvu: "0.1" });
+    expect(() => stampPolicyConfig(0)).toThrow();
     for (const value of ["0", "-1", "NaN", "Infinity", "", "1x"])
       expect(() => stampPolicyConfig(value)).toThrow();
   });

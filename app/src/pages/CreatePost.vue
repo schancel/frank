@@ -964,6 +964,7 @@ export default defineComponent({
           },
           errorNotify,
           infoNotify,
+          failureText: err => forumFailureText(err, key => this.$t(key)),
           onOutcome: outcome => {
             retainReservation = outcome === 'unknown-outcome'
             if (outcome === 'retryable-failure' && ownsSubmission()) {

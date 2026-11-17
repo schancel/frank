@@ -23,6 +23,9 @@ export async function submitPost(params: {
   onOutcome?: (outcome: PostSubmissionOutcome) => void
   /** Localized notices; the created text defaults to English for callers that pass none. */
   messages?: { created: string; refreshFailed: string }
+  /** The app's own words for a failure (for example `forumFailureText`). Wallet, provider and
+   * relay text never reaches the notice; without this the notice is the generic one. */
+  failureText?: (err: unknown) => string
 }): Promise<PostSubmissionOutcome> {
   try {
     await params.submit()
@@ -32,9 +35,7 @@ export async function submitPost(params: {
       // and let the caller retain its process-lifetime duplicate-submission reservation.
       params.onOutcome?.('unknown-outcome')
       const cause = err.cause
-      params.errorNotify(cause, {
-        safeMessage: cause instanceof Error ? cause.message : String(cause),
-      })
+      params.errorNotify(cause, { safeMessage: params.failureText?.(cause) })
       return 'unknown-outcome'
     }
     if (err instanceof BurnRefreshError) {
@@ -46,9 +47,7 @@ export async function submitPost(params: {
       return 'submitted'
     }
     params.onOutcome?.('retryable-failure')
-    params.errorNotify(err, {
-      safeMessage: err instanceof Error ? err.message : String(err),
-    })
+    params.errorNotify(err, { safeMessage: params.failureText?.(err) })
     return 'retryable-failure'
   }
   params.onOutcome?.('submitted')

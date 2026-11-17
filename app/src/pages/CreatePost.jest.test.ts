@@ -1527,8 +1527,9 @@ describe('CreatePost outcomes', () => {
     mockPutMessage.mockRejectedValueOnce(failure)
 
     await (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    // The app's words for the failure, not the error's own text.
     expect(errorNotify).toHaveBeenCalledWith(failure, {
-      safeMessage: 'Nothing was sent',
+      safeMessage: 'FAILED_UNKNOWN',
     })
     expect(router.push).not.toHaveBeenCalled()
     expect(router.replace).not.toHaveBeenCalled()

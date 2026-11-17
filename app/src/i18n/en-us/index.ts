@@ -100,6 +100,8 @@ export const rawEnUS = {
       'Your post was published, but refreshing failed. Reload to see it. Do not post it again.',
     postOutcomeUnknown:
       'Your post may have been published. Reload to check for it. Do not post it again.',
+    postStatusCheckFailed:
+      'Could not check whether your post was published. Try again.',
     votedRefreshFailed:
       'Your vote was sent, but refreshing failed. Reload to see it. Do not vote again.',
     voteOutcomeUnknown:
@@ -187,6 +189,14 @@ export const rawEnUS = {
     selectMessagesTitle: 'Delete messages',
   },
   chatInput: {
+    insufficientBalanceForStamp:
+      'Not enough {unit}: need {need} {unit}, have {have} {unit}',
+    emailConversationUnavailable:
+      'The selected email conversation is no longer available',
+    emailGatewayUnavailableToSend:
+      'This relay email gateway is unavailable or has changed. Review its address in Settings before sending.',
+    emailSendInsufficientFunds: 'Not enough {unit} to cover the stamp fee',
+    emailSendStampBelowFee: 'Stamp amount is below the minimum relay fee',
     groupWritePrice:
       'Each message to this group costs {price}, paid to its relay.',
     giveLotusSecretly: 'Give Lotus Secretly',

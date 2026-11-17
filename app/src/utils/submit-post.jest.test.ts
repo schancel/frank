@@ -29,17 +29,21 @@ describe('submitPost', () => {
     const infoNotify = jest.fn()
     const navigateBack = jest.fn()
 
+    const failureText = jest.fn(() => 'The relay refused this post.')
     const outcome = await submitPost({
       submit,
       errorNotify,
       infoNotify,
       navigateBack,
+      failureText,
     })
 
     expect(outcome).toBe('retryable-failure')
     expect(errorNotify).toHaveBeenCalledTimes(1)
+    // The notice is the app's own words for the failure, never the error's text.
+    expect(failureText).toHaveBeenCalledWith(error)
     expect(errorNotify).toHaveBeenCalledWith(error, {
-      safeMessage: 'deterministic relay failure',
+      safeMessage: 'The relay refused this post.',
     })
     // The actual bug (ticket #159): navigateBack used to run unconditionally in a `finally`,
     // discarding the draft (the component unmounts on navigation) even though submission failed.
@@ -58,9 +62,8 @@ describe('submitPost', () => {
 
     await submitPost({ submit, errorNotify, infoNotify, navigateBack })
 
-    expect(errorNotify).toHaveBeenCalledWith(error, {
-      safeMessage: 'wallet unavailable',
-    })
+    // Without the app's words for it, the notice is the generic one: no wallet text.
+    expect(errorNotify).toHaveBeenCalledWith(error, { safeMessage: undefined })
     expect(navigateBack).not.toHaveBeenCalled()
   })
 
@@ -101,6 +104,8 @@ describe('submitPost with an unknown paid outcome', () => {
         .mockRejectedValue(
           new TopicPostOutcomeUnknownError(abandoned.message, abandoned),
         ),
+      // Never asked: its words describe a failed request, not a post that may have landed.
+      failureText: () => 'It did not go through yet.',
       errorNotify,
       infoNotify,
       navigateBack,
@@ -110,7 +115,7 @@ describe('submitPost with an unknown paid outcome', () => {
     expect(outcome).toBe('unknown-outcome')
     expect(onOutcome).toHaveBeenCalledWith('unknown-outcome')
     expect(errorNotify).toHaveBeenCalledWith(abandoned, {
-      safeMessage: 'The paid post outcome is unknown',
+      fallbackKey: 'stampPreparation.postOutcomeUnknown',
     })
     expect(infoNotify).not.toHaveBeenCalled()
     expect(navigateBack).not.toHaveBeenCalled()

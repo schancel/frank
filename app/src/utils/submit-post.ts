@@ -23,6 +23,9 @@ export async function submitPost(params: {
   onOutcome?: (outcome: PostSubmissionOutcome) => void
   /** Localized notices; the created text defaults to English for callers that pass none. */
   messages?: { created: string; refreshFailed: string }
+  /** The app's own words for a failure (for example `forumFailureText`). Wallet, provider and
+   * relay text never reaches the notice; without this the notice is the generic one. */
+  failureText?: (err: unknown) => string
 }): Promise<PostSubmissionOutcome> {
   try {
     await params.submit()
@@ -32,8 +35,10 @@ export async function submitPost(params: {
       // and let the caller retain its process-lifetime duplicate-submission reservation.
       params.onOutcome?.('unknown-outcome')
       const cause = err.cause
+      // The cause says why the request failed, not whether the post landed: say what the page
+      // says, that it may have been published.
       params.errorNotify(cause, {
-        safeMessage: cause instanceof Error ? cause.message : String(cause),
+        fallbackKey: 'stampPreparation.postOutcomeUnknown',
       })
       return 'unknown-outcome'
     }
@@ -41,14 +46,15 @@ export async function submitPost(params: {
       // The burn landed; only reading the post back failed. One notice (not also "created"), and
       // leave the form like a success: keeping the draft would invite a second burn.
       params.onOutcome?.('submitted')
-      params.infoNotify(params.messages?.refreshFailed ?? err.message)
+      params.infoNotify(
+        params.messages?.refreshFailed ??
+          'Your post was published, but it could not be shown yet. Reload to see it.',
+      )
       params.navigateBack()
       return 'submitted'
     }
     params.onOutcome?.('retryable-failure')
-    params.errorNotify(err, {
-      safeMessage: err instanceof Error ? err.message : String(err),
-    })
+    params.errorNotify(err, { safeMessage: params.failureText?.(err) })
     return 'retryable-failure'
   }
   params.onOutcome?.('submitted')

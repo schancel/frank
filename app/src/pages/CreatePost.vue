@@ -627,8 +627,9 @@ export default defineComponent({
         // ownership until an exact operation result can identify it.
       } catch (error) {
         if (current()) {
+          // Checking failed; the post's outcome is still unknown, so nothing here says it failed.
           errorNotify(error, {
-            safeMessage: error instanceof Error ? error.message : String(error),
+            fallbackKey: 'stampPreparation.postStatusCheckFailed',
           })
         }
       } finally {
@@ -762,9 +763,8 @@ export default defineComponent({
           this.parentDigest === requestedParent &&
           this.activeParentRequestId === requestId
         ) {
-          errorNotify(err, {
-            safeMessage: err instanceof Error ? err.message : String(err),
-          })
+          // Relay text is not shown; the notice is the generic one.
+          errorNotify(err)
         }
       } finally {
         const ownsParentRequest = () =>
@@ -879,9 +879,8 @@ export default defineComponent({
           this.offering.toString(),
         )
       } catch (err) {
-        errorNotify(err as Error, {
-          safeMessage: err instanceof Error ? err.message : String(err),
-        })
+        // Wallet text is not shown; the notice is the generic one.
+        errorNotify(err as Error)
         return
       }
       const submittedDestination = this.submissionDestination(
@@ -901,9 +900,8 @@ export default defineComponent({
         walletPromise = useActiveWallet()
         wallet = await walletPromise
       } catch (err) {
-        errorNotify(err as Error, {
-          safeMessage: err instanceof Error ? err.message : String(err),
-        })
+        // Wallet text is not shown; the notice is the generic one.
+        errorNotify(err as Error)
         return
       }
       const ownsCurrentUi = () => {
@@ -964,6 +962,7 @@ export default defineComponent({
           },
           errorNotify,
           infoNotify,
+          failureText: err => forumFailureText(err, key => this.$t(key)),
           onOutcome: outcome => {
             retainReservation = outcome === 'unknown-outcome'
             if (outcome === 'retryable-failure' && ownsSubmission()) {
@@ -1130,7 +1129,9 @@ export default defineComponent({
     },
     async attachImageFile(file: File) {
       if (!file.type.startsWith('image/')) {
-        errorNotify(this.$t('forum.editor.invalidImageType'))
+        errorNotify(new Error('forum.editor.invalidImageType'), {
+          safeMessage: this.$t('forum.editor.invalidImageType'),
+        })
         return
       }
       this.attachingImage = true
@@ -1178,9 +1179,13 @@ export default defineComponent({
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         if (msg.includes('exceeds')) {
-          errorNotify(this.$t('forum.editor.imageTooLarge'))
+          errorNotify(new Error('forum.editor.imageTooLarge'), {
+            safeMessage: this.$t('forum.editor.imageTooLarge'),
+          })
         } else {
-          errorNotify(this.$t('forum.editor.imageError'))
+          errorNotify(new Error('forum.editor.imageError'), {
+            safeMessage: this.$t('forum.editor.imageError'),
+          })
         }
       } finally {
         this.attachingImage = false

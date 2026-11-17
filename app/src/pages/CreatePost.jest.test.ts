@@ -57,6 +57,7 @@ jest.mock('src/stores/forum', () => ({
           : undefined,
       pushNewTopic: jest.fn(),
       putMessage: (...args: unknown[]) => mockPutMessage(...args),
+      refreshOperationStatus: jest.fn(async () => undefined),
       fetchMessage: jest.fn(
         async ({ payloadDigest }: { payloadDigest: string }) =>
           store.getMessage(payloadDigest),
@@ -1527,15 +1528,16 @@ describe('CreatePost outcomes', () => {
     mockPutMessage.mockRejectedValueOnce(failure)
 
     await (wrapper.vm as unknown as { post(): Promise<void> }).post()
+    // The app's words for the failure, not the error's own text.
     expect(errorNotify).toHaveBeenCalledWith(failure, {
-      safeMessage: 'Nothing was sent',
+      safeMessage: 'FAILED_UNKNOWN',
     })
     expect(router.push).not.toHaveBeenCalled()
     expect(router.replace).not.toHaveBeenCalled()
     expect(router.go).not.toHaveBeenCalled()
   }, 10000)
 
-  it('notifies error with safeMessage when offering parsing fails in post()', async () => {
+  it('a failed offering parse shows the generic notice, not the parser text', async () => {
     const { wrapper } = mountPage()
     const vm = wrapper.vm as any
     mockDisplayToRawAmount.mockImplementationOnce(() => {
@@ -1545,12 +1547,10 @@ describe('CreatePost outcomes', () => {
     await vm.post()
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
-      safeMessage: 'invalid FixedNumber string value',
-    })
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error))
   })
 
-  it('notifies error with safeMessage when loadParent fails', async () => {
+  it('a failed parent load shows the generic notice, not the relay text', async () => {
     const { page } = await mountRoutedPage('/new-post/parent')
     const forum = useForumStore() as unknown as { fetchMessage: jest.Mock }
     const err = new Error('Network error loading parent')
@@ -1559,8 +1559,24 @@ describe('CreatePost outcomes', () => {
     await page().get('[data-test="retry-parent"]').trigger('click')
     await flushPromises()
 
+    expect(errorNotify).toHaveBeenCalledWith(err)
+  })
+
+  it('a failed status check says the check failed, never that the post failed', async () => {
+    const { wrapper } = mountPage()
+    const forum = useForumStore() as unknown as {
+      refreshOperationStatus: jest.Mock
+    }
+    const err = new Error('relay unreachable')
+    forum.refreshOperationStatus.mockRejectedValueOnce(err)
+
+    await (
+      wrapper.vm as unknown as { refreshPostStatus(): Promise<void> }
+    ).refreshPostStatus()
+    await flushPromises()
+
     expect(errorNotify).toHaveBeenCalledWith(err, {
-      safeMessage: 'Network error loading parent',
+      fallbackKey: 'stampPreparation.postStatusCheckFailed',
     })
   })
 })
@@ -1844,7 +1860,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     const file = new File(['text'], 'notes.txt', { type: 'text/plain' })
     await vm.attachImageFile(file)
 
-    expect(errorNotify).toHaveBeenCalledWith('INVALID_IMAGE_TYPE')
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'INVALID_IMAGE_TYPE',
+    })
     expect(mockCompressPostImage).not.toHaveBeenCalled()
   }, 10000)
 
@@ -1859,7 +1877,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     await vm.attachImageFile(file)
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith('IMAGE_TOO_LARGE')
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'IMAGE_TOO_LARGE',
+    })
     expect(vm.attachingImage).toBe(false)
   }, 10000)
 
@@ -1872,7 +1892,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     await vm.attachImageFile(file)
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith('IMAGE_ERROR')
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'IMAGE_ERROR',
+    })
     expect(vm.attachingImage).toBe(false)
   }, 10000)
 

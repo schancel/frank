@@ -630,6 +630,7 @@ describe('the group composer', () => {
     ).resolves.toBe(false)
     expect(errorNotify).toHaveBeenCalledWith(
       new Error('Group payments are unsupported'),
+      {},
     )
     expect(sent).toHaveLength(2)
   })

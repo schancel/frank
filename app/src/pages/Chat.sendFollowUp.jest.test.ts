@@ -177,6 +177,7 @@ describe('Chat.vue sendFollowUpItems outcome (#310)', () => {
     ).resolves.toBe(false)
     expect(errorNotify).toHaveBeenCalledWith(
       new Error('localized missing rate'),
+      { safeMessage: 'localized missing rate' },
     )
     expect(self.sendDirectMessage).not.toHaveBeenCalled()
     expect(settled).toHaveBeenCalledWith(false)
@@ -256,6 +257,7 @@ describe('Chat.vue priced action availability and custody affinity', () => {
     })
     expect(errorNotify).toHaveBeenCalledWith(
       new Error('localized missing rate'),
+      { safeMessage: 'localized missing rate' },
     )
     expect(self.sendDirectMessage).not.toHaveBeenCalled()
     expect(useActiveWallet).not.toHaveBeenCalled()
@@ -1093,6 +1095,7 @@ describe('Chat.vue sends a hand message only while it is still the next one', ()
       expect(self.sendDirectMessage).not.toHaveBeenCalled()
       expect(errorNotify).toHaveBeenCalledWith(
         new Error('chat.sendContextChanged'),
+        { safeMessage: 'chat.sendContextChanged' },
       )
       expect(settled).toHaveBeenCalledWith(false)
       expect(self.sendingMessage).toBe(false)

@@ -7,13 +7,15 @@ import {
   MonadJsonRpcProvider,
   createMonadJsonRpcProvider,
   createMonadRelayRpcConnection,
-  relayUpstreamCooldownRemainingMs,
-  resetRelayUpstreamCooldownsForTest,
   issueMonadRelayRpcCapability,
   monadProtocolIdentity,
   RELAXED_CANCELLATION_POLL_INTERVAL_MS,
   RpcCooldownTracker,
 } from "./evm-provider";
+import {
+  relayUpstreamCooldownRemainingMs,
+  resetRelayUpstreamCooldownsForTest,
+} from "./relay-upstream-cooldown";
 
 describe("MonadJsonRpcProvider (#534)", () => {
   let server: Server;

@@ -614,3 +614,55 @@ describe('ChatInput holds pictures for the message', () => {
     expect(c.sent[0]).toContain('attachment:1')
   })
 })
+
+describe('ChatInput send button activation', () => {
+  async function setup() {
+    const c = mountCompose()
+    c.box().focus()
+    await typeAll('hello')
+    const send = c.wrapper.element.querySelector(
+      '.chat-send-btn',
+    ) as HTMLButtonElement
+    return { c, send }
+  }
+  const key = (el: Element, type: string, k: string) =>
+    el.dispatchEvent(
+      new KeyboardEvent(type, {
+        key: k,
+        keyCode: k === 'Enter' ? 13 : 32,
+        bubbles: true,
+        cancelable: true,
+      }),
+    )
+
+  it('sends once for a full pointer press (mousedown then click)', async () => {
+    const { c, send } = await setup()
+    send.dispatchEvent(
+      new MouseEvent('mousedown', { bubbles: true, cancelable: true }),
+    )
+    send.dispatchEvent(
+      new MouseEvent('click', { bubbles: true, cancelable: true, detail: 1 }),
+    )
+    await flushPromises()
+    expect(c.sent).toEqual(['hello'])
+  })
+
+  it.each(['Enter', ' '])(
+    'sends once for keyboard %j on the focused button',
+    async k => {
+      const { c, send } = await setup()
+      send.focus()
+      key(send, 'keydown', k)
+      key(send, 'keyup', k)
+      await flushPromises()
+      expect(c.sent).toEqual(['hello'])
+    },
+  )
+
+  it('sends once for a programmatic click()', async () => {
+    const { c, send } = await setup()
+    send.click()
+    await flushPromises()
+    expect(c.sent).toEqual(['hello'])
+  })
+})

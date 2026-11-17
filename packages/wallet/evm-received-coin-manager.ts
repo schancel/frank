@@ -333,6 +333,8 @@ export interface HeldPeerNote {
   readonly payloadDigest: string;
   readonly item: WalletSyncItem;
   readonly heldAtMs: number;
+  /** Order of arrival: a network's kept notes are applied in this order, as the mailbox had them. */
+  readonly seq: number;
 }
 
 export const HELD_PEER_NOTES_NAMESPACE = "held-peer-network-notes";
@@ -341,6 +343,53 @@ function heldPeerNoteKey(payloadDigest: string, item: WalletSyncItem): string {
   return `${item.chainIdentifier}:${payloadDigest}:${item.txHash}`;
 }
 
+function heldInOrder(rows: readonly HeldPeerNote[], chainIdentifier?: string): HeldPeerNote[] {
+  return rows
+    .filter((row) => chainIdentifier === undefined || row.item.chainIdentifier === chainIdentifier)
+    .sort((a, b) => a.seq - b.seq);
+}
+
+type PeerNoteOutcome = "applied" | "refused" | "held";
+
+async function tryPeerNote(
+  internals: ReturnType<typeof evmWalletInternals>,
+  payloadDigest: string,
+  item: WalletSyncItem,
+  onForeignWalletSync: ((item: WalletSyncItem) => Promise<void>) | undefined
+): Promise<PeerNoteOutcome> {
+  try {
+    if (!onForeignWalletSync)
+      throw new Error(`Wallet sync owner unavailable for ${item.chainIdentifier}`);
+    await onForeignWalletSync(item);
+    return "applied";
+  } catch (error) {
+    if (!selfNoteRefusalIsFinal(error)) return "held";
+    console.warn(
+      `[wallet-sync] a note to self for ${item.chainIdentifier} was refused and is passed (${payloadDigest}): ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    return "refused";
+  }
+}
+
+async function holdPeerNote(
+  internals: ReturnType<typeof evmWalletInternals>,
+  payloadDigest: string,
+  item: WalletSyncItem
+): Promise<void> {
+  const held = internals.heldPeerNotes!;
+  const key = heldPeerNoteKey(payloadDigest, item);
+  if (held.get(key) !== undefined) return;
+  const seq = held.all().reduce((last, row) => Math.max(last, row.seq), 0) + 1;
+  await held.put(key, { payloadDigest, item, heldAtMs: Date.now(), seq });
+  console.warn(
+    `[wallet-sync] a note to self for ${item.chainIdentifier} is kept until that network can take it (${payloadDigest})`
+  );
+}
+
+/** A note about another network, from a mailbox read. Applied at once unless that network already
+ * has notes waiting: then it waits behind them, so a network's notes are applied in order. */
 async function applyOrHoldPeerNote(
   internals: ReturnType<typeof evmWalletInternals>,
   payloadDigest: string,
@@ -348,32 +397,22 @@ async function applyOrHoldPeerNote(
   onForeignWalletSync: ((item: WalletSyncItem) => Promise<void>) | undefined
 ): Promise<void> {
   const held = internals.heldPeerNotes;
-  const key = heldPeerNoteKey(payloadDigest, item);
-  try {
-    if (!onForeignWalletSync)
-      throw new Error(`Wallet sync owner unavailable for ${item.chainIdentifier}`);
-    await onForeignWalletSync(item);
-    if (held?.get(key) !== undefined) await held.delete(key);
-  } catch (error) {
-    if (selfNoteRefusalIsFinal(error)) {
-      console.warn(
-        `[wallet-sync] a note to self for ${item.chainIdentifier} was refused and is passed (${payloadDigest}): ${
-          error instanceof Error ? error.message : String(error)
-        }`
-      );
-      if (held?.get(key) !== undefined) await held.delete(key);
-      return;
-    }
-    // No place to keep it: the read stops here and takes the note again next time.
-    if (held === undefined) throw error;
-    if (held.get(key) === undefined)
-      await held.put(key, { payloadDigest, item, heldAtMs: Date.now() });
+  if (held !== undefined && heldInOrder(held.all(), item.chainIdentifier).length > 0) {
+    await holdPeerNote(internals, payloadDigest, item);
+    return;
   }
+  const outcome = await tryPeerNote(internals, payloadDigest, item, onForeignWalletSync);
+  if (outcome !== "held") return;
+  // No place to keep it: the read stops here and takes the note again next time.
+  if (held === undefined)
+    throw new Error(`Wallet sync for ${item.chainIdentifier} is not available yet`);
+  await holdPeerNote(internals, payloadDigest, item);
 }
 
 /**
  * Tries again the notes about other networks this wallet kept because their network could not
- * take them. Each one applied, or refused for good, is removed; the rest stay for a later pass.
+ * take them, each network's in the order they arrived. Each one applied, or refused for good, is
+ * removed; a network stops at its first note it still cannot take, and the rest wait behind it.
  */
 export async function applyHeldPeerNotes(
   wallet: EvmChainWalletHandle,
@@ -382,9 +421,14 @@ export async function applyHeldPeerNotes(
   const internals = evmWalletInternals(wallet);
   const held = internals.heldPeerNotes;
   if (held === undefined) return;
-  for (const row of held.all()) {
-    if (internals.closed) return;
-    await applyOrHoldPeerNote(internals, row.payloadDigest, row.item, onForeignWalletSync);
+  const chains = new Set(held.all().map((row) => row.item.chainIdentifier));
+  for (const chainIdentifier of chains) {
+    for (const row of heldInOrder(held.all(), chainIdentifier)) {
+      if (internals.closed) return;
+      const outcome = await tryPeerNote(internals, row.payloadDigest, row.item, onForeignWalletSync);
+      if (outcome === "held") break;
+      await held.delete(heldPeerNoteKey(row.payloadDigest, row.item));
+    }
   }
 }
 

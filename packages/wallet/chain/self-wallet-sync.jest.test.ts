@@ -66,7 +66,12 @@ import {
   type InboxRecord,
 } from './canonical-two-wallets.testutil'
 import { summarizeEvmNativeOperation } from './evm-native-operation-status'
-import { SELF_NOTE_RETRY_MS, createEvmChain, installCanonicalDirectory } from './evm-chain'
+import {
+  SELF_NOTE_RETRY_MS,
+  createEvmChain,
+  heldPeerNotesSettled,
+  installCanonicalDirectory,
+} from './evm-chain'
 import type { EvmChainConfig } from './evm-chain-config'
 import { EvmInputAdmissionError } from '../evm-input-admission'
 import { SubAccountSpendRefusedError } from '../evm-account-pool'
@@ -1151,7 +1156,8 @@ describe("a wallet's sync note to itself", () => {
         expect(downResult.messages).toEqual([])
         expect(downResult.held).toEqual([])
         expect(downResult.passed).toHaveLength(mailbox.length)
-        expect(down).toHaveBeenCalledTimes(operation.members.length)
+        // Tried once; the network's later notes wait behind the first, so they stay in order.
+        expect(down).toHaveBeenCalledTimes(1)
         expect(applied).not.toHaveBeenCalled()
         // Sepolia answers: the next read applies the kept notes in the background, once each.
         const readResult = await read(other, other.alice, 0, item =>
@@ -1159,14 +1165,17 @@ describe("a wallet's sync note to itself", () => {
         )
         expect(readResult.messages).toEqual([])
         expect(readResult.held).toEqual([])
-        for (let tick = 0; tick < 200 && applied.mock.calls.length < operation.members.length; tick++)
-          await new Promise(resolve => setImmediate(resolve))
+        await heldPeerNotesSettled(other.alice)
         expect(applied).toHaveBeenCalledTimes(operation.members.length)
+        // Applied in the order the mailbox had them, as the sending device signed them.
+        expect(applied.mock.calls.map(call => (call[1] as WalletSyncItem).txHash)).toEqual(
+          operation.members.map(member => member.signed!.transactionHash),
+        )
         const settledCalls = applied.mock.calls.length
         await read(other, other.alice, 0, item =>
           syncDispatch.applyWalletSyncItem(target, item).then(() => undefined),
         )
-        for (let tick = 0; tick < 20; tick++) await new Promise(resolve => setImmediate(resolve))
+        await heldPeerNotesSettled(other.alice)
         expect(applied).toHaveBeenCalledTimes(settledCalls)
         expect(applied).toHaveBeenCalledWith(target, expect.objectContaining({
           chainIdentifier: 'ethereum-sepolia', txHash: sent.txHash,

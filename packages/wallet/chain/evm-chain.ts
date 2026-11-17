@@ -85,6 +85,10 @@ function retryHeldPeerNotes(
     .finally(() => heldPeerNoteRetries.delete(wallet));
   heldPeerNoteRetries.set(wallet, pass);
 }
+/** The background pass over a wallet's held notes about other networks, if one is running. */
+export function heldPeerNotesSettled(wallet: object): Promise<void> {
+  return heldPeerNoteRetries.get(wallet) ?? Promise.resolve();
+}
 /**
  * `MonadChain`: the real `ActiveChain` implementation (ticket #41 -- see `PLAN.md`'s M9 section)
  * over the already-merged Monad wallet clients (`../wallet/monad-stamp-client.ts`,

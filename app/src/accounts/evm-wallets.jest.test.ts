@@ -1150,7 +1150,7 @@ describe('secondary recovery opens only peers with local state', () => {
     }
   })
 
-  it('spaces out background opens of a peer whose identity check keeps failing, from every background caller, up to 10 min', async () => {
+  it('spaces out background opens of a peer whose identity check keeps failing, up to 10 min', async () => {
     mockEnabledPeerNetworks.add('ethereum-sepolia')
     mockStateNetworks = ['ethereum-sepolia']
     // What the relay answers while the upstream fails its identity check.
@@ -1161,8 +1161,8 @@ describe('secondary recovery opens only peers with local state', () => {
     const start = Date.now()
     let now = start
     const clock = jest.spyOn(Date, 'now').mockImplementation(() => now)
-    // An idle client for 30 minutes: a mailbox poll every 10 s (each one holding a note to self
-    // for the peer) and a reconcile tick every 60 s.
+    // An idle client for 30 minutes: a background open every 10 s and a reconcile tick every
+    // 60 s. (The mailbox poll opens without this backoff: a held note holds its delivery.)
     const attemptTimes: number[] = []
     try {
       for (let t = 0; t <= 30 * 60_000; t += 10_000) {
@@ -1180,7 +1180,7 @@ describe('secondary recovery opens only peers with local state', () => {
         if (mockCreate.mock.calls.length > before) attemptTimes.push(t)
         else expect(poll).toBeInstanceOf(SecondaryEvmOpenDeferredError)
       }
-      // 181 polls and 31 ticks reached the chain 6 times: 0, 1, 3, 7, 15 min, then every 10 min.
+      // 181 background opens and 31 ticks reached the chain 6 times: 0, 1, 3, 7, 15 min, then every 10 min.
       expect(attemptTimes.map(t => t / 60_000)).toEqual([0, 1, 3, 7, 15, 25])
       expect(mockCreate).toHaveBeenCalledTimes(6)
       const gaps = attemptTimes.slice(1).map((t, i) => t - attemptTimes[i]!)

@@ -429,8 +429,7 @@ function backgroundScope(): string | undefined {
 }
 
 /**
- * `openEvmWallet` for work no one is waiting on (recovery ticks, notes to self found by the
- * mailbox poll): a peer whose last open failed is not opened, and its chain not read, again
+ * `openEvmWallet` for work no one is waiting on (recovery ticks): a peer whose last open failed is not opened, and its chain not read, again
  * before its retry time. An owner already open (or opening) is returned as usual. A user's own
  * open (a send, the Wallet page) goes through `openEvmWallet` and is never held back.
  */
@@ -450,7 +449,7 @@ export async function openEvmWalletInBackground(
     return value
   } catch (error) {
     // A failed open is evicted from the cache; without this it was opened (and its chain
-    // identity read) again on every reconciliation tick and every mailbox poll.
+    // identity read) again on every reconciliation tick.
     if (scope !== undefined && !opened.has(chainIdentifier))
       noteRecoveryOpenFailed(chainIdentifier, scope)
     throw error

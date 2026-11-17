@@ -1401,7 +1401,9 @@ export default defineComponent({
     },
     async sendMessage(message: string) {
       if (this.stampUnavailable) {
-        errorNotify(new Error(this.stampUnavailable))
+        errorNotify(new Error(this.stampUnavailable), {
+          safeMessage: this.stampUnavailable,
+        })
         return
       }
       const wallet = useMonadWallet()
@@ -1417,15 +1419,12 @@ export default defineComponent({
         stampValue > 0n &&
         stampValue > this.availableBalanceWei
       ) {
-        errorNotify(
-          new Error(
-            `Not enough ${activeChain.unit}: need ${activeChain.toDisplayAmount(
-              stampValue,
-            )} ${activeChain.unit}, have ${activeChain.toDisplayAmount(
-              this.availableBalanceWei,
-            )} ${activeChain.unit}`,
-          ),
-        )
+        const text = this.$t('chatInput.insufficientBalanceForStamp', {
+          unit: activeChain.unit,
+          need: activeChain.toDisplayAmount(stampValue),
+          have: activeChain.toDisplayAmount(this.availableBalanceWei),
+        })
+        errorNotify(new Error(text), { safeMessage: text })
         return
       }
       const rawPrice = this.getAcceptancePrice(recipient)
@@ -1446,9 +1445,8 @@ export default defineComponent({
       // The text and its pictures must fit one message. Refused here, before anything is paid:
       // the wallet would refuse an oversized message only after funding it.
       if (!fitsOneMessage(message, attachmentsToSend)) {
-        errorNotify(
-          new Error(messageTooLargeText(message, attachmentsToSend, this.$t)),
-        )
+        const text = messageTooLargeText(message, attachmentsToSend, this.$t)
+        errorNotify(new Error(text), { safeMessage: text })
         return
       }
       // Move the submitted text into the optimistic outbox bubble immediately. The user should
@@ -1535,9 +1533,8 @@ export default defineComponent({
         conversation.deletedAt ||
         this.conversation?.id !== conversation.id
       ) {
-        errorNotify(
-          new Error('The selected email conversation is no longer available'),
-        )
+        const text = this.$t('chatInput.emailConversationUnavailable')
+        errorNotify(new Error(text), { safeMessage: text })
         return
       }
       const originalName = conversation.name
@@ -1551,15 +1548,14 @@ export default defineComponent({
             useSettingsStore().emailGatewayAddress,
           ))
       ) {
-        errorNotify(
-          new Error(
-            'This relay email gateway is unavailable or has changed. Review its address in Settings before sending.',
-          ),
-        )
+        const text = this.$t('chatInput.emailGatewayUnavailableToSend')
+        errorNotify(new Error(text), { safeMessage: text })
         return
       }
       if (this.stampUnavailable) {
-        errorNotify(new Error(this.stampUnavailable))
+        errorNotify(new Error(this.stampUnavailable), {
+          safeMessage: this.stampUnavailable,
+        })
         return
       }
       const stampValue = activeChain.fromDisplayAmount(this.stampAmount)
@@ -1570,15 +1566,12 @@ export default defineComponent({
         stampValue > 0n &&
         stampValue > this.availableBalanceWei
       ) {
-        errorNotify(
-          new Error(
-            `Not enough ${activeChain.unit}: need ${activeChain.toDisplayAmount(
-              stampValue,
-            )} ${activeChain.unit}, have ${activeChain.toDisplayAmount(
-              this.availableBalanceWei,
-            )} ${activeChain.unit}`,
-          ),
-        )
+        const text = this.$t('chatInput.insufficientBalanceForStamp', {
+          unit: activeChain.unit,
+          need: activeChain.toDisplayAmount(stampValue),
+          have: activeChain.toDisplayAmount(this.availableBalanceWei),
+        })
+        errorNotify(new Error(text), { safeMessage: text })
         return
       }
       this.activeSendCount = (this.activeSendCount || 0) + 1
@@ -1649,14 +1642,18 @@ export default defineComponent({
           errorNotify(new Error(text), { safeMessage: text })
         } else if (outcome && (outcome as any).state === 'failed') {
           const reason = (outcome as any).reason
+          // Only the two reasons this app words are shown; any other reason stays generic.
+          const text =
+            reason === 'insufficient-funds'
+              ? this.$t('chatInput.emailSendInsufficientFunds', {
+                  unit: activeChain.unit,
+                })
+              : reason === 'stamp-below-fee'
+              ? this.$t('chatInput.emailSendStampBelowFee')
+              : undefined
           errorNotify(
-            new Error(
-              reason === 'insufficient-funds'
-                ? `Not enough ${activeChain.unit} to cover the stamp fee`
-                : reason === 'stamp-below-fee'
-                ? 'Stamp amount is below the minimum relay fee'
-                : 'Failed to send email',
-            ),
+            new Error(text ?? 'Failed to send email'),
+            text ? { safeMessage: text } : {},
           )
         } else {
           applyDraftSubjectRename()
@@ -1967,10 +1964,14 @@ export default defineComponent({
       }
       this.sendingMessage = true
       let outcome: OutgoingOutcome
+      // Set only for a refusal this app words itself; wallet and relay failures stay generic.
+      let appAuthoredFailure: string | undefined
       try {
         // Capture the displayed decision and its session before hand validation opens storage.
-        if (stampValueWei === undefined && this.stampUnavailable)
+        if (stampValueWei === undefined && this.stampUnavailable) {
+          appAuthoredFailure = this.stampUnavailable
           throw new Error(this.stampUnavailable)
+        }
         const wallet = useMonadWallet()
         const chainIdentifier = activeChain.chainIdentifier
         const client = activeChain.directMessages
@@ -1998,8 +1999,10 @@ export default defineComponent({
           peer === (this.recipientAddress || this.address) &&
           conversationId === this.conversation?.id
         const requireCurrentContext = () => {
-          if (!contextCurrent())
-            throw new Error(this.$t('chat.sendContextChanged'))
+          if (!contextCurrent()) {
+            appAuthoredFailure = this.$t('chat.sendContextChanged')
+            throw new Error(appAuthoredFailure)
+          }
         }
         // Only the next saved hand action may leave this session. A changed session must
         // review the action again rather than choose another wallet after these awaits.
@@ -2020,7 +2023,9 @@ export default defineComponent({
             }))
           requireCurrentContext()
           if (!stillNext) {
-            errorNotify(new Error(this.$t('blackjackP2p.notNext')))
+            errorNotify(new Error(this.$t('blackjackP2p.notNext')), {
+              safeMessage: this.$t('blackjackP2p.notNext'),
+            })
             return false
           }
         }
@@ -2036,7 +2041,10 @@ export default defineComponent({
           onPreparationProgress: this.showStampPreparation,
         })
       } catch (err) {
-        errorNotify(err instanceof Error ? err : new Error(String(err)))
+        errorNotify(
+          err instanceof Error ? err : new Error(String(err)),
+          appAuthoredFailure ? { safeMessage: appAuthoredFailure } : {},
+        )
         return false
       } finally {
         this.stampPreparationStatus = null
@@ -2092,11 +2100,15 @@ export default defineComponent({
         const own = await getOwnCanonicalAddress()
         if (!current() || wallet !== useMonadWallet()) return
         if (role === 'dealer' && !own) {
-          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')), {
+            safeMessage: this.$t('blackjackP2p.challengeRefused'),
+          })
           return
         }
         if (!wallet.getSpendableBalance) {
-          errorNotify(new Error(this.$t('blackjackP2p.balanceUnknown')))
+          errorNotify(new Error(this.$t('blackjackP2p.balanceUnknown')), {
+            safeMessage: this.$t('blackjackP2p.balanceUnknown'),
+          })
           return
         }
         const spendableWei = await wallet.getSpendableBalance()
@@ -2119,7 +2131,9 @@ export default defineComponent({
           seed,
         })
         if ('error' in built) {
-          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')))
+          errorNotify(new Error(this.$t('blackjackP2p.challengeRefused')), {
+            safeMessage: this.$t('blackjackP2p.challengeRefused'),
+          })
           return
         }
         if (seed && own) saveSeed(own, peer, gameId, seed)

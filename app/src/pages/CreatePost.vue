@@ -1130,7 +1130,9 @@ export default defineComponent({
     },
     async attachImageFile(file: File) {
       if (!file.type.startsWith('image/')) {
-        errorNotify(this.$t('forum.editor.invalidImageType'))
+        errorNotify(new Error('forum.editor.invalidImageType'), {
+          safeMessage: this.$t('forum.editor.invalidImageType'),
+        })
         return
       }
       this.attachingImage = true
@@ -1178,9 +1180,13 @@ export default defineComponent({
       } catch (err: unknown) {
         const msg = err instanceof Error ? err.message : String(err)
         if (msg.includes('exceeds')) {
-          errorNotify(this.$t('forum.editor.imageTooLarge'))
+          errorNotify(new Error('forum.editor.imageTooLarge'), {
+            safeMessage: this.$t('forum.editor.imageTooLarge'),
+          })
         } else {
-          errorNotify(this.$t('forum.editor.imageError'))
+          errorNotify(new Error('forum.editor.imageError'), {
+            safeMessage: this.$t('forum.editor.imageError'),
+          })
         }
       } finally {
         this.attachingImage = false

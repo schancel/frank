@@ -190,6 +190,16 @@ export const rawFrFR = {
     selectMessagesTitle: 'Supprimer des messages',
   },
   chatInput: {
+    insufficientBalanceForStamp:
+      'Solde insuffisant en {unit} : {need} {unit} requis, {have} {unit} disponibles',
+    emailConversationUnavailable:
+      'La conversation e-mail sélectionnée n’est plus disponible',
+    emailGatewayUnavailableToSend:
+      'La passerelle e-mail de ce relais est indisponible ou a changé. Vérifiez son adresse dans les paramètres avant d’envoyer.',
+    emailSendInsufficientFunds:
+      'Solde insuffisant en {unit} pour couvrir les frais du timbre',
+    emailSendStampBelowFee:
+      'Le montant du timbre est inférieur aux frais minimaux du relais',
     groupWritePrice:
       'Chaque message à ce groupe coûte {price}, payé à son relais.',
     giveLotusSecretly: 'Donner des Lotus secrètement',

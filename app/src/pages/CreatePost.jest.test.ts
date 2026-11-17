@@ -1844,7 +1844,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     const file = new File(['text'], 'notes.txt', { type: 'text/plain' })
     await vm.attachImageFile(file)
 
-    expect(errorNotify).toHaveBeenCalledWith('INVALID_IMAGE_TYPE')
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'INVALID_IMAGE_TYPE',
+    })
     expect(mockCompressPostImage).not.toHaveBeenCalled()
   }, 10000)
 
@@ -1859,7 +1861,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     await vm.attachImageFile(file)
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith('IMAGE_TOO_LARGE')
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'IMAGE_TOO_LARGE',
+    })
     expect(vm.attachingImage).toBe(false)
   }, 10000)
 
@@ -1872,7 +1876,9 @@ describe('CreatePost markdown editor and image attachment (#1073)', () => {
     await vm.attachImageFile(file)
     await flushPromises()
 
-    expect(errorNotify).toHaveBeenCalledWith('IMAGE_ERROR')
+    expect(errorNotify).toHaveBeenCalledWith(expect.any(Error), {
+      safeMessage: 'IMAGE_ERROR',
+    })
     expect(vm.attachingImage).toBe(false)
   }, 10000)
 

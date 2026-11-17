@@ -2708,7 +2708,9 @@ export default defineComponent({
       )
         return
       if (this.insufficientStampBalanceReason) {
-        errorNotify(new Error(this.insufficientStampBalanceReason))
+        errorNotify(new Error(this.insufficientStampBalanceReason), {
+          safeMessage: this.insufficientStampBalanceReason,
+        })
         return
       }
       if (this.newToInput.trim()) this.addToRecipient()

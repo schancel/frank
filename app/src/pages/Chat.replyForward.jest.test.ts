@@ -256,6 +256,7 @@ describe('Chat Reply and Forward flows', () => {
     expect(mockSendMessage).not.toHaveBeenCalled()
     expect(errorNotify).toHaveBeenCalledWith(
       expect.objectContaining({ message: 'chatInput.messageTooLarge' }),
+      { safeMessage: 'chatInput.messageTooLarge' },
     )
     expect(vm.attachments).toEqual(huge)
     expect(vm.message).toBe('hello')

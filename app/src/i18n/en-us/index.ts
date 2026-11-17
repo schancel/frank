@@ -187,6 +187,14 @@ export const rawEnUS = {
     selectMessagesTitle: 'Delete messages',
   },
   chatInput: {
+    insufficientBalanceForStamp:
+      'Not enough {unit}: need {need} {unit}, have {have} {unit}',
+    emailConversationUnavailable:
+      'The selected email conversation is no longer available',
+    emailGatewayUnavailableToSend:
+      'This relay email gateway is unavailable or has changed. Review its address in Settings before sending.',
+    emailSendInsufficientFunds: 'Not enough {unit} to cover the stamp fee',
+    emailSendStampBelowFee: 'Stamp amount is below the minimum relay fee',
     groupWritePrice:
       'Each message to this group costs {price}, paid to its relay.',
     giveLotusSecretly: 'Give Lotus Secretly',

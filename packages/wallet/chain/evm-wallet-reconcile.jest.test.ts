@@ -386,3 +386,40 @@ test("a closed wallet refuses", async () => {
   await expect(reconcileEvmWallet(wallet)).rejects.toThrow(/closed/);
   wallet = (await createEvmChain(cfg).createWallet(roots())) as EvmChainWalletHandle;
 });
+
+test("an idle balance poll makes no head, block or fee read while its observation is fresh, and reuses a recent fee quote", async () => {
+  const provider = wallet.provider;
+  const first = await wallet.getBalanceParts!();
+  const blocks = jest.mocked(provider.getBlock).mock.calls.length;
+  const heads = jest.mocked(provider.getBlockNumber).mock.calls.length;
+  const fees = jest.mocked(provider.getFeeData).mock.calls.length;
+  const balances = jest.mocked(provider.getBalance).mock.calls.length;
+  // A second consumer moments later: the same observation, no request at all.
+  expect(await wallet.getBalanceParts!()).toBe(first);
+  expect(jest.mocked(provider.getBlock).mock.calls.length).toBe(blocks);
+  expect(jest.mocked(provider.getBlockNumber).mock.calls.length).toBe(heads);
+  expect(jest.mocked(provider.getFeeData).mock.calls.length).toBe(fees);
+  expect(jest.mocked(provider.getBalance).mock.calls.length).toBe(balances);
+
+  // Once the observation is older than its short TTL, it is read again, but the fee quote the
+  // first read took is reused (the balance never asks for a new one each poll).
+  const now = Date.now();
+  const clock = jest.spyOn(Date, "now").mockReturnValue(now + 5_000);
+  try {
+    await wallet.getBalanceParts!();
+    expect(jest.mocked(provider.getBlock).mock.calls.length).toBeGreaterThan(blocks);
+    expect(jest.mocked(provider.getFeeData).mock.calls.length).toBe(fees);
+    // Two spendable reads within the quote's max age: at most one fee read between them.
+    await wallet.getSpendableBalance!();
+    const afterFirstSpendable = jest.mocked(provider.getFeeData).mock.calls.length;
+    await wallet.getSpendableBalance!();
+    expect(jest.mocked(provider.getFeeData).mock.calls.length).toBe(afterFirstSpendable);
+  } finally {
+    clock.mockRestore();
+  }
+  // A financial change invalidates the cache at once.
+  wallet.invalidateBalanceCache!();
+  const before = jest.mocked(provider.getBlock).mock.calls.length;
+  await wallet.getBalanceParts!();
+  expect(jest.mocked(provider.getBlock).mock.calls.length).toBeGreaterThan(before);
+});

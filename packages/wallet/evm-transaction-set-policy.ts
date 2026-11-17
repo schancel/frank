@@ -16,6 +16,8 @@ export class EvmTransactionSetPolicyUnavailableError extends Error {
 export class EvmTransactionSetPolicyCache {
   private gasPriceWei: bigint | undefined
   private head = 0
+  // When the last successful quote was read (ms); undefined: never.
+  private refreshedAtMs: number | undefined
   private refreshing: Promise<void> | undefined
   constructor(
     private readonly options: {
@@ -42,10 +44,26 @@ export class EvmTransactionSetPolicyCache {
           throw new Error('No current EVM transaction-set fee quote')
         this.gasPriceWei = price
         this.head = head
+        this.refreshedAtMs = Date.now()
       })
       .finally(() => {
         this.refreshing = undefined
       }))
+  }
+
+  /** Reads a new quote only when the last successful one is older than `maxAgeMs` (or there is
+   * none). Joins a quote already being read, so a caller never misses that read's failure. For
+   * display reads; anything that constructs a transaction calls `refresh()`. */
+  refreshIfOlderThan(maxAgeMs: number): Promise<void> {
+    if (this.options.override) return Promise.resolve()
+    if (this.refreshing) return this.refreshing
+    if (
+      this.gasPriceWei !== undefined &&
+      this.refreshedAtMs !== undefined &&
+      Date.now() - this.refreshedAtMs < maxAgeMs
+    )
+      return Promise.resolve()
+    return this.refresh()
   }
 
   snapshot(): EvmTransactionSetPolicy {

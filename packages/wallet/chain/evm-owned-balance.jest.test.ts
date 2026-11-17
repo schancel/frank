@@ -118,7 +118,14 @@ it('observes 100 active accounts once each, bounded to six reads, with complete 
     expect(await f.alice.getBalance()).toBe(START_BALANCE + 10007n)
     expect(reads).toHaveBeenCalledTimes(101 + roots.size)
     reads.mockClear(); head = 2
+    // Within its short TTL the complete observation answers without any read, head included
+    // (an idle poll costs no request); once it expires the new head is observed in full.
     expect(await f.alice.getBalance()).toBe(START_BALANCE + 10007n)
+    expect(reads).not.toHaveBeenCalled()
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 5_000)
+    try {
+      expect(await f.alice.getBalance()).toBe(START_BALANCE + 10007n)
+    } finally { clock.mockRestore() }
     expect(reads).toHaveBeenCalledTimes(101 + roots.size)
     expect(f.alice.getBalanceObservation!()!.parts!.observedBlock).toBe(2)
   } finally { await f.close() }
@@ -217,7 +224,8 @@ it('uses the configured finalized spend-rule head for every amount instead of th
   try {
     await f.alice.getBalance()
     const block = await f.alice.provider.getBlock(1)
-    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 600)
+    // Past the observation's TTL, so the head is read again.
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 5_000)
     jest.spyOn(f.alice.provider, 'getBlockNumber').mockResolvedValue(45)
     jest.spyOn(f.alice.provider, 'getBlock').mockImplementation(async tag =>
       ({ ...block!, number: tag === 'finalized' ? 42 : Number(tag), hash: '0x' + '42'.repeat(32) }) as typeof block)

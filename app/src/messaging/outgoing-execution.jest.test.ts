@@ -553,6 +553,29 @@ describe('relay delivery is shown as soon as the wallet reports it', () => {
     expect(f.ports.presentation.subjectCarried).toHaveBeenCalledTimes(1)
   })
 
+  it('waits for its own recording of a delivery the wallet did not wait for', async () => {
+    const f = fixture()
+    let release!: () => void
+    const held = new Promise<void>(resolve => (release = resolve))
+    const confirm = f.ports.confirm
+    f.ports.confirm = jest.fn(async params => {
+      await held
+      return confirm(params)
+    })
+    f.send.mockImplementation(async params => {
+      await params.onAttemptCreated?.('original')
+      void params.onDelivered?.(receipt)
+      setTimeout(release, 0)
+      throw new Error('node unreachable while settling')
+    })
+    await expect(f.engine.runOutgoing(request)).resolves.toEqual({
+      state: 'sent',
+      payloadDigest: 'original',
+    })
+    expect(f.ports.confirm).toHaveBeenCalledTimes(1)
+    expect(f.ports.classifySendFailure).not.toHaveBeenCalled()
+  })
+
   it('still confirms on resolution when the wallet never reports delivery early', async () => {
     const f = fixture()
     await expect(f.engine.runOutgoing(request)).resolves.toEqual({

@@ -670,6 +670,9 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
       let result: DirectMessageSendResult | undefined
       // What the relay was seen to store, and shown as sent, before `send` resolved.
       let delivered: DirectMessageSendResult | undefined
+      // Its recording, which the wallet does not wait for: awaited before `send`'s own answer
+      // or failure is acted on.
+      let deliveryRecorded: Promise<void> | undefined
       let lastSendError: unknown
       let allCallsUnattempted = true
       const maxSendAttempts = 3
@@ -740,25 +743,30 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
             ...(financial
               ? {}
               : {
-                  onDelivered: async (sent: DirectMessageSendResult) => {
-                    if (!stillCurrent()) return
-                    ports.presentation.endWaiting(id)
-                    await ports.confirm({
-                      address,
-                      id,
-                      payloadDigest: sent.payloadDigest,
-                      stampValueWei: sent.stampValueWei,
-                      stampPayments: sent.stampPayments,
-                    })
-                    delivered = sent
-                  },
+                  onDelivered: (sent: DirectMessageSendResult) =>
+                    (deliveryRecorded = (async () => {
+                      if (!stillCurrent()) return
+                      ports.presentation.endWaiting(id)
+                      await ports.confirm({
+                        address,
+                        id,
+                        payloadDigest: sent.payloadDigest,
+                        stampValueWei: sent.stampValueWei,
+                        stampPayments: sent.stampPayments,
+                      })
+                      delivered = sent
+                    })()),
                 }),
           })
+          await deliveryRecorded?.catch(error =>
+            ports.log.warn('[sendDirectMessage delivery not recorded]:', error),
+          )
           if (subject !== undefined && message.conversationId !== undefined) {
             ports.presentation.subjectCarried(message.conversationId, subject)
           }
           break
         } catch (error) {
+          await deliveryRecorded?.catch(() => undefined)
           if (delivered) {
             // The relay stored it; what failed after (its payments' settling, the note to self) is
             // the wallet's reconciliation to finish. Never a reason to call it failed or send again.

@@ -71,6 +71,7 @@ import type { EvmChainConfig } from './evm-chain-config'
 import { EvmInputAdmissionError } from '../evm-input-admission'
 import { SubAccountSpendRefusedError } from '../evm-account-pool'
 import { evmWalletInternals } from '../evm-wallet'
+import { LevelOutgoingMessageStore } from '../storage/outgoing-message-store'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
   type EvmTransactionSetPolicy,
@@ -171,6 +172,8 @@ describe("a wallet's sync note to itself", () => {
   let routeByRecipient = false
   /** The relay is unreachable for notes to self only; each request's addressee is recorded. */
   let selfUnreachable = false
+  /** Set: a note to self waits on this, as a request the app is closed during. */
+  let selfStalled: Promise<never> | undefined
   let addressed: ('self' | 'peer')[] = []
 
   /** A directory in which the wallet can also find itself, as a relay answers for any key. */
@@ -189,6 +192,7 @@ describe("a wallet's sync note to itself", () => {
           const toSelf = recipient === f.alice.identity.address.raw.toLowerCase()
           addressed.push(toSelf ? 'self' : 'peer')
           if (toSelf && selfUnreachable) throw new Error('relay unreachable')
+          if (toSelf && selfStalled) await selfStalled
           expect([f.alice.identity.address.raw.toLowerCase(), f.bob.identity.address.raw.toLowerCase()]).toContain(recipient)
           f.setMailbox(recipient === f.alice.identity.address.raw.toLowerCase() ? mailbox : bobMailbox)
         }
@@ -212,6 +216,7 @@ describe("a wallet's sync note to itself", () => {
   beforeEach(async () => {
     routeByRecipient = false
     selfUnreachable = false
+    selfStalled = undefined
     addressed = []
     mockBalances.clear()
     mockFunded.length = 0
@@ -534,6 +539,67 @@ describe("a wallet's sync note to itself", () => {
       expect(applied).not.toHaveBeenCalled()
       expect(one.requests).toHaveLength(requests)
     })
+
+    // The caller is told of the delivery (`onDelivered`) before the note to self goes out, and
+    // may record the message as sent for good. If the app stops while the note is in flight, the
+    // note is still owed on the durable record, and a later pass sends it, once.
+    it.each([
+      ['named', '2f2f2f2f-2f2f-4f2f-8f2f-2f2f2f2f2f2f'],
+      ['unnamed', undefined],
+    ] as const)(
+      'a free sealed message (%s) reported delivered keeps its note to self owed across a stop during that note',
+      async (_kind, id) => {
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+        routeByRecipient = true
+        let stop!: (error: Error) => void
+        selfStalled = new Promise<never>((_resolve, reject) => (stop = reject))
+        selfStalled.catch(() => undefined)
+        let reported!: () => void
+        const delivered = new Promise<void>(resolve => (reported = resolve))
+        const sending = one.chain.directMessages
+          .send({
+            wallet: one.alice,
+            recipient: one.bob.identity.address,
+            items: [{ type: 'text', text: 'stopped mid note' }],
+            stampValue: 0n,
+            ...(id === undefined ? {} : { messageId: id }),
+            sealedSender: true,
+            onDelivered: () => reported(),
+          })
+          .catch((error: unknown) => error)
+        await delivered
+        while (!addressed.includes('self'))
+          await new Promise(resolve => setTimeout(resolve, 5))
+        expect(bobMailbox).toHaveLength(1)
+        // The app stops: nothing more of this send reaches storage.
+        const write = jest
+          .spyOn(LevelOutgoingMessageStore.prototype, 'setUnpaid')
+          .mockRejectedValue(new Error('the app stopped'))
+        stop(new Error('the app stopped'))
+        await sending
+        write.mockRestore()
+        selfStalled = undefined
+        await one.alice.close()
+        const reopened = (await one.chain.createWallet(roots(0))) as EvmChainWalletHandle
+        ;(one as { alice: EvmChainWalletHandle }).alice = reopened
+        installCanonicalDirectory(reopened, aliceDirectories.get(one)!)
+        addressed = []
+        // Nobody names the message again: any reconcile pass sends the owed note.
+        await one.chain.directMessages.reconcileAttempts({ wallet: reopened, payloadDigests: [] })
+        expect(addressed).toEqual(['self'])
+        expect(bobMailbox).toHaveLength(1)
+        expect(mailbox).toHaveLength(1)
+        await one.chain.directMessages.reconcileAttempts({
+          wallet: reopened,
+          payloadDigests: [],
+          maxPutAttempts: 2,
+        })
+        expect(addressed).toEqual(['self'])
+        expect(mailbox).toHaveLength(1)
+        await reopened.close()
+        warn.mockRestore()
+      },
+    )
 
     // Delivery to the recipient and the note to self are distinct facts: a note that does not
     // get through never turns a delivered message into a failed send.

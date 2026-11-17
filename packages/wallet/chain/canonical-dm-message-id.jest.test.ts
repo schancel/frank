@@ -642,8 +642,9 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     let resolved = false
     const seen: Array<{ result: DirectMessageSendResult; resolved: boolean; outcome?: string }> = []
     const onDelivered = jest.fn(async (result: DirectMessageSendResult) => {
+      const at = { result, resolved }
       const row = (await rows()).find(stored => stored.digest === result.payloadDigest)
-      seen.push({ result, resolved, outcome: row?.outcome })
+      seen.push({ ...at, outcome: row?.outcome })
     })
     const sent = attempt({
       messageId: ID_A,
@@ -656,12 +657,26 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
     })
     const { result, error } = await sent
     expect(error).toBeUndefined()
+    await new Promise(resolve => setTimeout(resolve, 0))
     expect(onDelivered).toHaveBeenCalledTimes(1)
     expect(seen[0].resolved).toBe(false)
     expect(seen[0].result).toEqual(result)
     // A paid message's row already records the relay's delivery when the caller is told.
     if (stampValue === undefined) expect(seen[0].outcome).toBe('delivered')
     expect((await received()).map(m => m.messageId)).toEqual([ID_A])
+  })
+
+  it('a caller still recording the delivery holds back neither the payments nor the send', async () => {
+    const onDelivered = jest.fn(() => new Promise<void>(() => undefined))
+    const { result, error } = await attempt({ messageId: ID_A, onDelivered })
+    expect(error).toBeUndefined()
+    expect(onDelivered).toHaveBeenCalledTimes(1)
+    const [row] = await rows()
+    expect(row.digest).toBe(result!.payloadDigest)
+    expect(row.outcome).toBe('delivered')
+    // The payments were settled past the callback that never finished.
+    expect(row.payments.length).toBeGreaterThan(0)
+    expect(row.payments.every(payment => payment.state !== undefined)).toBe(true)
   })
 
   it('a caller that cannot record the delivery does not change the send', async () => {
@@ -673,7 +688,12 @@ describe('canonical send with a caller-chosen message ID (#1237 Stage W)', () =>
       const { result, error } = await attempt({ messageId: ID_A, onDelivered })
       expect(error).toBeUndefined()
       expect(result?.payloadDigest).toBeTruthy()
+      await new Promise(resolve => setTimeout(resolve, 0))
       expect(onDelivered).toHaveBeenCalledTimes(1)
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('could not record a delivered message'),
+        expect.any(Error),
+      )
     } finally {
       warn.mockRestore()
     }

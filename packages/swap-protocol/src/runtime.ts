@@ -63,6 +63,12 @@ export interface NegotiationRecoveryOptions {
   readonly publish: (snapshot: NegotiationRecoverySnapshot) => void
   readonly scanTimeoutMs?: number
   readonly retryDelayMs?: (attempt: number) => number
+  /** Pause after a successful pass while some journal is still open (default 3 s). */
+  readonly activeDelayMs?: number
+  /** Pause after a successful pass when no journal is open: nothing is being negotiated, so a
+   * new offer is picked up at this slower cadence (default: `activeDelayMs`). Each scan costs a
+   * fresh single-use mailbox challenge. */
+  readonly idleDelayMs?: number
 }
 const same = (a: Uint8Array, b: Uint8Array) => bytesToHex(a) === bytesToHex(b)
 const uuid = (value: unknown): value is string =>
@@ -165,13 +171,35 @@ export class NegotiationRecovery {
             this.failures
               ? this.options.retryDelayMs?.(this.failures) ??
                   Math.min(3000 * 2 ** (this.failures - 1), 60000)
-              : 3000,
+              : this.hasOpenJournal()
+              ? this.options.activeDelayMs ?? 3000
+              : this.options.idleDelayMs ?? this.options.activeDelayMs ?? 3000,
           )
       })
       .catch(() => {
         // Observe task failures even if a host publication callback itself failed.
         if (this.active) this.state = 'storage-error'
       })
+  }
+  /** Whether some journal may still change: undecided, holding buffered events, or accepted
+   * and not yet expired. Rejected, violated and expired negotiations are finished. A row that
+   * cannot be inspected counts as open. */
+  private hasOpenJournal(): boolean {
+    const nowSeconds = BigInt(Math.floor(Date.now() / 1000))
+    return this.rows.some(row => {
+      try {
+        const { reduction } = inspectNegotiationJournalRecord(row.raw)
+        if (reduction.violation) return false
+        if (reduction.buffered.length > 0) return true
+        if (reduction.history.decision === null) return true
+        return (
+          reduction.usableAcceptance !== null &&
+          nowSeconds < BigInt(reduction.usableAcceptance.expiry)
+        )
+      } catch {
+        return true
+      }
+    })
   }
   private async pass(): Promise<void> {
     try {

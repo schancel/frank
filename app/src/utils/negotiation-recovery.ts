@@ -23,6 +23,8 @@ export const negotiationRecoveryStatus = readonly({
     return published === null ? null : inspectCurrent?.() ?? published
   },
 })
+/** Pause between negotiation mailbox scans while no swap journal is open. */
+export const APP_IDLE_NEGOTIATION_SCAN_MS = 60_000
 let current: object | undefined
 /** Installed after directory admission; independent of chat storage and ordinary polling. */
 export function startAppNegotiationRecovery(input: {
@@ -81,6 +83,10 @@ export function startAppNegotiationRecovery(input: {
           localPublicKey,
         }),
       scan: sinceMs => scanner.call(messages, { wallet, sinceMs }),
+      // Every scan is an authenticated mailbox read (a fresh single-use challenge). With no
+      // negotiation open, a new offer is picked up within a minute; an open one keeps 3 s.
+      activeDelayMs: 3000,
+      idleDelayMs: APP_IDLE_NEGOTIATION_SCAN_MS,
       schedule: (work, delay) => {
         const timer = setTimeout(work, delay)
         return () => clearTimeout(timer)

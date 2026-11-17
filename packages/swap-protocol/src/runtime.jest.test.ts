@@ -550,3 +550,37 @@ test('stop and replacement do not await a timed-out outstanding scanner; late re
   expect(publish).toHaveBeenCalledTimes(publications)
   expect(replacement.snapshot.coverage).toBe(5)
 })
+test('scans at the idle cadence with no open journal, and keeps the short cadence while one is open', async () => {
+  const { offer } = await signed()
+  const scheduled: { work: () => void; delay: number; canceled: boolean }[] = []
+  const schedule = (work: () => void, delay: number) => {
+    const task = { work, delay, canceled: false }
+    scheduled.push(task)
+    return () => {
+      task.canceled = true
+    }
+  }
+  const live = () => scheduled.filter(task => !task.canceled && task.delay !== 30000)
+  let records: ReturnType<typeof envelope>[] = []
+  const scan = jest.fn(async (since: number) => ({
+    records,
+    resumeFromInclusive: Math.max(since, records.length ? 10 : 0),
+    truncated: false,
+  }))
+  const runtime = start(
+    options({ scan, schedule, activeDelayMs: 3000, idleDelayMs: 60_000 }),
+  )
+  // Nothing negotiated: the next scan waits the idle pause.
+  await until(() => live().some(task => task.delay === 60_000))
+  expect(runtime.snapshot.journals).toHaveLength(0)
+  expect(live().some(task => task.delay === 3000)).toBe(false)
+  // An offer arrives and is undecided: the journal is open, the next scans come quickly.
+  records = [envelope(offer)]
+  live().find(task => task.delay === 60_000)!.work()
+  await until(
+    () =>
+      runtime.snapshot.journals.length === 1 &&
+      live().some(task => task.delay === 3000),
+  )
+  expect(scan).toHaveBeenCalledTimes(2)
+})

@@ -282,7 +282,6 @@ function nativeBalanceTitle(wallet: string): string {
     : amount
 }
 
-
 const selectedChain = computed(() => {
   const currentPath = route?.path ?? ''
   if (currentPath.startsWith('/wallet')) {

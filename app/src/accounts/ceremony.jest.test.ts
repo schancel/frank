@@ -385,7 +385,6 @@ test('ten mixed root/historical strings require explicit selection before stagin
   }
 })
 
-
 // Node test environment: a minimal in-memory localStorage for the device-local seed mark.
 function withMemoryLocalStorage() {
   const data = new Map<string, string>()

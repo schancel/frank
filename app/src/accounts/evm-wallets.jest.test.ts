@@ -1111,24 +1111,36 @@ describe('secondary recovery opens only peers with local state', () => {
     mockEnabledPeerNetworks.add('ethereum-sepolia')
     mockStateNetworks = ['ethereum-sepolia']
     mockCreate.mockRejectedValue(new Error('rpc identity 503'))
-    const debug = jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    const debug = jest
+      .spyOn(console, 'debug')
+      .mockImplementation(() => undefined)
     const now = Date.now()
     const clock = jest.spyOn(Date, 'now').mockReturnValue(now)
     try {
-      await recoverSecondaryEvmWallets(mockPrimary as never).catch(() => undefined)
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
       expect(mockCreate).toHaveBeenCalledTimes(1)
       for (let i = 0; i < 5; i++)
-        await recoverSecondaryEvmWallets(mockPrimary as never).catch(() => undefined)
+        await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+          () => undefined,
+        )
       expect(mockCreate).toHaveBeenCalledTimes(1)
       clock.mockReturnValue(now + 60_000)
-      await recoverSecondaryEvmWallets(mockPrimary as never).catch(() => undefined)
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
       expect(mockCreate).toHaveBeenCalledTimes(2)
       // The second failure doubles the wait.
       clock.mockReturnValue(now + 60_000 + 60_000)
-      await recoverSecondaryEvmWallets(mockPrimary as never).catch(() => undefined)
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
       expect(mockCreate).toHaveBeenCalledTimes(2)
       clock.mockReturnValue(now + 60_000 + 120_000)
-      await recoverSecondaryEvmWallets(mockPrimary as never).catch(() => undefined)
+      await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+        () => undefined,
+      )
       expect(mockCreate).toHaveBeenCalledTimes(3)
     } finally {
       clock.mockRestore()

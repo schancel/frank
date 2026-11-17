@@ -98,6 +98,29 @@ const MAX_REPLY_SENDS = 5;
 // A stored reply is sent again on every poll until it is delivered, but not for ever: after this
 // long it is given up, at error level, and its conversation goes on.
 const REPLY_GIVE_UP_MS = 60 * 60_000;
+/** A bot that received a message, or has a handler, reply or retained message in progress, within
+ * this long has its mailbox read on every poll tick; after it, every `idlePollIntervalMs`. */
+export const ACTIVE_POLL_WINDOW_MS = 60_000;
+/** The relay's mailbox push failing this many times in a row (no record between) closes it for
+ * `MAILBOX_PUSH_PAUSE_MS`: reconnecting a broken stream costs a mailbox auth each time. */
+const MAILBOX_PUSH_FAILURES_BEFORE_PAUSE = 5;
+const MAILBOX_PUSH_PAUSE_MS = 10 * 60_000;
+
+/** When a bot's mailbox is next read by the poll tick, after a pass that started at `startedMs`
+ * and ended at `endedMs`: at the next tick while it is active, else one idle interval after the
+ * pass started. A pushed record (or a direct `pollAllBots`) reads it sooner. */
+export function nextMailboxPollMs(params: {
+  startedMs: number;
+  endedMs: number;
+  lastActiveMs: number;
+  idlePollIntervalMs: number;
+  activeWindowMs?: number;
+}): number {
+  return params.endedMs - params.lastActiveMs <
+    (params.activeWindowMs ?? ACTIVE_POLL_WINDOW_MS)
+    ? 0
+    : params.startedMs + params.idlePollIntervalMs;
+}
 
 /** A message a bot tried to send that one sealed direct message cannot carry, even with its long
  * texts split into consecutive text items. Refused before the wallet is asked: nothing was paid
@@ -256,6 +279,17 @@ interface ActiveBotInstance {
   lastPollTimestamp: number;
   /** This bot's poll pass, while one runs. */
   polling?: Promise<void>;
+  /** Last time this bot had inbound work or work in progress (see `ACTIVE_POLL_WINDOW_MS`). */
+  lastActiveMs: number;
+  /** The poll tick reads this bot's mailbox from this time on (0: at the next tick). */
+  nextPollMs: number;
+  /** Counts the relay's pushed inbound records, so one pushed during a pass is read right after. */
+  wakes: number;
+  /** Closes this bot's mailbox push, while one is open. */
+  closePush?: () => void;
+  /** Push failures in a row, and until when a failing push stays closed. */
+  pushFailures: number;
+  pushPausedUntilMs: number;
   /** This bot's mailbox read until a poll uses its result: it may outlive the poll that started it. */
   mailboxRead?: Promise<MailboxRead>;
   /** The record last reported as not translatable yet, so the warning is not repeated. */
@@ -392,6 +426,8 @@ export class FrankBotHost {
         options.minStampValueWei ??
         BigInt(process.env.CASHWEB_STAMP_MIN_BURN_VALUE_WEI || "1000000000000"),
       pollIntervalMs: options.pollIntervalMs ?? 3000,
+      idlePollIntervalMs:
+        options.idlePollIntervalMs ?? 5 * (options.pollIntervalMs ?? 3000),
       heartbeatIntervalMs: options.heartbeatIntervalMs ?? 30 * 60 * 1000,
       watchRegistrations: options.watchRegistrations ?? true,
       unrefTimers: options.unrefTimers ?? false,
@@ -997,6 +1033,11 @@ export class FrankBotHost {
         nextTopUpMs: Date.now() + TOP_UP_CHECK_MS,
         pollWaiters: new Set(),
         evmMainPrivateKey,
+        lastActiveMs: Date.now(),
+        nextPollMs: 0,
+        wakes: 0,
+        pushFailures: 0,
+        pushPausedUntilMs: 0,
       };
 
       negotiation = startBotNegotiationRecovery({
@@ -1007,6 +1048,7 @@ export class FrankBotHost {
       });
       instance.negotiation = negotiation;
       this.instances.set(definition.id, instance);
+      if (this.running) this.openMailboxPush(definition.id, instance);
 
       if (definition.schedules) {
         for (const schedule of definition.schedules) {
@@ -1021,6 +1063,8 @@ export class FrankBotHost {
         `[bot-host] Bot "${definition.id}" is ready at address ${botAddress}`
       );
     } catch (error) {
+      const added = this.instances.get(definition.id);
+      if (added) this.closeMailboxPush(added);
       this.instances.delete(definition.id);
       uninstall?.();
       await Promise.allSettled([
@@ -1053,12 +1097,15 @@ export class FrankBotHost {
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
 
-    // Start message polling loop
+    // Start message polling loop: a bot's mailbox is read on every tick while it is active and
+    // every idle interval otherwise; the relay's push reads it as soon as a message arrives.
     console.log(
-      `[bot-host] Polling messages (/message/monad/inbox) every ${this.options.pollIntervalMs}ms`
+      `[bot-host] Polling messages (/message/monad/inbox) every ${this.options.pollIntervalMs}ms while active, ${this.options.idlePollIntervalMs}ms while idle`
     );
+    for (const [id, instance] of this.instances)
+      this.openMailboxPush(id, instance);
     this.pollTimer = setInterval(() => {
-      void this.pollAllBots();
+      void this.pollDueBots();
     }, this.options.pollIntervalMs);
 
     // Start registration watcher if enabled
@@ -1100,13 +1147,131 @@ export class FrankBotHost {
    * running joins it instead of starting a second one. Resolves when every pass has ended. */
   private pollAllBots(): Promise<void> {
     return Promise.all(
-      [...this.instances.entries()].map(
-        ([id, instance]) =>
-          (instance.polling ??= this.pollOnce(id, instance).finally(() => {
-            instance.polling = undefined;
-          }))
+      [...this.instances.entries()].map(([id, instance]) =>
+        this.pollBot(id, instance)
       )
     ).then(() => undefined);
+  }
+
+  /** The poll tick: every bot whose mailbox is due (see `nextMailboxPollMs`). A bot whose push
+   * was closed for failing is offered it again once its pause is over. */
+  private pollDueBots(): Promise<void> {
+    const now = Date.now();
+    const due: Promise<void>[] = [];
+    for (const [id, instance] of this.instances) {
+      if (this.running) this.openMailboxPush(id, instance);
+      if (now >= instance.nextPollMs) due.push(this.pollBot(id, instance));
+    }
+    return Promise.all(due).then(() => undefined);
+  }
+
+  /** One single-flight poll pass of one bot, then when the tick reads it next. */
+  private pollBot(id: string, instance: ActiveBotInstance): Promise<void> {
+    if (instance.polling) return instance.polling;
+    const startedMs = Date.now();
+    const wakes = instance.wakes;
+    const pass = this.pollOnce(id, instance).finally(() => {
+      instance.polling = undefined;
+      const endedMs = Date.now();
+      if (this.hasWorkInProgress(instance)) instance.lastActiveMs = endedMs;
+      instance.nextPollMs = nextMailboxPollMs({
+        startedMs,
+        endedMs,
+        lastActiveMs: instance.lastActiveMs,
+        idlePollIntervalMs: this.options.idlePollIntervalMs,
+      });
+      // A record pushed while this pass ran may be newer than what it read.
+      if (instance.wakes !== wakes && this.running && !this.closing)
+        void this.pollBot(id, instance);
+    });
+    instance.polling = pass;
+    return pass;
+  }
+
+  /** A handler, reply, retry or retained message of this bot is not finished: each is moved on
+   * by the poll. A journal that cannot be listed counts as work (the poll mends it). */
+  private hasWorkInProgress(instance: ActiveBotInstance): boolean {
+    if (
+      instance.inFlightDigests.size > 0 ||
+      instance.tasks.size > 0 ||
+      instance.pollWaiters.size > 0 ||
+      instance.retrying
+    )
+      return true;
+    try {
+      return (
+        instance.operations.isFaulted ||
+        instance.operations.listStarted().length > 0 ||
+        instance.operations.listDeferred().length > 0
+      );
+    } catch {
+      return true;
+    }
+  }
+
+  /** The relay pushed a record to this bot's mailbox: read it now, not at the next due tick.
+   * The poll stays the only reader that admits messages and moves the cursor. */
+  private wakeMailbox(id: string, instance: ActiveBotInstance): void {
+    // Not a bot that has been removed (a failed registration) or is being stopped.
+    if (!this.running || this.closing || this.instances.get(id) !== instance) return;
+    instance.wakes++;
+    instance.lastActiveMs = Date.now();
+    instance.nextPollMs = 0;
+    if (!instance.polling) void this.pollBot(id, instance);
+  }
+
+  /** Opens the relay's mailbox push for one bot, when the chain has one and it is not paused.
+   * It is a wake signal only: nothing is decoded, admitted or recorded from it, so no wallet
+   * work outlives `stop()`; the poll reads the mailbox. A bot's own notes to self wake it too,
+   * and that poll finds nothing new. */
+  private openMailboxPush(id: string, instance: ActiveBotInstance): void {
+    const directMessages = this.chain?.directMessages;
+    if (
+      this.closing ||
+      instance.closePush ||
+      this.instances.get(id) !== instance ||
+      typeof directMessages?.subscribeMailboxWake !== "function" ||
+      Date.now() < instance.pushPausedUntilMs
+    )
+      return;
+    try {
+      instance.closePush = directMessages.subscribeMailboxWake({
+        wallet: instance.wallet,
+        onInbound: () => {
+          instance.pushFailures = 0;
+          this.wakeMailbox(id, instance);
+        },
+        onReady: () => {
+          instance.pushFailures = 0;
+        },
+        onError: (error) => {
+          if (++instance.pushFailures < MAILBOX_PUSH_FAILURES_BEFORE_PAUSE) return;
+          console.warn(
+            `[bot-host] [${id}] Mailbox push keeps failing; polling only for ${MAILBOX_PUSH_PAUSE_MS / 60_000} min:`,
+            error instanceof Error ? error.message : error
+          );
+          this.closeMailboxPush(instance);
+          instance.pushFailures = 0;
+          instance.pushPausedUntilMs = Date.now() + MAILBOX_PUSH_PAUSE_MS;
+        },
+      });
+    } catch (error) {
+      instance.pushPausedUntilMs = Date.now() + MAILBOX_PUSH_PAUSE_MS;
+      console.warn(
+        `[bot-host] [${id}] Mailbox push could not be opened; polling only:`,
+        error instanceof Error ? error.message : error
+      );
+    }
+  }
+
+  private closeMailboxPush(instance: ActiveBotInstance): void {
+    const close = instance.closePush;
+    instance.closePush = undefined;
+    try {
+      close?.();
+    } catch {
+      /* Already closed. */
+    }
   }
 
   private async maybeSendFundingLowAlert(
@@ -1507,6 +1672,8 @@ export class FrankBotHost {
           if (outcome === "finished") continue;
           fetched.set(identity.digest, entry);
         }
+        // New inbound work: the conversation is likely to go on, so keep reading at the tick.
+        if (fetched.size > 0) instance.lastActiveMs = Date.now();
         // Every message of the read is now finished, retained, or never to be handled (a peer
         // bot over its reply budget included); what this bot sent itself needs nothing. The cursor passes them all, so the next read
         // opens only newer records; a retained row still pins the scan until it is started.
@@ -2524,6 +2691,7 @@ export class FrankBotHost {
 
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.registrationTimer) clearInterval(this.registrationTimer);
+    for (const instance of this.instances.values()) this.closeMailboxPush(instance);
     this.shutdownCompletion = (async () => {
       const failures: Error[] = [];
       // Invoke inside the guard: a synchronous throw must not skip sibling cleanup.

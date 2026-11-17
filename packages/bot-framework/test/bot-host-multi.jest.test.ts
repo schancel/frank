@@ -18,7 +18,7 @@ import { tmpdir } from "os";
 import { join } from "path";
 import { Wallet, getBytes } from "ethers";
 import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
-import { FrankBotHost } from "../src/bot-host";
+import { FrankBotHost, nextMailboxPollMs } from "../src/bot-host";
 import { FaucetBot } from "../../bot/src/bots/faucet-bot";
 import { EVMNonceSequencer } from "../src/nonce-sequencer";
 import type { FrankBotDefinition } from "../src/types";
@@ -610,5 +610,131 @@ describe("several bots on one host", () => {
     funderBalance = 5n * 10n ** 18n;
     await (host as any).fundBot("faucet", instance.fundingTargets);
     expect(sendSpy).toHaveBeenCalledTimes(2);
+  });
+
+  describe("mailbox read cadence", () => {
+    let clock: number;
+    const reads = () => mockFetchSince.mock.calls.length;
+    /** One poll tick, `ms` after the last. */
+    const tick = (ms: number): Promise<void> => {
+      clock += ms;
+      return (host as any).pollDueBots();
+    };
+    beforeEach(() => {
+      clock = 1_000_000;
+      jest.spyOn(Date, "now").mockImplementation(() => clock);
+      jest.spyOn(process, "once").mockImplementation(() => process);
+    });
+
+    it("is every tick while active, and every idle interval after a minute without work", () => {
+      const at = (endedMs: number, lastActiveMs: number) =>
+        nextMailboxPollMs({ startedMs: endedMs - 500, endedMs, lastActiveMs, idlePollIntervalMs: 15_000 });
+      expect(at(10_000, 0)).toBe(0);
+      expect(at(59_999, 0)).toBe(0);
+      expect(at(60_000, 0)).toBe(74_500);
+    });
+
+    it("an idle bot is read every 15 s instead of every 3 s; a new message brings back the 3 s tick", async () => {
+      newHost({ pollIntervalMs: 3000 });
+      await host!.register(bot("idle"));
+      await tick(0);
+      await tick(3000);
+      expect(reads()).toBe(2); // just registered: active
+      await tick(60_000); // a minute with nothing: idle from here
+      expect(reads()).toBe(3);
+      for (let i = 0; i < 4; i++) await tick(3000);
+      expect(reads()).toBe(3);
+      await tick(3000); // 15 s after the last read
+      expect(reads()).toBe(4);
+      // Idle for 60 s: four reads where the fixed 3 s tick made twenty.
+      for (let i = 0; i < 20; i++) await tick(3000);
+      expect(reads()).toBe(8);
+      mockFetchSince.mockResolvedValueOnce([inboundFor("idle", "hello")]);
+      for (let i = 0; i < 5 && reads() === 8; i++) await tick(3000);
+      expect(reads()).toBe(9);
+      await until(() => textsSent().length === 1);
+      await tick(3000);
+      expect(reads()).toBe(10);
+      await tick(3000);
+      expect(reads()).toBe(11);
+    });
+
+    it("a record the relay pushes is read at once, and stop closes the push", async () => {
+      newHost({ pollIntervalMs: 60_000, idlePollIntervalMs: 600_000, unrefTimers: true });
+      const pushes: any[] = [];
+      const closed = jest.fn();
+      (host as any).chain.directMessages.subscribeMailboxWake = jest.fn((params: any) => {
+        pushes.push(params);
+        return closed;
+      });
+      await host!.register(bot("pushed"));
+      await host!.start();
+      expect(pushes).toHaveLength(1);
+      expect(pushes[0].wallet).toBe(instanceOf("pushed").wallet);
+      clock += 120_000;
+      await pollAllBots(); // idle: the tick will not read it for ten minutes
+      const before = reads();
+      mockFetchSince.mockResolvedValueOnce([inboundFor("pushed", "hi", 2)]);
+      pushes[0].onInbound();
+      await until(() => textsSent().length === 1);
+      expect(reads()).toBe(before + 1);
+      expect(closed).not.toHaveBeenCalled();
+      await host!.stop();
+      expect(closed).toHaveBeenCalledTimes(1);
+      // A wake that arrives after stop polls nothing.
+      pushes[0].onInbound();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reads()).toBe(before + 1);
+    });
+
+    it("a bot whose registration fails after its push opened has the push closed, and its wakes poll nothing", async () => {
+      newHost({ pollIntervalMs: 60_000, unrefTimers: true });
+      const pushes: any[] = [];
+      const closed = jest.fn();
+      (host as any).chain.directMessages.subscribeMailboxWake = jest.fn((params: any) => {
+        pushes.push(params);
+        return closed;
+      });
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      await host!.start();
+      await expect(
+        host!.register({ ...bot("broken"), onStart: async () => { throw new Error("no start"); } })
+      ).rejects.toThrow("no start");
+      expect(pushes).toHaveLength(1);
+      expect(closed).toHaveBeenCalledTimes(1);
+      const before = reads();
+      pushes[0].onInbound();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reads()).toBe(before);
+    });
+
+    it("a push that keeps failing is closed for ten minutes, then opened again by the tick", async () => {
+      newHost({ pollIntervalMs: 60_000, unrefTimers: true });
+      const pushes: any[] = [];
+      const closed = jest.fn();
+      (host as any).chain.directMessages.subscribeMailboxWake = jest.fn((params: any) => {
+        pushes.push(params);
+        return closed;
+      });
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
+      await host!.register(bot("flaky"));
+      await host!.start();
+      // Errors scattered between successful connections never add up to a pause.
+      for (let i = 0; i < 8; i++) {
+        pushes[0].onError(new Error("ws refused"));
+        if (i % 2) pushes[0].onReady();
+      }
+      expect(closed).not.toHaveBeenCalled();
+      pushes[0].onReady();
+      for (let i = 0; i < 4; i++) pushes[0].onError(new Error("ws refused"));
+      expect(closed).not.toHaveBeenCalled();
+      pushes[0].onError(new Error("ws refused"));
+      expect(closed).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining("Mailbox push keeps failing"), "ws refused");
+      await tick(9 * 60_000);
+      expect(pushes).toHaveLength(1);
+      await tick(60_000);
+      expect(pushes).toHaveLength(2);
+    });
   });
 });

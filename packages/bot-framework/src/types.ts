@@ -264,7 +264,12 @@ export interface BotHostOptions {
   /** The least the relay accepts for a paid message. Default: `CASHWEB_STAMP_MIN_BURN_VALUE_WEI`,
    * else 1000000000000 wei. A message that paid less is answered at this amount. */
   minStampValueWei?: bigint;
+  /** The poll tick: how often an active bot's mailbox is read. Default 3 s. */
   pollIntervalMs?: number;
+  /** How often the mailbox of a bot with no recent inbound message and nothing in progress is
+   * read; the relay's mailbox push, when open, reads it as soon as a message arrives. Default:
+   * five poll ticks (15 s). */
+  idlePollIntervalMs?: number;
   heartbeatIntervalMs?: number;
   watchRegistrations?: boolean;
   unrefTimers?: boolean;

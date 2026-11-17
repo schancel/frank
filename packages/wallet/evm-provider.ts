@@ -16,6 +16,11 @@ import {
   toUtf8Bytes,
 } from "ethers";
 import type { FetchGetUrlFunc } from "ethers";
+import {
+  RELAY_UPSTREAM_COOLDOWN_MAX_MS,
+  noteRelayUpstreamRateLimited,
+  relayUpstreamCooldownRemainingMs,
+} from "./relay-upstream-cooldown";
 
 export const DEFAULT_MONAD_CHAIN_ID = 10143n;
 
@@ -722,48 +727,6 @@ export function relayUpstreamRateLimitDelayMs(
   );
 }
 
-/** The longest a throttled relay route is left alone by every read in this process. */
-export const RELAY_UPSTREAM_COOLDOWN_MAX_MS = 60_000;
-// Per relay route (one canonical chain's RPC on one relay): until when its upstream provider
-// asked to be left alone. Shared by every connection to the route, so one 429 slows every read
-// of that chain instead of each read retrying on its own.
-const relayUpstreamCooldownUntil = new Map<string, number>();
-
-/** How long reads of `route` still wait for its upstream's rate limit (0: none). */
-export function relayUpstreamCooldownRemainingMs(route: string, now = Date.now()): number {
-  const until = relayUpstreamCooldownUntil.get(route);
-  if (until === undefined) return 0;
-  if (now >= until) {
-    relayUpstreamCooldownUntil.delete(route);
-    return 0;
-  }
-  return until - now;
-}
-
-/** Records the relay's `rpc_upstream_rate_limited` for `route`: its Retry-After when given
- * (capped), else `fallbackMs`. Never shortens a cooldown already running. */
-function noteRelayUpstreamRateLimited(
-  route: string,
-  response: { readonly headers: Readonly<Record<string, string>> },
-  fallbackMs: number,
-  now = Date.now()
-): void {
-  const retryAfter = Number(response.headers["retry-after"]?.trim() ?? "");
-  const waitMs = Math.min(
-    RELAY_UPSTREAM_COOLDOWN_MAX_MS,
-    Number.isFinite(retryAfter) && retryAfter >= 0 && response.headers["retry-after"]?.trim()
-      ? retryAfter * 1000
-      : fallbackMs
-  );
-  const until = now + waitMs;
-  if ((relayUpstreamCooldownUntil.get(route) ?? 0) < until)
-    relayUpstreamCooldownUntil.set(route, until);
-}
-
-/** Test hook: forget every route's cooldown. */
-export function resetRelayUpstreamCooldownsForTest(): void {
-  relayUpstreamCooldownUntil.clear();
-}
 
 /** Builds an ethers connection to a relay family route. The first customer request obtains one
  * expiring bearer capability; subsequent requests are ordinary JSON-RPC POSTs to that URL. The

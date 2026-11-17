@@ -1,5 +1,118 @@
-import { confirmReceived, Outbox, refuse, RETRY_CAP_MS, RETRY_FIRST_MS } from "./money";
+import * as upstreamCooldown from "@frank/wallet/relay-upstream-cooldown";
+import {
+  confirmReceived,
+  Outbox,
+  PROOF_ERROR_BACKOFF_CAP_MS,
+  refuse,
+  RETRY_CAP_MS,
+  RETRY_FIRST_MS,
+} from "./money";
 import { harness, PLAYER } from "./bot-harness.testutil";
+
+describe("payment-proof wait under RPC failure", () => {
+  // What ethers throws when the relay answers HTTP 429 (`rpc_upstream_rate_limited`).
+  const throttled = () =>
+    Object.assign(new Error("server response 429 Too Many Requests"), {
+      code: "SERVER_ERROR",
+      response: { statusCode: 429 },
+    });
+
+  beforeEach(() => jest.useFakeTimers());
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  /** Runs `confirmReceived` with a `waitMs` deadline on fake time; reports when it ended. */
+  async function run(h: ReturnType<typeof harness>, message: ReturnType<ReturnType<typeof harness>["message"]>, waitMs: number) {
+    const startedMs = Date.now();
+    let endedMs: number | undefined;
+    const done = confirmReceived(message, h.ctx, waitMs).then((got) => {
+      endedMs = Date.now();
+      return got;
+    });
+    for (let i = 0; i < 200 && endedMs === undefined; i++)
+      await jest.advanceTimersByTimeAsync(250);
+    const got = await done;
+    return { got, elapsedMs: endedMs! - startedMs };
+  }
+
+  test("a transfer the chain says is not mined is still asked about every second", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(5n, { mined: false })]);
+    const check = jest.spyOn(h.ctx, "checkMessagePayment");
+    const { got, elapsedMs } = await run(h, message, 10_000);
+    expect(got.unconfirmed).toHaveLength(1);
+    expect(elapsedMs).toBe(10_000);
+    expect(check).toHaveBeenCalledTimes(11);
+  });
+
+  test("429s back off exponentially to the cap; the deadline and its outcome are unchanged", async () => {
+    const h = harness();
+    const payment = h.pay(5n);
+    const message = h.message([], [payment]);
+    const check = jest.fn(async () => {
+      throw throttled();
+    });
+    h.ctx.checkMessagePayment = check;
+    const { got, elapsedMs } = await run(h, message, 20_000);
+    // Not confirmed is the answer at the deadline, as before: never "failed", never "paid".
+    expect(got).toEqual({ confirmedWei: 0n, confirmed: [], unconfirmed: [expect.objectContaining({ txHash: payment.txHash })] });
+    expect(elapsedMs).toBe(20_000);
+    // Reads at 0, 1, 3, 7, 12, 17 and the deadline (20 s): 7, where a 1 s poll made 21.
+    expect(check).toHaveBeenCalledTimes(7);
+    expect(PROOF_ERROR_BACKOFF_CAP_MS).toBe(5_000);
+  });
+
+  test("a read that succeeds after failures confirms the payment as before and resets the pace", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(5n)]);
+    const real = h.ctx.checkMessagePayment.bind(h.ctx);
+    let calls = 0;
+    h.ctx.checkMessagePayment = jest.fn(async (digest: string) => {
+      if (++calls <= 3) throw throttled();
+      return real(digest);
+    });
+    const { got, elapsedMs } = await run(h, message, 60_000);
+    expect(got).toMatchObject({ confirmedWei: 5n, unconfirmed: [] });
+    // Failed reads at 0, 1 and 3 s; the fourth, at 7 s, confirms.
+    expect(elapsedMs).toBe(7_000);
+    expect(calls).toBe(4);
+  });
+
+  test("a rate-limited read waits out the shared relay cooldown, still within the deadline", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(5n)]);
+    jest
+      .spyOn(upstreamCooldown, "relayUpstreamCooldownLongestRemainingMs")
+      .mockReturnValue(8_000);
+    const check = jest.fn(async () => {
+      throw throttled();
+    });
+    h.ctx.checkMessagePayment = check;
+    const { got, elapsedMs } = await run(h, message, 20_000);
+    expect(got.unconfirmed).toHaveLength(1);
+    expect(elapsedMs).toBe(20_000);
+    // Reads at 0, 8, 16 and the deadline.
+    expect(check).toHaveBeenCalledTimes(4);
+  });
+
+  test("other read failures back off too, without the rate-limit cooldown", async () => {
+    const h = harness();
+    const message = h.message([], [h.pay(5n)]);
+    const cooldown = jest
+      .spyOn(upstreamCooldown, "relayUpstreamCooldownLongestRemainingMs")
+      .mockReturnValue(60_000);
+    const check = jest.fn(async () => {
+      throw new Error("socket hang up");
+    });
+    h.ctx.checkMessagePayment = check;
+    const { elapsedMs } = await run(h, message, 20_000);
+    expect(elapsedMs).toBe(20_000);
+    expect(check).toHaveBeenCalledTimes(7);
+    expect(cooldown).not.toHaveBeenCalled();
+  });
+});
 
 describe("confirmReceived", () => {
   test("counts a transfer that is mined, succeeded and as described", async () => {

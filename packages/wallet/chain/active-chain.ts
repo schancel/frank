@@ -710,6 +710,16 @@ export interface DirectMessageClient {
      * not reported through `onError`. The stream moves no read position. */
     onQuarantinedTimestamp?: (timestampMs: number, payloadDigest: string) => void;
   }): () => void;
+  /** A wake signal only: `onInbound` when the relay pushes a record into the wallet's mailbox.
+   * Nothing is decoded or recorded and no wallet state is touched, so a reader that polls (a
+   * bot) learns of new mail without a second, untracked reader of it. `onReady` per open
+   * connection. Returns the close. */
+  subscribeMailboxWake?(params: {
+    wallet: WalletHandle;
+    onInbound: () => void;
+    onReady?: () => void;
+    onError?: (error: Error) => void;
+  }): () => void;
   listRecoveredStampPayments(params: {
     wallet: WalletHandle;
   }): Promise<RecoveredStampPaymentInfo[]>;

@@ -3747,6 +3747,65 @@ describe('two typed wallets on the open directory', () => {
     unsub()
   })
 
+  it('a stream closed while it is still connecting closes its socket once it exists, and nothing reconnects', async () => {
+    await online('alice', f.alice)
+    const connectSpy = jest.mocked(connectCanonicalMailboxStream)
+    const waitFor = async (condition: () => boolean) => {
+      for (let i = 0; i < 200 && !condition(); i++)
+        await new Promise(resolve => setTimeout(resolve, 5))
+      expect(condition()).toBe(true)
+    }
+    for (const subscribe of ['subscribeMailboxStream', 'subscribeMailboxWake'] as const) {
+      connectSpy.mockClear()
+      const socket = { close: jest.fn() }
+      let onClose: (() => void) | undefined
+      let finishConnect: (() => void) | undefined
+      connectSpy.mockImplementationOnce(
+        params =>
+          new Promise(resolve => {
+            finishConnect = () => {
+              onClose = params.onClose
+              resolve(socket)
+            }
+          }),
+      )
+      const close = (f.chain.directMessages[subscribe] as any)({
+        wallet: f.alice,
+        onRecord: () => {},
+        onInbound: () => {},
+      })
+      // Closed during the auth round trips, before the socket exists.
+      await waitFor(() => finishConnect !== undefined)
+      close()
+      finishConnect!()
+      await waitFor(() => socket.close.mock.calls.length === 1)
+      // The socket's own close event schedules no reconnect for a closed subscription.
+      onClose?.()
+      await new Promise(resolve => setTimeout(resolve, 1100))
+      expect(connectSpy).toHaveBeenCalledTimes(1)
+    }
+  })
+
+  it('the mailbox wake reports inbound records only and decodes nothing', async () => {
+    await online('alice', f.alice)
+    const inbound = jest.fn()
+    const ready = jest.fn()
+    const close = f.chain.directMessages.subscribeMailboxWake!({
+      wallet: f.alice,
+      onInbound: inbound,
+      onReady: ready,
+    })
+    for (let i = 0; i < 200 && ready.mock.calls.length === 0; i++)
+      await new Promise(resolve => setTimeout(resolve, 5))
+    expect(ready).toHaveBeenCalledTimes(1)
+    // Not a decodable delivery: the wake still fires, because the poll does the reading.
+    await mockStreamRecordHandler!({ direction: 'out', delivery: new Uint8Array(), context: new Uint8Array(), timestampMs: 1 })
+    expect(inbound).not.toHaveBeenCalled()
+    await mockStreamRecordHandler!({ direction: 'in', delivery: new Uint8Array(), context: new Uint8Array(), timestampMs: 2 })
+    expect(inbound).toHaveBeenCalledTimes(1)
+    close()
+  })
+
   it('automatically reconnects when stream closes or errors with modest backoff', async () => {
     await online('alice', f.alice)
     const connectSpy = jest.mocked(connectCanonicalMailboxStream)

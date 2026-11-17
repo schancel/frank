@@ -30,6 +30,8 @@ import type {
   StampPaymentInfo,
 } from "@frank/bot-framework";
 import { stakeMinimumWei } from "@frank/wallet/message-item-plugins/shared/stake-minimum";
+import { relayUpstreamCooldownLongestRemainingMs } from "@frank/wallet/relay-upstream-cooldown";
+import { isRateLimited } from "@frank/wallet/evm-rpc-read-budget";
 
 export type Payment = {
   txHash: string;
@@ -52,6 +54,27 @@ export interface Received {
   unconfirmed: Payment[];
 }
 
+/** How soon a transfer the chain says is not mined yet is looked at again. */
+export const PROOF_POLL_MS = 1_000;
+/** After a payment-proof read fails (the node or relay refused or could not answer), the next
+ * read waits this long, doubled with each further failure in a row up to the cap. A read that
+ * was rate limited also waits out the shared relay cooldown. A failed read is never proof that a
+ * transfer did not land: the transfer stays unconfirmed, and the wait keeps its deadline. */
+export const PROOF_ERROR_BACKOFF_FIRST_MS = 1_000;
+export const PROOF_ERROR_BACKOFF_CAP_MS = 5_000;
+
+/** The wait before the next payment-proof read after `failures` failed reads in a row. */
+export function proofRetryDelayMs(failures: number, error?: unknown): number {
+  if (failures <= 0) return PROOF_POLL_MS;
+  const backoff = Math.min(
+    PROOF_ERROR_BACKOFF_CAP_MS,
+    PROOF_ERROR_BACKOFF_FIRST_MS * 2 ** (failures - 1)
+  );
+  return isRateLimited(error)
+    ? Math.max(backoff, relayUpstreamCooldownLongestRemainingMs())
+    : backoff;
+}
+
 /** Wallet evidence proves receipt; delivery hashes retain the existing durable attribution ID. */
 async function confirm(
   digest: string,
@@ -63,8 +86,21 @@ async function confirm(
   if (payments.length === 0)
     return { confirmedWei: 0n, confirmed: [], unconfirmed: [] };
   const untilMs = Date.now() + waitMs;
+  let failures = 0;
+  let lastError: unknown;
   for (;;) {
-    const evidence = await checkStampPayments(ctx, digest).catch(() => []);
+    // A failed read is "not confirmed yet", as before; only the pace of asking again changes.
+    const evidence = await checkStampPayments(ctx, digest).then(
+      (read) => {
+        failures = 0;
+        return read;
+      },
+      (error: unknown) => {
+        failures++;
+        lastError = error;
+        return [];
+      }
+    );
     const byAddress = new Map(
       evidence.map((payment) => [payment.address.toLowerCase(), payment])
     );
@@ -98,7 +134,12 @@ async function confirm(
     }
     if (!unconfirmed.length || Date.now() >= untilMs)
       return { confirmedWei, confirmed, unconfirmed };
-    await sleep(Math.min(1000, Math.max(0, untilMs - Date.now())));
+    await sleep(
+      Math.min(
+        proofRetryDelayMs(failures, lastError),
+        Math.max(0, untilMs - Date.now())
+      )
+    );
   }
 }
 

@@ -67,12 +67,15 @@ function positiveDecimal(value: string | number): Ratio {
     : { numerator: digits, denominator: 10n ** BigInt(-exponent) };
 }
 
-/** The host passes its public FRANK_DM_DEFAULT_STAMP_AVU value; this module reads no env. */
+/**
+ * The host passes its public FRANK_DM_DEFAULT_STAMP_AVU value; this module reads no env. Quasar
+ * parses numeric-looking QCLI_ values, so the app receives `0.1` as a number: accept either.
+ */
 export function stampPolicyConfig(
-  targetAvu = DEFAULT_STAMP_TARGET_AVU
+  targetAvu: string | number = DEFAULT_STAMP_TARGET_AVU
 ): StampPolicyConfig {
   positiveDecimal(targetAvu);
-  return { targetAvu: targetAvu.trim() };
+  return { targetAvu: String(targetAvu).trim() };
 }
 
 /** The least integer base-unit amount that meets the configured AVU value. */

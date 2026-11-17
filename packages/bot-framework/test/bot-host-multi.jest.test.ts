@@ -659,11 +659,11 @@ describe("several bots on one host", () => {
       expect(reads()).toBe(11);
     });
 
-    it("a record the relay pushes is read at once; the bot's own records wake nothing; stop closes the push", async () => {
+    it("a record the relay pushes is read at once, and stop closes the push", async () => {
       newHost({ pollIntervalMs: 60_000, idlePollIntervalMs: 600_000, unrefTimers: true });
       const pushes: any[] = [];
       const closed = jest.fn();
-      (host as any).chain.directMessages.subscribeMailboxStream = jest.fn((params: any) => {
+      (host as any).chain.directMessages.subscribeMailboxWake = jest.fn((params: any) => {
         pushes.push(params);
         return closed;
       });
@@ -674,29 +674,58 @@ describe("several bots on one host", () => {
       clock += 120_000;
       await pollAllBots(); // idle: the tick will not read it for ten minutes
       const before = reads();
-      pushes[0].onRecord({ ...inboundFor("pushed", "mine", 1), outbound: true });
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(reads()).toBe(before);
       mockFetchSince.mockResolvedValueOnce([inboundFor("pushed", "hi", 2)]);
-      pushes[0].onRecord(inboundFor("pushed", "hi", 2));
+      pushes[0].onInbound();
       await until(() => textsSent().length === 1);
       expect(reads()).toBe(before + 1);
       expect(closed).not.toHaveBeenCalled();
       await host!.stop();
       expect(closed).toHaveBeenCalledTimes(1);
+      // A wake that arrives after stop polls nothing.
+      pushes[0].onInbound();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reads()).toBe(before + 1);
+    });
+
+    it("a bot whose registration fails after its push opened has the push closed, and its wakes poll nothing", async () => {
+      newHost({ pollIntervalMs: 60_000, unrefTimers: true });
+      const pushes: any[] = [];
+      const closed = jest.fn();
+      (host as any).chain.directMessages.subscribeMailboxWake = jest.fn((params: any) => {
+        pushes.push(params);
+        return closed;
+      });
+      jest.spyOn(console, "error").mockImplementation(() => {});
+      await host!.start();
+      await expect(
+        host!.register({ ...bot("broken"), onStart: async () => { throw new Error("no start"); } })
+      ).rejects.toThrow("no start");
+      expect(pushes).toHaveLength(1);
+      expect(closed).toHaveBeenCalledTimes(1);
+      const before = reads();
+      pushes[0].onInbound();
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reads()).toBe(before);
     });
 
     it("a push that keeps failing is closed for ten minutes, then opened again by the tick", async () => {
       newHost({ pollIntervalMs: 60_000, unrefTimers: true });
       const pushes: any[] = [];
       const closed = jest.fn();
-      (host as any).chain.directMessages.subscribeMailboxStream = jest.fn((params: any) => {
+      (host as any).chain.directMessages.subscribeMailboxWake = jest.fn((params: any) => {
         pushes.push(params);
         return closed;
       });
       const warn = jest.spyOn(console, "warn").mockImplementation(() => {});
       await host!.register(bot("flaky"));
       await host!.start();
+      // Errors scattered between successful connections never add up to a pause.
+      for (let i = 0; i < 8; i++) {
+        pushes[0].onError(new Error("ws refused"));
+        if (i % 2) pushes[0].onReady();
+      }
+      expect(closed).not.toHaveBeenCalled();
+      pushes[0].onReady();
       for (let i = 0; i < 4; i++) pushes[0].onError(new Error("ws refused"));
       expect(closed).not.toHaveBeenCalled();
       pushes[0].onError(new Error("ws refused"));

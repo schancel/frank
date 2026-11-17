@@ -1063,6 +1063,8 @@ export class FrankBotHost {
         `[bot-host] Bot "${definition.id}" is ready at address ${botAddress}`
       );
     } catch (error) {
+      const added = this.instances.get(definition.id);
+      if (added) this.closeMailboxPush(added);
       this.instances.delete(definition.id);
       uninstall?.();
       await Promise.allSettled([
@@ -1210,7 +1212,8 @@ export class FrankBotHost {
   /** The relay pushed a record to this bot's mailbox: read it now, not at the next due tick.
    * The poll stays the only reader that admits messages and moves the cursor. */
   private wakeMailbox(id: string, instance: ActiveBotInstance): void {
-    if (!this.running || this.closing) return;
+    // Not a bot that has been removed (a failed registration) or is being stopped.
+    if (!this.running || this.closing || this.instances.get(id) !== instance) return;
     instance.wakes++;
     instance.lastActiveMs = Date.now();
     instance.nextPollMs = 0;
@@ -1218,26 +1221,29 @@ export class FrankBotHost {
   }
 
   /** Opens the relay's mailbox push for one bot, when the chain has one and it is not paused.
-   * Pushed records only wake the poll; nothing is admitted from the stream itself. */
+   * It is a wake signal only: nothing is decoded, admitted or recorded from it, so no wallet
+   * work outlives `stop()`; the poll reads the mailbox. A bot's own notes to self wake it too,
+   * and that poll finds nothing new. */
   private openMailboxPush(id: string, instance: ActiveBotInstance): void {
     const directMessages = this.chain?.directMessages;
     if (
       this.closing ||
       instance.closePush ||
-      typeof directMessages?.subscribeMailboxStream !== "function" ||
+      this.instances.get(id) !== instance ||
+      typeof directMessages?.subscribeMailboxWake !== "function" ||
       Date.now() < instance.pushPausedUntilMs
     )
       return;
     try {
-      instance.closePush = directMessages.subscribeMailboxStream({
+      instance.closePush = directMessages.subscribeMailboxWake({
         wallet: instance.wallet,
-        onRecord: (record) => {
+        onInbound: () => {
           instance.pushFailures = 0;
-          if (writtenBySelf(record, instance.operations.owner)) return;
           this.wakeMailbox(id, instance);
         },
-        // The poll owns quarantine and the cursor; an unreadable record still means new mail.
-        onQuarantinedTimestamp: () => this.wakeMailbox(id, instance),
+        onReady: () => {
+          instance.pushFailures = 0;
+        },
         onError: (error) => {
           if (++instance.pushFailures < MAILBOX_PUSH_FAILURES_BEFORE_PAUSE) return;
           console.warn(

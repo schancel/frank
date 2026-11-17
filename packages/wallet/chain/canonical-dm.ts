@@ -4478,48 +4478,10 @@ export function canonicalDirectMessages(
     }) => {
       const directory = requireDirectory(owner)
       const registry = requireMessageItems(owner)
-      const auth = mailboxAuth(owner, directory)
-      let active = true
-      let streamHandle: { close: () => void } | undefined
-      let reconnectTimer: ReturnType<typeof setTimeout> | undefined
-      let reconnectAttempts = 0
-
-      const scheduleReconnect = () => {
-        if (!active || reconnectTimer !== undefined) return
-        const delay =
-          reconnectAttempts === 0
-            ? 1000
-            : reconnectAttempts === 1
-            ? 2000
-            : 5000
-        reconnectAttempts += 1
-        reconnectTimer = setTimeout(() => {
-          reconnectTimer = undefined
-          if (active) {
-            void connect()
-          }
-        }, delay)
-      }
-
-      const connect = async () => {
-        try {
-          const self = await directory.selfCurrent()
-          if (!active) return
-          streamHandle?.close()
-          streamHandle = undefined
-
-          streamHandle = await connectCanonicalMailboxStream({
-            ...auth,
-            onReady: () => {
-              reconnectAttempts = 0
-            },
-            onClose: () => {
-              if (active) {
-                scheduleReconnect()
-              }
-            },
-            onRecord: async (record: CanonicalMailboxRecord) => {
-              if (!active) return
+      return keepMailboxStream(owner, directory, {
+        onError: params.onError,
+        onRecord: async (record, self, active) => {
+              if (!active()) return
               try {
                 const delivery = parseFrame(record.delivery)
                 if (delivery.kind !== 'parsed' || delivery.typed?.type !== TYPE_DIRECT_MESSAGE_DELIVERY)
@@ -4690,35 +4652,109 @@ export function canonicalDirectMessages(
                   err instanceof Error ? err : new Error(String(err)),
                 )
               }
-            },
-            onError: err => {
-              if (active) {
-                params.onError?.(err)
-                scheduleReconnect()
-              }
-            },
-          })
-        } catch (err) {
+        },
+      })
+    },
+    /** A wake signal only: `onInbound` when the relay pushes a record into this mailbox. Nothing
+     * is opened, decoded or recorded, and no wallet state is touched; the caller's read does all
+     * of that. `onReady` when a connection is open. */
+    subscribeMailboxWake: (params: {
+      wallet: WalletHandle
+      onInbound: () => void
+      onReady?: () => void
+      onError?: (error: Error) => void
+    }) =>
+      keepMailboxStream(owner, requireDirectory(owner), {
+        onReady: params.onReady,
+        onError: params.onError,
+        onRecord: record => {
+          if (record.direction === 'in') params.onInbound()
+        },
+      }),
+  }
+}
+
+/** Keeps one authenticated mailbox WebSocket open, reconnecting after 1, 2, then every 5 s,
+ * until the returned function is called. Closing while a connection is still being made closes
+ * that connection as soon as it exists: no socket or heartbeat outlives the close. */
+function keepMailboxStream(
+  owner: CanonicalMessagingOwner,
+  directory: CanonicalDirectory,
+  handlers: {
+    onRecord: (
+      record: CanonicalMailboxRecord,
+      self: Current,
+      active: () => boolean,
+    ) => void | Promise<void>
+    onReady?: () => void
+    onError?: (error: Error) => void
+  },
+): () => void {
+  const auth = mailboxAuth(owner, directory)
+  let active = true
+  let streamHandle: { close: () => void } | undefined
+  let reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  let reconnectAttempts = 0
+
+  const scheduleReconnect = () => {
+    if (!active || reconnectTimer !== undefined) return
+    const delay =
+      reconnectAttempts === 0 ? 1000 : reconnectAttempts === 1 ? 2000 : 5000
+    reconnectAttempts += 1
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = undefined
+      if (active) void connect()
+    }, delay)
+  }
+
+  const connect = async () => {
+    try {
+      const self = await directory.selfCurrent()
+      if (!active) return
+      streamHandle?.close()
+      streamHandle = undefined
+      const handle = await connectCanonicalMailboxStream({
+        ...auth,
+        onReady: () => {
+          reconnectAttempts = 0
+          if (active) handlers.onReady?.()
+        },
+        onClose: () => {
+          if (active) scheduleReconnect()
+        },
+        onRecord: async record => {
+          if (active) await handlers.onRecord(record, self, () => active)
+        },
+        onError: err => {
           if (active) {
-            params.onError?.(
-              err instanceof Error ? err : new Error(String(err)),
-            )
+            handlers.onError?.(err)
             scheduleReconnect()
           }
-        }
+        },
+      })
+      // Closed while the connection was being authenticated: it is not kept.
+      if (!active) {
+        handle.close()
+        return
       }
-
-      void connect()
-
-      return () => {
-        active = false
-        if (reconnectTimer !== undefined) {
-          clearTimeout(reconnectTimer)
-          reconnectTimer = undefined
-        }
-        streamHandle?.close()
-        streamHandle = undefined
+      streamHandle = handle
+    } catch (err) {
+      if (active) {
+        handlers.onError?.(err instanceof Error ? err : new Error(String(err)))
+        scheduleReconnect()
       }
-    },
+    }
+  }
+
+  void connect()
+
+  return () => {
+    active = false
+    if (reconnectTimer !== undefined) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = undefined
+    }
+    streamHandle?.close()
+    streamHandle = undefined
   }
 }

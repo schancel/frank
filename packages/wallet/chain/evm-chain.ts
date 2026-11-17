@@ -1583,6 +1583,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       }
       return () => {};
     },
+
+    subscribeMailboxWake(params) {
+      const wallet = asMonadWallet(params.wallet, config.networkId);
+      return canonicalMessagingFor(wallet)?.subscribeMailboxWake?.(params) ?? (() => {});
+    },
   };
 
   const nativeTransfers: ActiveChain["nativeTransfers"] = {

@@ -19,6 +19,7 @@ jest.mock('./useBalance', () => ({
   useBalance: () => mockMonadBalance,
   APP_STATE_EVENT: 'frank:app-state',
   BALANCE_POLL_MS: 15000,
+  nextBalanceDelay: jest.requireActual('./useBalance').nextBalanceDelay,
 }))
 
 const mockAccountStatus = reactive({
@@ -684,6 +685,92 @@ describe('useChainBalance', () => {
       window.history.replaceState({}, '', originalUrl)
       errorSpy.mockRestore()
       debugSpy.mockRestore()
+    }
+  })
+})
+
+describe('background wallet-list polling', () => {
+  const opened = (id: string) =>
+    mockOpenUtxoWallet.mock.calls.filter(([chain]) => chain === id).length
+  async function step(ms: number) {
+    for (let t = 0; t < ms; t += 1000) {
+      jest.advanceTimersByTime(1000)
+      await flushPromises()
+    }
+  }
+  beforeEach(() => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'queueMicrotask', 'setImmediate'],
+    })
+    jest.spyOn(Math, 'random').mockReturnValue(0.5)
+    jest.spyOn(console, 'debug').mockImplementation(() => undefined)
+    mockAccountStatus.revision += 1
+    mockOpenUtxoWallet.mockClear()
+    mockOpenEvmWallet.mockClear()
+  })
+  afterEach(() => {
+    jest.restoreAllMocks()
+    jest.useRealTimers()
+  })
+
+  it('reads every row only while the list is shown; hidden rows keep their observation', async () => {
+    const shown = ref(false)
+    const wrapper = shallowMount({
+      setup() {
+        return useMultichainBalance(shown)
+      },
+      template: '<div />',
+    })
+    try {
+      await flushPromises()
+      await step(60_000)
+      expect(mockOpenUtxoWallet).not.toHaveBeenCalled()
+      expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+
+      shown.value = true
+      await nextTick()
+      await flushPromises()
+      expect(opened('xec-testnet')).toBe(1)
+      const observed = useMultichainBalance().getRawBalance('ecash')
+      expect(observed).toBe(1_000_000n)
+
+      shown.value = false
+      await nextTick()
+      mockOpenUtxoWallet.mockClear()
+      mockOpenEvmWallet.mockClear()
+      await step(60_000)
+      expect(mockOpenUtxoWallet).not.toHaveBeenCalled()
+      expect(mockOpenEvmWallet).not.toHaveBeenCalled()
+      // Display only: the last observation stays, it never becomes a fresh zero.
+      expect(useMultichainBalance().getRawBalance('ecash')).toBe(observed)
+    } finally {
+      wrapper.unmount()
+    }
+  })
+
+  it('backs off a failing row while healthy rows keep the poll interval', async () => {
+    mockUtxoBalances['btc-testnet'].mockRejectedValue(new Error('429'))
+    const wrapper = shallowMount({
+      setup() {
+        return useMultichainBalance(() => true)
+      },
+      template: '<div />',
+    })
+    try {
+      await flushPromises()
+      await step(90_000)
+      // Healthy: once at mount, then every 15 s.
+      expect(opened('xec-testnet')).toBeGreaterThanOrEqual(6)
+      // Failing: 0 s, then backoff 22.5 s (rounded up to the next 15 s tick: 30 s), then 45 s
+      // (due 75 s): three reads, not seven.
+      expect(opened('btc-testnet')).toBe(3)
+      expect(useMultichainBalance().getPresentation('bitcoin').status).not.toBe(
+        'available',
+      )
+    } finally {
+      wrapper.unmount()
+      mockUtxoBalances['btc-testnet'].mockReset()
+      mockUtxoBalances['btc-testnet'].mockResolvedValue(150_000n)
     }
   })
 })

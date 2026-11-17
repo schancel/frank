@@ -186,12 +186,7 @@ export class FaucetBot implements FrankBotDefinition {
         console.warn(`[faucet] Grant for ${user.address}: ${outcome}`);
       if (outcome === "low") {
         // Never silent: the new account is told, and granted once the faucet is topped up.
-        const address = user.address.toLowerCase();
-        await this.waitingTurn(async () => {
-          const waiting = await this.waiting(ctx);
-          if (!waiting.includes(address))
-            await this.setWaiting(ctx, [...waiting, address]);
-        });
+        await this.addWaiting(ctx, user.address);
         await sendFree(ctx, user.address, [
           {
             type: "text",
@@ -200,11 +195,31 @@ export class FaucetBot implements FrankBotDefinition {
         ]);
       }
     } catch (err) {
-      console.error(
-        `[faucet] Failed to queue welcome for ${user.address}:`,
+      // A transient failure (an upstream RPC 429 reading the balance, a state write) must not
+      // cost the new account its grant: nobody calls onNewUser for it again. The waiting
+      // schedule retries it; grant() checks the record and outbox first, so a retry never pays
+      // twice.
+      console.warn(
+        `[faucet] Welcome for ${user.address} not queued yet; retrying:`,
         err
       );
+      try {
+        await this.addWaiting(ctx, user.address);
+      } catch (waitErr) {
+        console.error(
+          `[faucet] Failed to queue welcome for ${user.address}:`,
+          waitErr
+        );
+      }
     }
+  }
+
+  private addWaiting(ctx: BotContext, address: string): Promise<void> {
+    const user = address.toLowerCase();
+    return this.waitingTurn(async () => {
+      const waiting = await this.waiting(ctx);
+      if (!waiting.includes(user)) await this.setWaiting(ctx, [...waiting, user]);
+    });
   }
 
   async onMessage(msgCtx: BotMessageContext, ctx: BotContext): Promise<void> {

@@ -401,6 +401,61 @@ describe('adapters/pinia-chain-adapter.ts (ticket #42)', () => {
       }
     })
 
+    it('opens a failing peer again on every poll, holding the cursor, and delivers on the first poll after it answers', async () => {
+      const peek = jest
+        .spyOn(accountSession, 'peekWallet')
+        .mockReturnValue(wallet)
+      const chats = useChatStore()
+      const receive = jest.spyOn(chats, 'receiveMessages')
+      jest.spyOn(activeChain, 'fetchProfile').mockResolvedValue({
+        address: { raw: SENDER_ADDRESS },
+        pubKey: PUB_KEY_BYTES,
+      })
+      const apply = jest.fn(async () => ({ affectedIndices: [1] }))
+      const target = {
+        chainIdentifier: 'arbitrum-sepolia',
+        pool: { processSyncTransaction: apply },
+      }
+      // Three polls find the peer's route failing its identity check (503); then it answers.
+      mockOpenForeignEvmWallet
+        .mockRejectedValueOnce(new Error('eth_chainId: server response 503'))
+        .mockRejectedValueOnce(new Error('eth_chainId: server response 503'))
+        .mockRejectedValueOnce(new Error('eth_chainId: server response 503'))
+        .mockResolvedValue({ wallet: target })
+      const note = {
+        type: 'wallet-sync' as const,
+        direction: 'out' as const,
+        chainIdentifier: 'arbitrum-sepolia',
+        txHash: '0x' + '5'.repeat(64),
+        rawTx: '0x01',
+        spentInputs: [],
+        createdOutputs: [],
+        timestamp: 100,
+      }
+      const fetch = jest
+        .spyOn(activeChain.directMessages, 'fetchSince')
+        .mockImplementation(async ({ sinceMs, onForeignWalletSync }) => {
+          if (sinceMs > 500) return []
+          await onForeignWalletSync!(note)
+          return [makeRecord({ payloadDigest: 'sibling', receivedTime: 600 })]
+        })
+      const polling = startPolling(20)
+      try {
+        await advanceUntil(() => receive.mock.calls.length >= 1)
+        // Every poll tried the open (no backoff), and the poll right after it answered delivered.
+        expect(mockOpenForeignEvmWallet).toHaveBeenCalledTimes(4)
+        const polls = fetch.mock.calls.map(call => call[0].sinceMs)
+        expect(polls.slice(0, 4)).toEqual([0, 0, 0, 0])
+        expect(apply).toHaveBeenCalledWith(note)
+        // Only then does the cursor pass the note's row.
+        await advanceUntil(() => fetch.mock.calls.length >= 5)
+        expect(fetch.mock.calls[4]![0].sinceMs).toBe(601)
+      } finally {
+        polling.stop()
+        peek.mockRestore()
+      }
+    })
+
     it('feeds fetchSince results into chats.receiveMessages and advances sinceMs', async () => {
       const chats = useChatStore()
       const receiveMessagesSpy = jest.spyOn(chats, 'receiveMessages')

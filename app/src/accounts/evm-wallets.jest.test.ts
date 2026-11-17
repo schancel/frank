@@ -8,6 +8,8 @@ import {
 } from '@frank/wallet/chain'
 import {
   openEvmWallet,
+  openEvmWalletInBackground,
+  SecondaryEvmOpenDeferredError,
   peekOpenedEvmWallets,
   closeOpenedEvmWallets,
   recoverSecondaryEvmWallets,
@@ -1142,6 +1144,67 @@ describe('secondary recovery opens only peers with local state', () => {
         () => undefined,
       )
       expect(mockCreate).toHaveBeenCalledTimes(3)
+    } finally {
+      clock.mockRestore()
+      debug.mockRestore()
+    }
+  })
+
+  it('spaces out background opens of a peer whose identity check keeps failing, up to 10 min', async () => {
+    mockEnabledPeerNetworks.add('ethereum-sepolia')
+    mockStateNetworks = ['ethereum-sepolia']
+    // What the relay answers while the upstream fails its identity check.
+    mockCreate.mockRejectedValue(new Error('eth_chainId: server response 503'))
+    const debug = jest
+      .spyOn(console, 'debug')
+      .mockImplementation(() => undefined)
+    const start = Date.now()
+    let now = start
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => now)
+    // An idle client for 30 minutes: a background open every 10 s and a reconcile tick every
+    // 60 s. (The mailbox poll opens without this backoff: a held note holds its delivery.)
+    const attemptTimes: number[] = []
+    try {
+      for (let t = 0; t <= 30 * 60_000; t += 10_000) {
+        now = start + t
+        const before = mockCreate.mock.calls.length
+        const poll = await openEvmWalletInBackground('ethereum-sepolia').then(
+          () => undefined,
+          error => error,
+        )
+        expect(poll).toBeInstanceOf(Error)
+        if (t % 60_000 === 0)
+          await recoverSecondaryEvmWallets(mockPrimary as never).catch(
+            () => undefined,
+          )
+        if (mockCreate.mock.calls.length > before) attemptTimes.push(t)
+        else expect(poll).toBeInstanceOf(SecondaryEvmOpenDeferredError)
+      }
+      // 181 background opens and 31 ticks reached the chain 6 times: 0, 1, 3, 7, 15 min, then every 10 min.
+      expect(attemptTimes.map(t => t / 60_000)).toEqual([0, 1, 3, 7, 15, 25])
+      expect(mockCreate).toHaveBeenCalledTimes(6)
+      const gaps = attemptTimes.slice(1).map((t, i) => t - attemptTimes[i]!)
+      expect(Math.min(...gaps)).toBeGreaterThanOrEqual(60_000)
+      expect(Math.max(...gaps)).toBeLessThanOrEqual(10 * 60_000)
+
+      // The user's own open is never held back, and once the chain answers the backoff ends.
+      const reobserve = jest.fn(async () => undefined)
+      mockCreate.mockImplementation(async ({ config }) => ({
+        family: 'evm',
+        chainIdentifier: config.chainIdentifier,
+        close: jest.fn(async () => undefined),
+        reobserveNativeOperations: reobserve,
+        flushNativeSync: jest.fn(async () => []),
+      }))
+      now += 10_000
+      await openEvmWallet('ethereum-sepolia')
+      expect(mockCreate).toHaveBeenCalledTimes(7)
+      await expect(
+        openEvmWalletInBackground('ethereum-sepolia'),
+      ).resolves.toBeDefined()
+      await recoverSecondaryEvmWallets(mockPrimary as never)
+      expect(reobserve).toHaveBeenCalledTimes(1)
+      expect(mockCreate).toHaveBeenCalledTimes(7)
     } finally {
       clock.mockRestore()
       debug.mockRestore()

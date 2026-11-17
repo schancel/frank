@@ -365,6 +365,8 @@ function openEvmWalletAt(
       }
       const value = { chain, wallet }
       entry.value = value
+      // Any open that succeeds (also one the user asked for) ends a background backoff.
+      recoveryRetry.delete(chainIdentifier)
       return value
     }),
   }
@@ -397,16 +399,62 @@ function isSecondaryRecoveryNonFatal(error: unknown): boolean {
   return true
 }
 
-/** First retry after a failed recovery open of a peer that was not already open, doubling per
+/** First retry after a failed background open of a peer that was not already open, doubling per
  * consecutive failure up to the cap. A peer that opens is not opened again (it stays cached), so
- * this only spaces out an unreachable or misconfigured peer; it never drops its recovery. */
+ * this only spaces out an unreachable or misconfigured peer (one whose RPC route fails its
+ * identity check, say); it never drops its recovery or its pending notes. */
 export const SECONDARY_RECOVERY_RETRY_MS = 60_000
 export const SECONDARY_RECOVERY_RETRY_MAX_MS = 10 * 60_000
-// Per peer network, for one account scope. Cleared by a successful open.
+// Per peer network, for one account scope. Cleared by any successful open.
 const recoveryRetry = new Map<
   string,
   { scope: string; failures: number; notBeforeMs: number }
 >()
+
+/** A background open of a peer network was not tried: its last one failed and its retry time
+ * has not come. Nothing was read; the caller keeps its work for a later pass. */
+export class SecondaryEvmOpenDeferredError extends Error {
+  constructor(readonly chainIdentifier: string) {
+    super(`EVM wallet open for ${chainIdentifier} deferred after a failed open`)
+    this.name = 'SecondaryEvmOpenDeferredError'
+  }
+}
+
+function backgroundScope(): string | undefined {
+  try {
+    return scopeOf(loadMonadChainConfigFromEnv().relayBaseUrl)
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * `openEvmWallet` for work no one is waiting on (recovery ticks): a peer whose last open failed is not opened, and its chain not read, again
+ * before its retry time. An owner already open (or opening) is returned as usual. A user's own
+ * open (a send, the Wallet page) goes through `openEvmWallet` and is never held back.
+ */
+export async function openEvmWalletInBackground(
+  chainIdentifier: string,
+): Promise<OpenEvmWallet> {
+  const scope = backgroundScope()
+  if (
+    !opened.has(chainIdentifier) &&
+    scope !== undefined &&
+    !recoveryRetryDue(chainIdentifier, scope)
+  )
+    throw new SecondaryEvmOpenDeferredError(chainIdentifier)
+  try {
+    const value = await openEvmWallet(chainIdentifier)
+    recoveryRetry.delete(chainIdentifier)
+    return value
+  } catch (error) {
+    // A failed open is evicted from the cache; without this it was opened (and its chain
+    // identity read) again on every reconciliation tick.
+    if (scope !== undefined && !opened.has(chainIdentifier))
+      noteRecoveryOpenFailed(chainIdentifier, scope)
+    throw error
+  }
+}
 function recoveryRetryDue(chainIdentifier: string, scope: string): boolean {
   const retry = recoveryRetry.get(chainIdentifier)
   return !retry || retry.scope !== scope || Date.now() >= retry.notBeforeMs
@@ -503,16 +551,7 @@ export async function recoverSecondaryEvmWallets(
           }
         }
       }
-      let openedWallet: OpenEvmWallet
-      try {
-        openedWallet = await openEvmWallet(peer.id)
-      } catch (error) {
-        // A failed open is evicted from the cache; without this it was opened (and its chain
-        // identity read) again on every reconciliation tick.
-        if (scope !== undefined) noteRecoveryOpenFailed(peer.id, scope)
-        throw error
-      }
-      if (scope !== undefined) recoveryRetry.delete(peer.id)
+      const openedWallet = await openEvmWalletInBackground(peer.id)
       if (
         accountSession.peekWallet() !== primary ||
         openedWallet.wallet.chainIdentifier !== peer.id

@@ -47,6 +47,11 @@ export const BALANCE_POLL_MS = 15000
 /** The profile address is read at most this often by the polling loop, which may tick faster
  * than this. `refreshCordoned()` (the Wallet page opening) reads at once regardless. */
 export const CORDONED_POLL_MS = 30000
+/** How often the polling loop reads the spendable figure (`getSpendableBalance`) while the
+ * balance it just read is the one the last spendable read went with and nothing of the wallet's
+ * own is pending. That read refreshes the coin list and may read a fee quote: on an idle screen it
+ * was most of the wallet's RPC. Display only: anything that pays reads its own current figure. */
+export const SPENDABLE_POLL_MS = 60000
 export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
 // What the wallet itself reports as its balance (`getBalance`): the gross known-owned figure; payment quotes and strict availability are separate. null until the first successful fetch for the
@@ -113,6 +118,8 @@ export async function readCordonedBalance(_wallet: unknown): Promise<bigint> {
 let consumers = 0
 // When the profile address was last asked for (success or failure); undefined: ask on next fetch.
 let cordonedReadAtMs: number | undefined
+// The last successful spendable read: when, and the balance read just before it.
+let spendableRead: { atMs: number; balance: bigint } | undefined
 let requestId = 0
 let pending = false
 // When the last read for the current wallet started (ms); undefined: none yet. A consumer that
@@ -167,12 +174,13 @@ function schedule() {
     timer = undefined
     if (pending)
       schedule() // still waiting on a fetch: skip this tick, keep ticking
-    else void fetchBalance(true)
+    else void fetchBalance(true, true)
   }, delay)
 }
 
-/** Fetches now. `force` (also what `refresh()` does) bypasses the in-flight guard. */
-async function fetchBalance(force: boolean) {
+/** Fetches now. `force` (also what `refresh()` does) bypasses the in-flight guard. `poll`: the
+ * loop's own tick, which keeps a recent spendable figure while the balance has not changed. */
+async function fetchBalance(force: boolean, poll = false) {
   const key = currentWalletKey()
   if (key !== walletKey) {
     // Wallet changed: drop the old value and invalidate anything still in flight for it.
@@ -186,6 +194,7 @@ async function fetchBalance(force: boolean) {
     observedAt.value = undefined
     cordoned.value = 0n
     cordonedReadAtMs = undefined
+    spendableRead = undefined
     hasError.value = false
     chainUnreachable.value = false
     failures = 0
@@ -195,8 +204,19 @@ async function fetchBalance(force: boolean) {
   }
   if (pending && !force) return
   lastReadStartedAtMs = Date.now()
-  available.value = null
-  availableError.value = false
+  // A tick may keep the spendable figure it has (see SPENDABLE_POLL_MS); everything else reads it.
+  const recentSpendable =
+    poll &&
+    spendableRead !== undefined &&
+    available.value !== null &&
+    !availableError.value &&
+    Date.now() - spendableRead.atMs < SPENDABLE_POLL_MS
+      ? spendableRead
+      : undefined
+  if (!recentSpendable) {
+    available.value = null
+    availableError.value = false
+  }
   const id = ++requestId
   pending = true
   schedule()
@@ -236,16 +256,24 @@ async function fetchBalance(force: boolean) {
     }
     availableSupported.value =
       typeof capacityWallet.getSpendableBalance === 'function'
-    if (capacityWallet.getSpendableBalance) {
+    // Read again when the balance moved or the wallet has its own operation pending (a send,
+    // its change, a merge): the figure follows them without waiting.
+    const readSpendable =
+      !recentSpendable ||
+      recentSpendable.balance !== next ||
+      (latestObs?.parts?.pendingOwnOperations ?? 0) > 0
+    if (capacityWallet.getSpendableBalance && readSpendable) {
       try {
         const capacity = await capacityWallet.getSpendableBalance()
         if (!isCurrent()) return
         available.value = capacity
         availableError.value = false
+        spendableRead = { atMs: Date.now(), balance: next }
       } catch {
         if (!isCurrent()) return
         available.value = null
         availableError.value = true
+        spendableRead = undefined
       }
     }
     // Best effort: a failed read keeps the last cordoned amount and never fails the balance.
@@ -370,6 +398,7 @@ function acquire() {
           observedAt.value = undefined
           cordoned.value = 0n
           cordonedReadAtMs = undefined
+          spendableRead = undefined
           hasError.value = false
           requestId++
           pending = false
@@ -413,6 +442,7 @@ function release() {
   observedAt.value = undefined
   cordoned.value = 0n
   cordonedReadAtMs = undefined
+  spendableRead = undefined
   hasError.value = false
   walletKey = undefined
   lastReadStartedAtMs = undefined

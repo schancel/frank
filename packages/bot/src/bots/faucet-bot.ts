@@ -196,7 +196,8 @@ export class FaucetBot implements FrankBotDefinition {
       if (outcome === "low") {
         // Never silent: the new account is told, and granted once the faucet is topped up.
         await this.addWaiting(ctx, user.address);
-        await this.tellLow(ctx, user.address);
+        // In the waiting turn, like the scheduled passes, so a pass running now can't tell it too.
+        await this.waitingTurn(() => this.tellLow(ctx, user.address));
       }
     } catch (err) {
       // A transient failure (an upstream RPC 429 reading the balance, a state write) must not

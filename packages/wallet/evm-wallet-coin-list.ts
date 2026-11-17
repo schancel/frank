@@ -88,8 +88,8 @@ export function installEvmWalletCoinList(params: {
   // Deterministic-branch accounts found on chain this session. Once observed they become coins
   // of the list, which is what keeps them watched after a restart.
   const discoveredDeterministic = new Map<number, string>()
+  // The store writes the mark until one write lands; a call after that writes nothing.
   const recordActivity = async () => {
-    if (changePool.seedActivityObserved()) return
     changePool.recordSeedActivity()
     await changePool.flush()
   }

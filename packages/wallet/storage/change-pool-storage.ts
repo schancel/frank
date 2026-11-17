@@ -94,6 +94,8 @@ export interface ChangePoolStore {
    * nonce above zero or a balance above zero. Once set it stays set: a later zero balance does not
    * undo the history another device may have left. */
   getSeedActivityObserved(): boolean
+  /** Sets the mark, durable after `flush`. Idempotent; called again after a failed flush, it
+   * writes again. */
   setSeedActivityObserved(): void
   getPendingIntent(): ChangeSweepIntent | undefined
   setPendingIntent(intent: ChangeSweepIntent): void

@@ -250,7 +250,8 @@ export class EvmChangePool {
     return this.store.getSeedActivityObserved()
   }
 
-  /** Records that this wallet has been seen in use on chain; durable after `flush`. */
+  /** Records that this wallet has been seen in use on chain; durable after `flush`. Called again
+   * after a failed flush, it writes again. */
   recordSeedActivity(): void {
     this.store.setSeedActivityObserved()
   }

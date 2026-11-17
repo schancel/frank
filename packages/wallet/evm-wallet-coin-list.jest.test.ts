@@ -10,6 +10,7 @@ import { MonadHdKeyring, MonadChangeKeyring } from './secp256k1-hd-keyring'
 import { MonadIdentity } from './evm-identity'
 import { MemoryRecordStore, type EvmCoin } from './storage/evm-coin-store'
 import { LevelChangePoolStore } from './storage/level-change-pool-store'
+import * as durability from './storage/level-durability'
 import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
@@ -250,11 +251,16 @@ describe('activity on a chain (decides the periodic change-branch walk)', () => 
     /** Whether the periodic walk would look at the change branch now. */
     const rewalksChange = async () => {
       provider.getTransactionCount.mockClear()
+      const readsChange = () =>
+        provider.getTransactionCount.mock.calls.some(
+          ([account]) => String(account).toLowerCase() === change0,
+        )
+      // The walk starts synchronously when it starts at all; its first reads follow within a few
+      // turns of the event loop.
       sync.rediscoverIfOlderThan(0)
-      await new Promise(resolve => setTimeout(resolve, 50))
-      return provider.getTransactionCount.mock.calls.some(
-        ([account]) => String(account).toLowerCase() === change0,
-      )
+      for (let turn = 0; turn < 100 && !readsChange(); turn++)
+        await new Promise(resolve => setImmediate(resolve))
+      return readsChange()
     }
     return { sync, store, coinList, mainAccount, unfunded, provider, rewalksChange }
   }
@@ -266,6 +272,33 @@ describe('activity on a chain (decides the periodic change-branch walk)', () => 
     expect(await f.rewalksChange()).toBe(false)
     expect(f.store.getSeedActivityObserved()).toBe(false)
     await f.store.Close()
+  })
+
+  it('a mark whose write failed is written by a later read, and survives reopen', async () => {
+    const drained = keyring.deriveSubAccount(0).address.toLowerCase()
+    const put = durability.durablePut
+    let failed = 0
+    const spy = jest.spyOn(durability, 'durablePut').mockImplementation((db, key, value) => {
+      if (key === '__seed_activity__' && failed++ === 0)
+        return Promise.reject(new Error('disk full'))
+      return put(db, key, value)
+    })
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const chain = new Map([[drained, { nonce: 3, balance: 0n }]])
+    const f = await open(chain)
+    // Let the failed write settle: only that failure, nothing durable yet.
+    for (let turn = 0; turn < 100 && warn.mock.calls.length === 0; turn++)
+      await new Promise(resolve => setImmediate(resolve))
+    expect(warn.mock.calls.some(([message]) => String(message).includes('recording chain activity failed'))).toBe(true)
+    // The next read of an account in use writes the mark again.
+    await f.sync.refresh({ accounts: [drained] })
+    await f.sync.stop()
+    expect(spy.mock.calls.filter(([, key]) => key === '__seed_activity__')).toHaveLength(2)
+    await f.store.Close()
+    const reopened = await open()
+    expect(reopened.store.getSeedActivityObserved()).toBe(true)
+    expect(await reopened.rewalksChange()).toBe(true)
+    await reopened.store.Close()
   })
 
   it('a funded deposit root makes the chain active', async () => {

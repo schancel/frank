@@ -51,6 +51,9 @@ export class LevelChangePoolStore implements ChangePoolStore {
   private recoveredAccountsByIndex = new Map<number, RecoveredChangeAccount>()
   private seedWalkedAtMs?: number
   private seedActivityObserved = false
+  /** Where the activity mark's write stands: none landed (or the last one failed), one in flight,
+   * or durable. */
+  private seedActivityWrite: 'none' | 'pending' | 'durable' = 'none'
   private pendingWrites: Promise<unknown>[] = []
   private readonly expectedBindingId?: string
   private readonly allowUnboundForMigration: boolean
@@ -126,6 +129,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
         if (JSON.parse(value) !== true)
           throw new Error('Invalid stored seed activity mark')
         this.seedActivityObserved = true
+        this.seedActivityWrite = 'durable'
         continue
       }
       if (key === SEED_WALKED_AT_KEY) {
@@ -332,12 +336,23 @@ export class LevelChangePoolStore implements ChangePoolStore {
     return this.seedActivityObserved
   }
 
+  /** Observed at once for this session; the write is attempted again by a later call until one
+   * has landed, so a failed put is not lost behind the in-memory flag. */
   setSeedActivityObserved(): void {
     this.assertMutationAllowed()
-    if (this.seedActivityObserved) return
     this.seedActivityObserved = true
+    if (this.seedActivityWrite !== 'none') return
+    this.seedActivityWrite = 'pending'
     this.pendingWrites.push(
-      durablePut(this.db, SEED_ACTIVITY_KEY, JSON.stringify(true)),
+      durablePut(this.db, SEED_ACTIVITY_KEY, JSON.stringify(true)).then(
+        () => {
+          this.seedActivityWrite = 'durable'
+        },
+        error => {
+          this.seedActivityWrite = 'none'
+          throw error
+        },
+      ),
     )
   }
 
@@ -424,6 +439,7 @@ export class LevelChangePoolStore implements ChangePoolStore {
     this.pendingIntent = undefined
     this.seedWalkedAtMs = undefined
     this.seedActivityObserved = false
+    this.seedActivityWrite = 'none'
     await durableClear(this.db)
   }
 }

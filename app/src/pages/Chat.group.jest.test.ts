@@ -628,10 +628,12 @@ describe('the group composer', () => {
     await expect(
       vm.sendFollowUpItems({ items: [card], stampValueWei: 5n }),
     ).resolves.toBe(false)
-    expect(errorNotify).toHaveBeenCalledWith(
-      new Error('Group payments are unsupported'),
-      {},
-    )
+    // Said plainly, not the generic failure.
+    const refusal =
+      'Payments cannot be sent in a group conversation. Nothing was sent.'
+    expect(errorNotify).toHaveBeenCalledWith(new Error(refusal), {
+      safeMessage: refusal,
+    })
     expect(sent).toHaveLength(2)
   })
 })

@@ -44,10 +44,8 @@ import { formatDisplayAmount, formatRawAmount } from 'src/utils/chain-amount'
 export const APP_STATE_EVENT = 'frank:app-state'
 
 export const BALANCE_POLL_MS = 15000
-/** The profile address is read at most this often by the polling loop. The loop ticks every 3 s
- * while the spendable balance is zero, which is exactly when an account holds only cordoned
- * funds; without this bound that account asked the RPC for the same balance every tick, forever.
- * `refreshCordoned()` (the Wallet page opening) reads at once regardless. */
+/** The profile address is read at most this often by the polling loop, which may tick faster
+ * than this. `refreshCordoned()` (the Wallet page opening) reads at once regardless. */
 export const CORDONED_POLL_MS = 30000
 export const BALANCE_BACKOFF_MAX_MS = 5 * 60 * 1000
 
@@ -117,6 +115,10 @@ let consumers = 0
 let cordonedReadAtMs: number | undefined
 let requestId = 0
 let pending = false
+// When the last read for the current wallet started (ms); undefined: none yet. A consumer that
+// mounts while the shared observation is younger than BALANCE_POLL_MS reuses it instead of
+// starting another read, so several screens mounting one after another cost one read.
+let lastReadStartedAtMs: number | undefined
 let failures = 0
 let backgrounded = false
 let timer: ReturnType<typeof setTimeout> | undefined
@@ -156,10 +158,11 @@ function schedule() {
     backgrounded
   )
     return
-  const delay =
-    failures <= 0 && (balance.value === null || balance.value === 0n)
-      ? 3000
-      : nextBalanceDelay(failures)
+  // One cadence whatever the balance is. A zero balance used to tick every 3 s (waiting for a
+  // first deposit); on a fresh account that read the whole owned set, the head and a fee quote
+  // every ~4.6 s, which an upstream RPC answers with 429s. A user who expects money presses
+  // refresh, and a pending send has its own reconciliation pulse.
+  const delay = nextBalanceDelay(failures)
   timer = setTimeout(() => {
     timer = undefined
     if (pending)
@@ -186,10 +189,12 @@ async function fetchBalance(force: boolean) {
     hasError.value = false
     chainUnreachable.value = false
     failures = 0
+    lastReadStartedAtMs = undefined
     requestId++
     pending = false
   }
   if (pending && !force) return
+  lastReadStartedAtMs = Date.now()
   available.value = null
   availableError.value = false
   const id = ++requestId
@@ -378,6 +383,15 @@ function acquire() {
     document.addEventListener('visibilitychange', onVisibilityChange)
     window.addEventListener(APP_STATE_EVENT, onAppState)
   }
+  // A later consumer shares the running loop: it reads only when nothing recent was read for
+  // this wallet (the loop's own timer keeps the observation current).
+  if (
+    consumers > 1 &&
+    walletKey === currentWalletKey() &&
+    lastReadStartedAtMs !== undefined &&
+    Date.now() - lastReadStartedAtMs < BALANCE_POLL_MS
+  )
+    return
   void fetchBalance(false)
 }
 
@@ -401,6 +415,7 @@ function release() {
   cordonedReadAtMs = undefined
   hasError.value = false
   walletKey = undefined
+  lastReadStartedAtMs = undefined
   // Invalidate anything in flight so a fresh first consumer never inherits a stale guard.
   requestId++
   pending = false

@@ -291,7 +291,7 @@ import {
 } from "../storage/stamp-attempt-journal";
 import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
 import { readEvmBlockTimes } from "./evm-block-times";
-import { fundsSettleBlocks, spendRuleHeadReader } from "./evm-spend-rule";
+import { fundsSettleBlocks } from "./evm-spend-rule";
 import {
   ChainUnreachableError,
   isChainUnreachableError,
@@ -2601,7 +2601,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           let primaryBalanceCache:
             | { parts: BalanceParts; key: string; ownedKey: string; cachedAtMs: number }
             | undefined;
-          const balanceHead = spendRuleHeadReader(provider, config.spendRuleHead);
+          const balanceHead = transactionSetRuntime.readSpendRuleHead;
           const PRIMARY_BALANCE_CACHE_TTL_MS = 4_000;
           const balanceObsStorageKey =
             storageLocation !== undefined
@@ -2660,7 +2660,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           };
           const coinAndContactManager = createEvmReceivedCoinAndContactManager({
             nativeReceiptRpc: provider,
-            readReceiptMaximumBlock: spendRuleHeadReader(provider, config.spendRuleHead),
+            readReceiptMaximumBlock: transactionSetRuntime.readSpendRuleHead,
             chainIdentifier,
             chainId: config.chainId,
             networkTag: config.networkTag,

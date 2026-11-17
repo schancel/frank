@@ -241,6 +241,50 @@ it('uses the configured finalized spend-rule head for every amount instead of th
   } finally { await f.close() }
 }, 30000)
 
+it('shares one finalized head look between the balance, the spendable figure and the fee quote read together', async () => {
+  const f = await fixture({ spendRuleHead: 'finalized' })
+  try {
+    await f.alice.getBalance()
+    await f.alice.getSpendableBalance!()
+    const block = await f.alice.provider.getBlock(1)
+    // Past the observation's TTL and every reader's cache, so each part reads the chain again.
+    const clock = jest.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000)
+    jest.spyOn(f.alice.provider, 'getBlockNumber').mockResolvedValue(45)
+    const finalized = jest.fn()
+    jest.spyOn(f.alice.provider, 'getBlock').mockImplementation(async tag => {
+      if (tag === 'finalized') finalized()
+      return ({ ...block!, number: tag === 'finalized' ? 42 : Number(tag), hash: '0x' + '42'.repeat(32) }) as typeof block
+    })
+    try {
+      expect(await f.alice.getBalance()).toBe(START_BALANCE)
+      await f.alice.getSpendableBalance!()
+      // One wallet, one reader: the balance read named the finalized block and the spendable
+      // read (coin list and fee quote) used that look. Two readers named it twice.
+      expect(finalized).toHaveBeenCalledTimes(1)
+      expect(f.alice.getBalanceObservation!()!.parts!.observedBlock).toBe(42)
+    } finally { clock.mockRestore() }
+  } finally { await f.close() }
+}, 30000)
+
+it('lets a display read reuse a recent fee quote while what a send refreshes always reads a new one', async () => {
+  // The node's own quote, not the suite's fixed policy.
+  offlineChain.gasPrice = 2n
+  const f = await fixture({ transactionSetPolicy: undefined })
+  try {
+    await f.alice.getSpendableBalance!()
+    const fees = jest.spyOn(f.alice.provider, 'getFeeData')
+    await f.alice.getSpendableBalance!()
+    await f.alice.getSpendableBalance!()
+    expect(fees).not.toHaveBeenCalled()
+    // The refresh every construction makes (`constructTransactionSet`, contact payments, forum
+    // posts): a new quote whatever the display reads left.
+    await f.alice.refreshTransactionSetInventory!()
+    expect(fees).toHaveBeenCalledTimes(1)
+    await f.alice.refreshTransactionSetInventory!()
+    expect(fees).toHaveBeenCalledTimes(2)
+  } finally { await f.close() }
+}, 30000)
+
 it('retains actual owned funds and pending debt for exposed abandoned own moves across reopen and recovery', async () => {
   const { Transaction, Wallet } = await import('ethers')
   const { nativeMemberNeedsOwnMoveRecovery } = await import(

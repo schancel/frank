@@ -217,6 +217,9 @@ export function installEvmTransactionSetRuntime(
   }
   return {
     refreshSpendable,
+    /** The spend-rule head reader the watcher, the fee quote and the coin-list sync share. The
+     * wallet's balance read uses it too, so reads close together share one look. */
+    readSpendRuleHead: spendRuleHead.getBlockNumber,
     blockWatcher,
     coinListSync,
     transactionSetPolicy,

@@ -11,6 +11,7 @@ import {
   CORDONED_POLL_MS,
   nextBalanceDelay,
   readCordonedBalance,
+  SPENDABLE_POLL_MS,
   useBalance,
 } from './useBalance'
 
@@ -681,5 +682,76 @@ describe('useBalance', () => {
     await old
     expect(api.balance.value).toBe(9n)
     expect(api.available.value).toBe(7n)
+  })
+
+  describe('spendable figure on an idle screen', () => {
+    const Spendable = defineComponent({
+      setup() {
+        const api = useBalance()
+        refresh = api.refresh
+        return () => h('span', String(api.available.value))
+      },
+    })
+    let observation: { balance: bigint; observedAt: number; parts?: object }
+    let capacity: jest.Mock
+    beforeEach(() => {
+      capacity = jest.fn().mockResolvedValue(400n)
+      observation = { balance: 1000n, observedAt: 1, parts: {} }
+      mockWallets.a = Promise.resolve({
+        getSpendableBalance: capacity,
+        getBalanceObservation: () => observation,
+      })
+      mockGetBalance.mockResolvedValue(1000n)
+    })
+
+    it('reads it once a minute while the balance stays the same, keeping the figure shown', async () => {
+      const wrapper = mount(Spendable)
+      await advance(0)
+      expect(capacity).toHaveBeenCalledTimes(1)
+      // Ten idle minutes: 40 balance polls, 10 spendable reads (it was 40).
+      for (let i = 0; i < 40; i++) {
+        await advance(BALANCE_POLL_MS)
+        expect(wrapper.text()).toBe('400')
+      }
+      expect(mockGetBalance).toHaveBeenCalledTimes(41)
+      expect(capacity).toHaveBeenCalledTimes(11)
+      expect(SPENDABLE_POLL_MS).toBe(60_000)
+    })
+
+    it('reads it at once when the balance moves, while an own operation is pending, and on refresh', async () => {
+      mount(Spendable)
+      await advance(0)
+      expect(capacity).toHaveBeenCalledTimes(1)
+      await advance(BALANCE_POLL_MS)
+      expect(capacity).toHaveBeenCalledTimes(1)
+      // A deposit (or a send) moved the balance: the next poll reads the figure.
+      mockGetBalance.mockResolvedValue(1500n)
+      observation = { balance: 1500n, observedAt: 2, parts: {} }
+      capacity.mockResolvedValue(900n)
+      await advance(BALANCE_POLL_MS)
+      expect(capacity).toHaveBeenCalledTimes(2)
+      // A send in flight: every poll reads it, whether or not the balance moved yet.
+      observation = {
+        balance: 1500n,
+        observedAt: 3,
+        parts: { pendingOwnOperations: 1 },
+      }
+      await advance(BALANCE_POLL_MS)
+      await advance(BALANCE_POLL_MS)
+      expect(capacity).toHaveBeenCalledTimes(4)
+      // Settled: back to once a minute.
+      observation = { balance: 1500n, observedAt: 4, parts: {} }
+      await advance(BALANCE_POLL_MS)
+      await advance(BALANCE_POLL_MS)
+      expect(capacity).toHaveBeenCalledTimes(4)
+      // The user's refresh always reads it.
+      await refresh()
+      expect(capacity).toHaveBeenCalledTimes(5)
+      // A failed read is read again on the next poll.
+      capacity.mockRejectedValueOnce(new Error('observation unavailable'))
+      await refresh()
+      await advance(BALANCE_POLL_MS)
+      expect(capacity).toHaveBeenCalledTimes(7)
+    })
   })
 })

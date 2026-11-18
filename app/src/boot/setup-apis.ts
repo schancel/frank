@@ -25,16 +25,20 @@ const EXTENSION_PEER_PING_TIMEOUT_MS = 300
  * code: a parse error's message can quote the stored text, which may be private.
  */
 function reportRestoreFailure(store: string, error: unknown) {
-  const name = error instanceof Error ? error.name : typeof error
-  const code =
-    error && typeof error === 'object' && 'code' in error
-      ? String((error as { code: unknown }).code)
-      : undefined
-  console.error(
-    `[startup] ${store} could not be restored: ${name}${
-      code ? ` (${code})` : ''
-    }`,
-  )
+  let detail: string = typeof error
+  try {
+    if (error instanceof Error) detail = error.name
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? (error as { code: unknown }).code
+        : undefined
+    // Only plain string or number codes: anything else could throw or carry stored data.
+    if (typeof code === 'string' || typeof code === 'number')
+      detail += ` (${code})`
+  } catch {
+    // An unusual error object must never stop the failure screen from showing.
+  }
+  console.error(`[startup] ${store} could not be restored: ${detail}`)
 }
 
 export default boot(async ({ app }) => {
@@ -43,7 +47,10 @@ export default boot(async ({ app }) => {
   applyLocale({ $q: Quasar, locale: defaultLocale })
   try {
     // Wallet inspection remains first and never hydrates secrets.
-    await useWalletStore().restored
+    await useWalletStore().restored.catch((error: unknown) => {
+      reportRestoreFailure('wallet', error)
+      throw error
+    })
     // Observe every started restoration and wait for siblings to settle before showing failure.
     // The original store promises remain rejected; this only contains the composition failure.
     const results = await Promise.all(
@@ -83,8 +90,7 @@ export default boot(async ({ app }) => {
       setStartupRestoration({ phase: 'failed', reason: 'state-restore-failed' })
       return
     }
-  } catch (error) {
-    reportRestoreFailure('wallet', error)
+  } catch {
     setStartupRestoration({ phase: 'failed', reason: 'state-restore-failed' })
     return
   }

@@ -58,6 +58,10 @@ jobs:
         run: yarn workspace @frank/wallet test --ci --runInBand chain/evm-chain.jest.test.ts chain/evm-parallel-send.jest.test.ts chain/outgoing-message-store.jest.test.ts storage/outgoing-message-store-boundary.jest.test.ts chain/evm-recorded-funding-recovery.jest.test.ts chain/evm-shared-canonical-callers.jest.test.ts evm-transaction-set-preparer.jest.test.ts evm-transaction-set-reservations.jest.test.ts evm-wallet-coin-list.jest.test.ts topic-clients.jest.test.ts chain/canonical-dm-message-id.jest.test.ts chain/evm-contract-call-composition.jest.test.ts evm-spend-spacing.jest.test.ts evm-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts ci-payment-suites.jest.test.ts wallet-failure.jest.test.ts wallet-failure-boundary.jest.test.ts evm-rpc-failure.jest.test.ts evm-provider-response-failure.jest.test.ts evm-provider.jest.test.ts evm-transaction-set-runtime.jest.test.ts evm-spend-rule-head.jest.test.ts utxo-wallet.jest.test.ts
       - name: Durable native operation and canonical inclusion regression
         run: yarn workspace @frank/wallet test --ci --runInBand storage/evm-native-operation-journal.jest.test.ts chain/evm-legacy-consolidator.jest.test.ts chain/evm-contract-call.jest.test.ts chain/native-reserve-support.jest.test.ts evm-transaction-set-submission.jest.test.ts chain/evm-refused-resign.jest.test.ts
+      # Typed wallet custody and owned balance, the user's reconcile pass, blackjack hands and
+      # escrow payouts between two typed wallets, and the message-item registry and text limits.
+      - name: Wallet custody, reconcile, blackjack and message-item regression
+        run: yarn workspace @frank/wallet test --ci --runInBand chain/evm-domain-wallet.jest.test.ts chain/evm-wallet-reconcile.jest.test.ts chain/evm-chain-blackjack.jest.test.ts chain/evm-chain-blackjack-escrow.jest.test.ts message-item-plugins/default-registry.jest.test.ts message-item-plugins/text/long-text.jest.test.ts
       # The same sends against a real EVM node (anvil, from the @foundry-rs/anvil package the
       # contracts workspace installs). The step fails if the binary is missing, so the suite
       # can never be silently skipped here.
@@ -66,6 +70,13 @@ jobs:
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           ANVIL_BIN="$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-parallel-send.anvil.jest.test.ts
+      # A stealth payment and its stamp stay within the fee the user approved, on a real node.
+      - name: Stealth payment fee bound on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          # Absolute: the suite runs from the package directory.
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-stealth-fee-bound.anvil.jest.test.ts
 
   # Payments between two wallets on a real EVM node (anvil): carried payments reach the node only
   # after the relay stores their message, released payments never do, and what each side counts

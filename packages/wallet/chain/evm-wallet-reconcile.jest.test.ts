@@ -345,8 +345,13 @@ test("reads a signed operation from the chain and records it, without broadcasti
   for (const raw of payment.raws) state.mine(raw);
   mailbox([received([payment.item()], "c3".repeat(32))]);
   await reconcileEvmWallet(wallet);
-  // The ordinary balance read verifies the found coins on chain before they can be spent.
+  // The balance counts the found coins' money; it is only an observation and verifies nothing.
   expect((await wallet.getBalanceParts!()).received).toBe(60_000_000n);
+  // The wallet's received-payments pass verifies them on chain before they can be spent.
+  const found = (await wallet.refreshReceivedPayments!()).filter(
+    (p) => p.status === "received" && p.spendable
+  );
+  expect(found.reduce((sum, p) => sum + p.amountWei, 0n)).toBe(60_000_000n);
   // Signed here and never handed to anyone: the pass must not broadcast it.
   await wallet.stealthPayments!.prepare({
     operationId: "spend-received",

@@ -50,4 +50,17 @@ describe('the wallet suites hosted CI names', () => {
   ])('the send path suite %s is run', name => {
     expect(named).toContain(name)
   })
+  // Suites that went unrun here once and rotted unnoticed (stale against the owned-balance and
+  // combined-stamp changes): they stay named so they cannot drop out again.
+  it.each([
+    'chain/evm-domain-wallet.jest.test.ts',
+    'chain/evm-wallet-reconcile.jest.test.ts',
+    'chain/evm-chain-blackjack.jest.test.ts',
+    'chain/evm-chain-blackjack-escrow.jest.test.ts',
+    'chain/evm-stealth-fee-bound.anvil.jest.test.ts',
+    'message-item-plugins/default-registry.jest.test.ts',
+    'message-item-plugins/text/long-text.jest.test.ts',
+  ])('the wallet suite %s is run', name => {
+    expect(named).toContain(name)
+  })
 })

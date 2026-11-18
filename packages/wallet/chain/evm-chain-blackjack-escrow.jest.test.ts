@@ -468,10 +468,17 @@ describe('Blackjack with 2-party threshold ECDSA escrow settlement', () => {
     // Player's total balance includes this stealth account
     const totalBal = await playerSeat.wallet.getBalance()
     expect(totalBal).toBeGreaterThanOrEqual(payout.playerPayoutWei)
+    // Reading the balance is only an observation: it settles no receipt. The coin is still
+    // pending until the wallet's own received-payments pass reads the chain for it.
+    expect(
+      playerSeat.wallet
+        .getReceivedPayments!()
+        .find(p => p.address === stealthPayout.stealthAddress.toLowerCase()),
+    ).toMatchObject({ status: 'pending', amountWei: 0n, spendable: false })
 
-    // Player can spend from this stealth account directly without sweeping
-    const spendable = playerSeat.wallet
-      .getReceivedPayments!()
+    // Player can spend from this stealth account directly without sweeping, once that pass
+    // has read the money at the address.
+    const spendable = (await playerSeat.wallet.refreshReceivedPayments!())
       .find(p => p.address === stealthPayout.stealthAddress.toLowerCase())
     expect(spendable).toMatchObject({
       status: 'received',

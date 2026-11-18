@@ -703,6 +703,33 @@ describe('SolanaSwapPanel', () => {
     )
   })
 
+  it('says why the wallet refused to send, never blaming the amount', async () => {
+    const tooSmall = (en as any).solanaSwap.error.invalidRequest
+    for (const [code, wording] of [
+      ['swap-pending', 'An earlier swap from this wallet has not settled yet.'],
+      [
+        'wallet-mismatch',
+        'This swap was prepared for a different wallet or network',
+      ],
+      [
+        'record-mismatch',
+        'The record of this swap does not match what was reviewed',
+      ],
+    ]) {
+      const session = fakeSession()
+      session.execute.mockRejectedValue(new SolanaSwapError(code, 'internal'))
+      const wrapper = await mountPanel(session)
+      await toReview(wrapper)
+      await wrapper.find('[data-testid="solana-swap-confirm"]').trigger('click')
+      await flushPromises()
+      const shown = text(wrapper, 'solana-swap-error')
+      expect(shown).toContain(wording)
+      expect(shown).not.toContain(tooSmall)
+      expect(shown).not.toContain((en as any).solanaSwap.error.unexpected)
+      wrapper.unmount()
+    }
+  })
+
   it('never offers a new swap while a sent one is unresolved', async () => {
     const session = fakeSession()
     session.execute.mockImplementation(

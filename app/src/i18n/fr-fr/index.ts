@@ -2462,6 +2462,12 @@ export const rawFrFR = {
         'La plateforme d’échange n’a pas répondu. Réessayez dans quelques secondes.',
       unsafeTransaction:
         'La transaction de cet échange ferait autre chose que l’échange annoncé ; elle n’a donc pas été signée.',
+      swapPending:
+        'Un échange précédent de ce portefeuille n’est pas encore réglé. Un autre pourra être envoyé une fois celui-ci terminé.',
+      walletMismatch:
+        'Cet échange a été préparé pour un autre portefeuille ou un autre réseau ; il n’a donc pas été signé. Demandez un nouveau devis.',
+      recordMismatch:
+        'L’enregistrement de cet échange ne correspond pas à ce qui a été vérifié ; il n’a donc pas été signé. Demandez un nouveau devis.',
       unexpected: 'Une erreur est survenue et l’échange n’a pas été envoyé.',
     },
   },

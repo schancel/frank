@@ -28,7 +28,8 @@ import { getEvmDexDeployment } from './dex-deployments'
 import { UniswapV4Dex } from '../swap/uniswap-v4-dex'
 import { cannedNode } from '../swap/swap-reader.testutil'
 import { findToken, poolId, routesFor } from '../swap/uniswap-v4'
-import { EvmLegacyConsolidator, swapRecordId } from './evm-legacy-consolidator'
+import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
+import { swapRecordId } from '../swap-record-id'
 
 const config: EvmChainConfig = {
   networkId: 'monad-testnet',

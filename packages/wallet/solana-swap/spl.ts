@@ -37,6 +37,27 @@ export interface SplReader {
   ): Promise<(AccountData | null)[]>
 }
 
+/** The most accounts an RPC node returns for one `getMultipleAccountsInfo` request. */
+export const MAX_ACCOUNTS_PER_READ = 100
+
+/**
+ * `getMultipleAccountsInfo` for any number of addresses: RPC nodes refuse more than 100 in
+ * one request and web3.js does not split them. Answers in the order asked.
+ */
+export async function readAccountsInChunks(
+  connection: Pick<SplReader, 'getMultipleAccountsInfo'>,
+  addresses: readonly PublicKey[],
+): Promise<(AccountData | null)[]> {
+  const chunks: PublicKey[][] = []
+  for (let i = 0; i < addresses.length; i += MAX_ACCOUNTS_PER_READ) {
+    chunks.push(addresses.slice(i, i + MAX_ACCOUNTS_PER_READ))
+  }
+  const answers = await Promise.all(
+    chunks.map(chunk => connection.getMultipleAccountsInfo(chunk)),
+  )
+  return answers.flat()
+}
+
 function readU64(data: Uint8Array, offset: number): bigint {
   let value = 0n
   for (let i = 7; i >= 0; i--) value = (value << 8n) | BigInt(data[offset + i])

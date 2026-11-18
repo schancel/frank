@@ -39,6 +39,7 @@ import {
   decodeMint,
   decodeTokenAccount,
   findAssociatedTokenAddress,
+  readAccountsInChunks,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_ACCOUNT_SIZE,
   TOKEN_PROGRAM_ID,
@@ -68,6 +69,34 @@ export type SolanaSwapErrorCode =
   | 'simulation-failed'
   | 'venue-unavailable'
   | 'unsafe-transaction'
+  /** An earlier swap of this wallet may still land: it must settle before another is sent. */
+  | 'swap-pending'
+  /** The swap was prepared for another wallet or network than the one asked to send it. */
+  | 'wallet-mismatch'
+  /** What the swap would be recorded as differs from what was reviewed. Nothing was signed. */
+  | 'record-mismatch'
+
+/**
+ * A chain error as text. web3.js 3 hands transaction errors over with bigint fields (for
+ * example `{"InstructionError":[3n,{"Custom":6036n}]}`), which `JSON.stringify` refuses: a
+ * bigint is written as the number it is (as a string when beyond a safe integer).
+ */
+export function describeChainError(err: unknown): string {
+  if (typeof err === 'string') return err
+  try {
+    return (
+      JSON.stringify(err, (_key, value: unknown) =>
+        typeof value === 'bigint'
+          ? Number.isSafeInteger(Number(value))
+            ? Number(value)
+            : value.toString()
+          : value,
+      ) ?? String(err)
+    )
+  } catch {
+    return String(err)
+  }
+}
 
 /** A swap problem the user can act on. `detail` is the venue's or chain's own wording. */
 export class SolanaSwapError extends Error {
@@ -274,7 +303,8 @@ async function readWalletState(
     ),
   )
   const [accounts, lamports] = await Promise.all([
-    connection.getMultipleAccountsInfo([...tokenAccounts, ...known]),
+    // `known` is every token account of the wallet, which can be many more than one read.
+    readAccountsInChunks(connection, [...tokenAccounts, ...known]),
     connection.getBalance(request.owner),
   ])
   const state = (i: number): MintState => ({
@@ -300,7 +330,7 @@ export function classifySwapFailure(
   err: unknown,
   logs: readonly string[],
 ): SolanaSwapError {
-  const text = `${JSON.stringify(err)}\n${logs.join('\n')}`
+  const text = `${describeChainError(err)}\n${logs.join('\n')}`
   const lastLog = [...logs].reverse().find(line => !line.includes(' consumed '))
   if (
     /insufficient lamports|InsufficientFundsFor(Fee|Rent)|AccountNotFound/.test(
@@ -317,7 +347,7 @@ export function classifySwapFailure(
   }
   return new SolanaSwapError(
     'simulation-failed',
-    lastLog ?? JSON.stringify(err),
+    lastLog ?? describeChainError(err),
   )
 }
 
@@ -379,6 +409,13 @@ export interface SwapCheck {
   readonly networkFeeLamports: bigint
   /** Every token account the wallet has, so none can be touched unnoticed. */
   readonly walletAccounts: readonly WalletTokenAccount[]
+  /**
+   * Every account the reviewed transaction loads, its lookup tables resolved when it was
+   * reviewed (a table's entries are append-only, so the same message keeps loading the same
+   * accounts). A token account not among them cannot be changed by it. Used for the quote's
+   * simulation; the check before signing reads them from the transaction again.
+   */
+  readonly transactionAccounts: readonly PublicKey[]
   /** Platform-fee token account, and whether this swap is what opens it (and pays its rent). */
   readonly feeAccount?: PublicKey
   readonly feeAccountIsNew?: boolean
@@ -425,12 +462,22 @@ export async function simulateAndCheckSwap(
   const { owner, state } = check
   const { input, output } = state
   const ownerAddress = owner.toBase58()
-  const watched = [
+  // Only what the transaction loads is asked for: the network refuses to report more
+  // accounts than the transaction has, and a wallet may hold many token accounts (airdropped
+  // spam among them) that this transaction cannot touch.
+  const loaded = new Set(check.transactionAccounts.map(key => key.toBase58()))
+  const touchedWalletAccounts = check.walletAccounts.filter(account =>
+    loaded.has(account.address.toBase58()),
+  )
+  const watched: PublicKey[] = []
+  for (const address of [
     owner,
     output.tokenAccount,
     ...(check.feeAccount ? [check.feeAccount] : []),
-    ...check.walletAccounts.map(account => account.address),
-  ]
+    ...touchedWalletAccounts.map(account => account.address),
+  ]) {
+    if (!watched.some(entry => entry.equals(address))) watched.push(address)
+  }
   const { value } = await connection.simulateTransaction(transaction, {
     sigVerify: false,
     commitment: 'confirmed',
@@ -455,12 +502,12 @@ export async function simulateAndCheckSwap(
   }
 
   // Every token account the wallet already has: only the swap's own two may change amount,
-  // and none may change hands.
+  // and none may change hands. One the transaction does not load stays as it is.
   const inputMint = input.mint.toBase58()
   let inputDebited = 0n
   let wrappedBefore = 0n
   let wrappedAfter = 0n
-  for (const account of check.walletAccounts) {
+  for (const account of touchedWalletAccounts) {
     const before = account.state
     const mint = before.mint.toBase58()
     const simulated = afterOf(account.address)
@@ -626,11 +673,16 @@ export async function checkSwapBeforeSigning(
       'is not the transaction that was reviewed',
     )
   }
-  await simulateAndCheckSwap(
-    connection,
-    transaction,
-    await withWalletAsItIsNow(connection, check),
-  )
+  // Which accounts the transaction loads is read from the transaction itself, not taken
+  // from the check: only the message bytes were held to what was reviewed.
+  const [now, transactionAccounts] = await Promise.all([
+    withWalletAsItIsNow(connection, check),
+    transactionAccountsOf(connection, transaction),
+  ])
+  await simulateAndCheckSwap(connection, transaction, {
+    ...now,
+    transactionAccounts,
+  })
 }
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
@@ -946,6 +998,8 @@ export async function prepareOrcaSwap(
     minOutputAmount: minimum,
     networkFeeLamports: fee,
     walletAccounts,
+    // Built here without lookup tables: every account it loads is in the message itself.
+    transactionAccounts: transaction.message.staticAccountKeys,
     feeAccount,
     feeAccountIsNew,
   })
@@ -1054,6 +1108,7 @@ const JUPITER_SWAP_INSTRUCTIONS: readonly {
  *   quoted input, the quoted output and the reviewed slippage (so the minimum is enforced on
  *   chain) and whose output is paid into this wallet's own token account for the output mint.
  * In particular a transfer to anyone else, an Approve or a SetAuthority is refused.
+ * Returns every account the transaction loads, its lookup tables resolved.
  */
 export async function assertJupiterTransactionIsTheQuotedSwap(
   connection: Pick<SolanaSwapConnection, 'getMultipleAccountsInfo'>,
@@ -1071,7 +1126,7 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
     slippageBps: number
     platformFeeBps: number
   },
-): Promise<void> {
+): Promise<PublicKey[]> {
   const refuse = (why: string): never => {
     throw new SolanaSwapError('unsafe-transaction', why)
   }
@@ -1085,20 +1140,7 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
   ) {
     refuse('transaction is not paid and signed by this wallet alone')
   }
-  const tableKeys = message.addressTableLookups.map(lookup => lookup.accountKey)
-  const tableAccounts = tableKeys.length
-    ? await connection.getMultipleAccountsInfo(tableKeys)
-    : []
-  const tables = tableKeys.map((key, i) => {
-    const account = tableAccounts[i]
-    if (!account)
-      return refuse('uses an address lookup table that does not exist')
-    return new AddressLookupTableAccount({
-      key,
-      state: AddressLookupTableAccount.deserialize(account.data),
-    })
-  })
-  const keys = message.getAccountKeys({ addressLookupTableAccounts: tables })
+  const keys = await resolveAccountKeys(connection, transaction)
   const key = (index: number): string => keys.get(index)?.toBase58() ?? ''
   const owner = expected.owner.toBase58()
   const wrapped = expected.wrappedSolAccount.toBase58()
@@ -1175,6 +1217,47 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
     }
   }
   if (jupiterCalls !== 1) refuse('does not contain exactly one swap')
+  return keys.keySegments().flat()
+}
+
+/** A transaction's account keys, its lookup tables resolved from the chain. */
+async function resolveAccountKeys(
+  connection: Pick<SolanaSwapConnection, 'getMultipleAccountsInfo'>,
+  transaction: VersionedTransaction,
+) {
+  const { message } = transaction
+  // A legacy message has no lookup tables.
+  const tableKeys =
+    message.version === 0
+      ? message.addressTableLookups.map(lookup => lookup.accountKey)
+      : []
+  const tableAccounts = tableKeys.length
+    ? await readAccountsInChunks(connection, tableKeys)
+    : []
+  const tables = tableKeys.map((key, i) => {
+    const account = tableAccounts[i]
+    if (!account) {
+      throw new SolanaSwapError(
+        'unsafe-transaction',
+        'uses an address lookup table that does not exist',
+      )
+    }
+    return new AddressLookupTableAccount({
+      key,
+      state: AddressLookupTableAccount.deserialize(account.data),
+    })
+  })
+  return message.getAccountKeys({ addressLookupTableAccounts: tables })
+}
+
+/** Every account a transaction loads, its lookup tables resolved from the chain. */
+export async function transactionAccountsOf(
+  connection: Pick<SolanaSwapConnection, 'getMultipleAccountsInfo'>,
+  transaction: VersionedTransaction,
+): Promise<PublicKey[]> {
+  return (await resolveAccountKeys(connection, transaction))
+    .keySegments()
+    .flat()
 }
 
 export async function prepareJupiterSwap(
@@ -1243,21 +1326,25 @@ export async function prepareJupiterSwap(
   )
   // Jupiter built this transaction, so nothing about it is taken on trust: first what it
   // says (every instruction), then what it does (every balance, in simulation).
-  await assertJupiterTransactionIsTheQuotedSwap(connection, transaction, {
-    owner: request.owner,
-    jupiterProgramId: venue.programId,
-    wrappedSolAccount: await findAssociatedTokenAddress(
-      request.owner,
-      new PublicKey(NATIVE_SOL_MINT),
-    ),
-    outputTokenAccount: state.output.tokenAccount,
-    outputMint: request.outputMint,
-    inputIsSol: state.input.native,
-    inputAmount: request.amount,
-    quotedOutputAmount: expected,
-    slippageBps: request.slippageBps,
-    platformFeeBps: venue.interfaceFee?.bps ?? 0,
-  })
+  const transactionAccounts = await assertJupiterTransactionIsTheQuotedSwap(
+    connection,
+    transaction,
+    {
+      owner: request.owner,
+      jupiterProgramId: venue.programId,
+      wrappedSolAccount: await findAssociatedTokenAddress(
+        request.owner,
+        new PublicKey(NATIVE_SOL_MINT),
+      ),
+      outputTokenAccount: state.output.tokenAccount,
+      outputMint: request.outputMint,
+      inputIsSol: state.input.native,
+      inputAmount: request.amount,
+      quotedOutputAmount: expected,
+      slippageBps: request.slippageBps,
+      platformFeeBps: venue.interfaceFee?.bps ?? 0,
+    },
+  )
 
   // Jupiter chose the priority fee: it is bounded by the entry's limit, and shown.
   const { networkFeeLamports: fee, priorityFeeLamports } =
@@ -1304,6 +1391,7 @@ export async function prepareJupiterSwap(
       minOutputAmount,
       networkFeeLamports: fee,
       walletAccounts,
+      transactionAccounts,
     },
   }
 }

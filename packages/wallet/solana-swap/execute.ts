@@ -23,9 +23,10 @@ import type { VersionedTransaction } from '@solana/web3.js'
 
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 
-import { swapRecordId } from '../chain/evm-legacy-consolidator'
+import { swapRecordId } from '../swap-record-id'
 import {
   checkSwapBeforeSigning,
+  describeChainError,
   SolanaSwapError,
   type SwapCheck,
   type SwapCheckConnection,
@@ -508,7 +509,7 @@ async function followSolanaSwap(
             return finish({
               status: 'failed',
               signature: signature,
-              reason: JSON.stringify(current.err),
+              reason: describeChainError(current.err),
               networkFeeLamports: BigInt(meta?.fee ?? swap.networkFeeLamports),
               priorityFeeLamports,
             })
@@ -619,7 +620,7 @@ export function createSolanaLegacySender(parts: {
         wallet.chainIdentifier !== intent.chainIdentifier
       ) {
         throw new SolanaSwapError(
-          'invalid-request',
+          'wallet-mismatch',
           'transaction belongs to a different wallet or network',
         )
       }
@@ -631,7 +632,7 @@ export function createSolanaLegacySender(parts: {
           )
       ) {
         // An earlier one may still land; resolve it before spending again.
-        throw new SolanaSwapError('invalid-request', 'a swap is still pending')
+        throw new SolanaSwapError('swap-pending', 'a swap is still pending')
       }
       const { transaction, check } = prepared
       const { header, staticAccountKeys } = transaction.message
@@ -654,7 +655,7 @@ export function createSolanaLegacySender(parts: {
         check.networkFeeLamports.toString() !== intent.networkFeeLamports
       ) {
         throw new SolanaSwapError(
-          'invalid-request',
+          'record-mismatch',
           'the record of the swap does not match what was reviewed',
         )
       }

@@ -16,6 +16,7 @@ import {
 } from './long-text'
 import { initTextPlugin } from './plugin'
 import {
+  DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES,
   MAX_SEALED_MESSAGE_CONTENT_BYTES,
   sealedMessageOverLimit,
 } from '../../chain/direct-message-limits'
@@ -207,10 +208,10 @@ describe('splitLongTextItems', () => {
 describe('sealedMessageOverLimit', () => {
   it('admits the largest text a sealed message carries and refuses one byte more, saying why', () => {
     const largest = (text: number) => [{ type: 'text', text: 'z'.repeat(text) }] as MessageItem[]
-    // Each text item of the split counts its allowance (64 bytes) on top of its text.
+    // Each text item of the split counts its allowance on top of its text.
     const fits = (n: number) => sealedMessageOverLimit(splitLongTextItems(largest(n))) === undefined
     // ASCII with no break splits at exactly 256 KiB: 32 items for the largest text.
-    const n = MAX_SEALED_MESSAGE_CONTENT_BYTES - 64 * 32
+    const n = MAX_SEALED_MESSAGE_CONTENT_BYTES - DIRECT_MESSAGE_ITEM_ALLOWANCE_BYTES * 32
     expect(splitLongTextItems(largest(n))).toHaveLength(32)
     expect(fits(n)).toBe(true)
     expect(sealedMessageOverLimit(splitLongTextItems(largest(n + 1)))).toMatch(

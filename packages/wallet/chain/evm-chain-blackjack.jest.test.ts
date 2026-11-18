@@ -238,10 +238,10 @@ describe('two typed wallets play blackjack through stamped messages', () => {
       // offline chain charges no gas, so nothing more than the stamps themselves left it.)
       // What a wallet received as stamps is money it can spend (a coin once the chain shows
       // it), so a balance is at most what it started with, less what it paid, plus that.
-      expect(await player.balance()).toBeLessThanOrEqual(
+      expect(await player.displayBalance()).toBeLessThanOrEqual(
         START_BALANCE - totalStakeWei(final) + player.totalReceived(),
       )
-      expect(await dealer.balance()).toBeLessThanOrEqual(
+      expect(await dealer.displayBalance()).toBeLessThanOrEqual(
         START_BALANCE - script.owed + dealer.totalReceived(),
       )
     })
@@ -334,8 +334,11 @@ describe('two typed wallets play blackjack through stamped messages', () => {
 
   it('limits the max bet by what each side can actually spend', async () => {
     mockScriptedDeck = deckStarting(9, 35, 22, 6)
-    const spend = async (seat: Seat, balance: bigint) =>
-      mockBalances.set((await seat.wallet.getReceiveAddress()).raw.toLowerCase(), balance)
+    // What a wallet can spend is its coin less the fee to move it: this fixture's policy charges
+    // 21,000 gas at 3 wei. `spend` funds the main account so that it can spend exactly `spendable`.
+    const MOVE_FEE = 21_000n * 3n
+    const spend = async (seat: Seat, spendable: bigint) =>
+      mockBalances.set((await seat.wallet.getReceiveAddress()).raw.toLowerCase(), spendable + MOVE_FEE)
     // A dealer with 4 units above the reserve may offer at most 1 unit.
     await spend(alice, RESERVE + 400_000n)
     const asDealer = (maxBetWei: bigint, spendableWei: bigint) =>

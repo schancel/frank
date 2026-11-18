@@ -18,7 +18,7 @@ import { spawn, spawnSync, type ChildProcess } from 'child_process'
 import { existsSync } from 'fs'
 import { createServer } from 'net'
 import { dirname, join } from 'path'
-import { JsonRpcProvider, Transaction, Wallet } from 'ethers'
+import { JsonRpcProvider, Transaction, Wallet, toQuantity } from 'ethers'
 import { toHex } from '@frank/codec'
 import { evmWalletInternals } from '../evm-wallet'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
@@ -138,17 +138,21 @@ suite('a stealth payment and its message stamp from many small coins and one lar
     node?.kill()
   })
 
-  /** What the review in the app authorizes: the quoted payment fee, and the stamp's quoted fee. */
+  /** What the review in the app (`review-payment.ts`) authorizes for a payment with its combined
+   * stamp: the payment and the stamp are quoted together, as they are built, and the user
+   * approves the quoted payment fee and the quoted fee of the stamp's transfers. */
   async function review(operationId: string, stampFee?: bigint): Promise<StealthPaymentIntent> {
     const intent = {
       operationId, chainIdentifier: 'monad-testnet', asset: { kind: 'native' as const },
       recipientSpendPublicKey: f.bob.identity.compressedPubKey, amountAtomic: AMOUNT,
     }
-    const quote = await alice.stealthPayments!.quote!(intent)
+    expect(alice.stealthPayments!.supportsCombinedStamp).toBe(true)
+    const quote = await alice.stealthPayments!.quote!({ ...intent, messageStamp: { amountAtomic: STAMP } })
+    if (quote.messageStampFeeAtomic === undefined) throw new Error('no combined stamp fee quoted')
     const stamp = await f.chain.directMessages.quoteStamp!({ wallet: alice, stampValue: STAMP })
     if (stamp.status !== 'available') throw new Error('stamp unavailable')
     return { ...intent, maxNativeFeeAtomic: quote.estimatedNativeFeeAtomic,
-      messageStamp: { amountAtomic: STAMP, maxNativeFeeAtomic: stampFee ?? stamp.maximumNativeFeeAtomic } }
+      messageStamp: { amountAtomic: STAMP, maxNativeFeeAtomic: stampFee ?? quote.messageStampFeeAtomic } }
   }
   const send = (wallet: EvmChainWalletHandle, n: number, intent: StealthPaymentIntent, prepared: Awaited<ReturnType<NonNullable<EvmChainWalletHandle['stealthPayments']>['prepare']>>) =>
     f.chain.directMessages.send({
@@ -159,6 +163,14 @@ suite('a stealth payment and its message stamp from many small coins and one lar
     })
   const held = (wallet: EvmChainWalletHandle) =>
     evmWalletInternals(wallet).coinList!.all().filter(coin => coin.state === 'spend_pending' || coin.state === 'pending_receipt')
+  /** The node's fee rises after the user reviewed the payment: the next blocks' base fee goes to
+   * twice the reviewed price. The stamp's transfer then costs more than the transfer fee the
+   * bound holds for it, while the stamp stays above the payment floor (ten transfers' fee). */
+  async function raiseNodeFee() {
+    await chain.send('anvil_setNextBlockBaseFeePerGas', [toQuantity(2n * GAS_PRICE)])
+    await chain.send('evm_mine', [])
+    expect(BigInt(await chain.send('eth_gasPrice', []))).toBeGreaterThan(GAS_PRICE)
+  }
   const authorized = (intent: StealthPaymentIntent) => intent.maxNativeFeeAtomic + intent.messageStamp!.maxNativeFeeAtomic
   const operationFee = (wallet: EvmChainWalletHandle, id: string) =>
     wallet.transactionSetPreparer!.getOperation(id)!.members.reduce((sum, member) => {
@@ -206,11 +218,14 @@ suite('a stealth payment and its message stamp from many small coins and one lar
   })
 
   it('a message whose payment would exceed the authorized fee fails before anything is signed or sent, and frees its coins at once and after a restart', async () => {
-    // Authorize no fee at all for the stamp: its stage cannot be signed within the bound.
-    const intent = await review('stealth-over-bound', 0n)
+    // The user approves the quoted fees. The payment is prepared within them, holding its
+    // stamp's transfer fee in the bound; then the node's fee rises, so the stamp's transfer
+    // costs more than the bound leaves and its stage cannot be signed within it.
+    const intent = await review('stealth-over-bound')
     const prepared = await alice.stealthPayments!.prepare(intent)
     const id = evmStealthTransactionSetOperationId(intent.operationId)
     expect(held(alice).length).toBeGreaterThan(SMALL_COINS)
+    await raiseNodeFee()
     const rootNonce = await chain.getTransactionCount((await alice.getReceiveAddress()).raw, 'latest')
     await expect(send(alice, 2, intent, prepared)).rejects.toBeInstanceOf(NativeFeeExceededError)
     // Nothing was handed to the relay or the node.
@@ -233,7 +248,7 @@ suite('a stealth payment and its message stamp from many small coins and one lar
   })
 
   it('a message left unsigned by a crash is ended after a restart, and Retry no longer fails on held bytes', async () => {
-    const intent = await review('stealth-crashed', 0n)
+    const intent = await review('stealth-crashed')
     const prepared = await alice.stealthPayments!.prepare(intent)
     // The stamp stage write fails without proving anything: the record is kept, as before.
     const append = jest.spyOn(alice.transactionSetPreparer!, 'appendTransactionSet').mockRejectedValueOnce(new Error('interrupted'))
@@ -245,6 +260,8 @@ suite('a stealth payment and its message stamp from many small coins and one lar
     installCanonicalDirectory(alice, directory)
     expect(held(alice).length).toBeGreaterThan(SMALL_COINS)
     const attempt = await f.chain.directMessages.attemptOf!({ wallet: alice, messageId: MESSAGE(3) })
+    // Meanwhile the node's fee rose past what the user approved.
+    await raiseNodeFee()
     // The host's Retry names the message: the resend pass tries to sign it, which the bound
     // refuses, so it ends and its payment is released.
     const statuses = await f.chain.directMessages.reconcileAttempts({
@@ -252,6 +269,8 @@ suite('a stealth payment and its message stamp from many small coins and one lar
       onEnvelopeDurable: digest => alice.stealthPayments!.expose({ operationId: intent.operationId, payloadDigest: digest }),
     })
     expect(statuses[attempt!.payloadDigest]).toBe('dead')
+    expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: attempt!.payloadDigest }))
+      .toEqual({ reason: 'fee-exceeded' })
     expect(held(alice)).toEqual([])
     expect(await alice.stealthPayments!.status!(intent.operationId)).toMatchObject({ released: true })
     expect(inbox).toHaveLength(0)

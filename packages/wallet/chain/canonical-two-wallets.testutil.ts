@@ -683,7 +683,13 @@ export class Seat {
   get address(): string {
     return this.wallet.identity.address.raw
   }
+  /** What this wallet can spend now, as a blackjack client offers and covers bets from it (the
+   * app and the bot both read `getSpendableBalance`, never the display total). */
   balance(): Promise<bigint> {
+    return this.wallet.getSpendableBalance!()
+  }
+  /** The display total, for bounds that must also catch a display balance that overcounts. */
+  displayBalance(): Promise<bigint> {
     return this.wallet.getBalance()
   }
   private record(event: HandEvent) {

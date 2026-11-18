@@ -164,6 +164,24 @@ function watchNotes() {
     for (const owner of new Set(started.mock.contexts)) await owner.drain()
   }
 }
+/** A balance is observed at one block of the head the wallet reads: the stub node answers
+ * that head (1), its block and a fee quote, so a test's own `getBalance` stub is all it counts. */
+function stubBalanceHead(wallet: EvmChainWalletHandle) {
+  jest.spyOn(wallet.provider, 'getBlockNumber').mockResolvedValue(1)
+  jest
+    .spyOn(wallet.provider, 'getBlock')
+    .mockResolvedValue({ hash: '0x' + 'ab'.repeat(32), number: 1 } as Block)
+  jest.spyOn(wallet.provider, 'getFeeData').mockResolvedValue({
+    gasPrice: 1n,
+    maxFeePerGas: 1n,
+    maxPriorityFeePerGas: 1n,
+  } as never)
+}
+/** Waits until `mock` has been called `times` times (the reads start after the head is read). */
+async function untilCalled(mock: jest.Mock | jest.SpyInstance, times: number) {
+  for (let i = 0; i < 1_000 && mock.mock.calls.length < times; i++)
+    await new Promise(resolve => setImmediate(resolve))
+}
 test.each([
   ['pool', LevelSubAccountPoolStore.prototype],
   ['change', LevelChangePoolStore.prototype],
@@ -300,25 +318,57 @@ test.each([0, 1])(
         expected[index].change,
       )
       expect(mnemonic).not.toHaveBeenCalled()
+      stubBalanceHead(wallet)
+      const funded = [expected[index].main, expected[index].auth].map(a => a.toLowerCase())
       const balance = jest
         .spyOn(wallet.provider, 'getBalance')
-        .mockResolvedValue(123n)
-      // The balance is the main account's and the identity account's: both are spendable.
+        .mockImplementation(async address =>
+          funded.includes(String(address).toLowerCase()) ? 123n : 0n,
+        )
+      // The balance is every owned account's: here the main and identity accounts hold money
+      // (the pool's accounts are read too and hold none). Each is read at the one head the
+      // observation is taken at.
       expect(await chain.nativeTransfers.getBalance({ wallet })).toBe(246n)
-      expect(balance).toHaveBeenCalledWith(expected[index].main)
-      expect(balance).toHaveBeenCalledWith(expected[index].auth)
+      expect(balance).toHaveBeenCalledWith(expected[index].pool.toLowerCase(), 1)
+      expect(balance).toHaveBeenCalledWith(expected[index].main.toLowerCase(), 1)
+      expect(balance).toHaveBeenCalledWith(expected[index].auth.toLowerCase(), 1)
     } finally {
       await wallet.close()
     }
   },
 )
 
+/** Balance reads of a stub node that wait to be released. Released, the main and identity
+ * accounts hold `value` each and every other owned account (the pool's) holds nothing. */
+function heldBalanceReads(wallet: EvmChainWalletHandle) {
+  const primary = new Set(
+    [wallet.mainAccount!.address, wallet.identity.address.raw].map((a) => a.toLowerCase())
+  );
+  const pending: Array<{ address: string; resolve: (value: bigint) => void }> = [];
+  const read = jest.spyOn(wallet.provider, "getBalance").mockImplementation(
+    (address) =>
+      new Promise<bigint>((resolve) => {
+        pending.push({ address: String(address).toLowerCase(), resolve });
+      })
+  );
+  const answer = (address: string, value: bigint) =>
+    primary.has(address) ? value : 0n;
+  // Releases the first `count` reads still waiting, or with a negative count the last ones.
+  const release = (value: bigint, count = pending.length) =>
+    (count < 0 ? pending.splice(count) : pending.splice(0, count)).forEach((p) =>
+      p.resolve(answer(p.address, value))
+    );
+  // Every account the balance observes: main, identity and the pool's (`subAccountPoolSize`).
+  const owned = 2 + wallet.pool.records().length;
+  return { read, pending, release, answer, owned };
+}
+
 test.each([
   { networkId: "monad-testnet", chainId: 10143 },
   { networkId: "ethereum-sepolia", chainId: 11155111 },
   { networkId: "hyperliquid-testnet", chainId: 998 },
 ])(
-  "coalesces balance refreshes and starts primary address reads together on $networkId",
+  "coalesces balance refreshes and starts owned address reads together on $networkId",
   async (network) => {
     const entry = getChainRegistryEntry(network.networkId)!;
     const wallet = (await createEvmChain({
@@ -327,32 +377,33 @@ test.each([
       networkTag: entry.networkTag,
       rpcChain: entry.id,
     }).createWallet(roots())) as EvmChainWalletHandle;
-    const releases: Array<(value: bigint) => void> = [];
-    const read = jest.spyOn(wallet.provider, "getBalance").mockImplementation(
-      () =>
-        new Promise<bigint>((resolve) => {
-          releases.push(resolve);
-        })
-    );
+    stubBalanceHead(wallet);
+    const { read, release, answer, owned } = heldBalanceReads(wallet);
     try {
+      expect(owned).toBe(4);
       const first = wallet.getBalance();
       const second = wallet.getBalance();
-      // Both independent primary addresses begin before either response arrives.
-      expect(read).toHaveBeenCalledTimes(2);
-      releases.splice(0).forEach((resolve) => resolve(123n));
+      // Every owned address begins before any response arrives, once for both callers.
+      await untilCalled(read, owned);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(read).toHaveBeenCalledTimes(owned);
+      release(123n);
       expect(await first).toBe(246n);
       expect(await second).toBe(246n);
-      // Previously concurrent complete reads each requested both addresses (four requests).
-      expect(read).toHaveBeenCalledTimes(2);
+      // Concurrent complete reads share one request per address.
+      expect(read).toHaveBeenCalledTimes(owned);
       wallet.invalidateBalanceCache();
-      read
-        .mockRejectedValueOnce(new Error("offline"))
-        .mockResolvedValueOnce(0n);
+      // One address failing fails the whole observation: never a partial total.
+      read.mockImplementation(async (address) => {
+        if (String(address).toLowerCase() === wallet.mainAccount!.address.toLowerCase())
+          throw new Error("offline");
+        return answer(String(address).toLowerCase(), 0n);
+      });
       await expect(wallet.getBalance()).rejects.toThrow("offline");
-      read.mockResolvedValue(234n);
+      read.mockImplementation(async (address) => answer(String(address).toLowerCase(), 234n));
       expect(await wallet.getBalance()).toBe(468n);
     } finally {
-      releases.forEach((resolve) => resolve(0n));
+      release(0n);
       await wallet.close();
     }
   }
@@ -362,30 +413,30 @@ test("authority invalidation starts a fresh balance read while the previous one 
   const wallet = (await createEvmChain(config).createWallet(
     roots()
   )) as EvmChainWalletHandle;
-  const releases: Array<(value: bigint) => void> = [];
-  const read = jest.spyOn(wallet.provider, "getBalance").mockImplementation(
-    () =>
-      new Promise<bigint>((resolve) => {
-        releases.push(resolve);
-      })
-  );
+  stubBalanceHead(wallet);
+  const { read, release, owned } = heldBalanceReads(wallet);
   try {
     const previous = wallet.getBalance();
+    await untilCalled(read, owned);
     wallet.invalidateBalanceCache();
     const current = wallet.getBalance();
-    expect(read).toHaveBeenCalledTimes(4);
+    await untilCalled(read, 2 * owned);
+    expect(read).toHaveBeenCalledTimes(2 * owned);
     const joining = wallet.getBalance();
-    expect(read).toHaveBeenCalledTimes(4);
-    releases.splice(2).forEach((resolve) => resolve(234n));
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(read).toHaveBeenCalledTimes(2 * owned);
+    // The current read (the later requests) answers first, then the one it overtook.
+    release(234n, -owned);
     expect(await current).toBe(468n);
     expect(await joining).toBe(468n);
-    releases.splice(0).forEach((resolve) => resolve(123n));
-    expect(await previous).toBe(246n);
+    release(123n);
+    // The read the invalidation overtook is refused rather than reported: a caller reads again.
+    await expect(previous).rejects.toThrow("observation changed");
     // An older read completing last must not replace the current cached observation.
     expect(await wallet.getBalance()).toBe(468n);
-    expect(read).toHaveBeenCalledTimes(4);
+    expect(read).toHaveBeenCalledTimes(2 * owned);
   } finally {
-    releases.forEach((resolve) => resolve(0n));
+    release(0n);
     await wallet.close();
   }
 });

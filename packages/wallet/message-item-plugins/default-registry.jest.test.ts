@@ -23,7 +23,7 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'p2pkh': true,
   'text': true,
   'reply': true,
-  'image': true,
+  'blob': true,
   'blackjack-move': true,
   'blackjack-hand': true,
   'digital-goods': true,

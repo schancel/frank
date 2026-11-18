@@ -2171,8 +2171,9 @@ export class EvmNativeOperationJournal {
   /**
    * Records what the chain showed of a recorded cancellation: its receipt, read once the call's
    * own nonce was seen taken (`nativeMemberSuperseded`), in a canonical block, and the fee it
-   * charged. Idempotent for the same inclusion; refused for a member whose call the chain shows
-   * included, or that has no cancellation.
+   * charged. Recorded once: a later call changes nothing (a cancellation that a reorganisation
+   * moves to another block keeps the block and fee first read; see the commit notes). Refused for
+   * a member whose call the chain shows included, or that has no cancellation.
    */
   recordCancellationIncluded(
     id: string,
@@ -2183,18 +2184,12 @@ export class EvmNativeOperationJournal {
       const m = row.members[index]
       if (row.kind !== 'contract' || row.cancelled || !m?.cancellation || !nativeMemberSuperseded(m))
         fail('conflict')
-      const next = {
+      if (m.cancellation.included) return false
+      m.cancellation.included = {
         blockHash: included.blockHash,
         blockNumber: included.blockNumber,
         transactionIndex: included.transactionIndex,
         feeWei: included.feeWei,
-      }
-      if (JSON.stringify(m.cancellation.included) === JSON.stringify(next)) return false
-      // Another block (a reorganisation): the note said the old one, so it is sent again.
-      m.cancellation = {
-        rawTransaction: m.cancellation.rawTransaction,
-        transactionHash: m.cancellation.transactionHash,
-        included: next,
       }
       row.reservedBytes = reservation(row)
       if (row.reservedBytes > MAX_ROW) fail('capacity')

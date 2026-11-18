@@ -42,6 +42,10 @@ import { createEvmChain } from '../chain/evm-chain'
 import { withDefaultMessageItems } from '../chain/message-items.testutil'
 import type { DirectMessageReceived } from '../chain/active-chain'
 import { consumeEvmSelfNotes } from '../evm-received-coin-manager'
+import {
+  EVM_CANCELLATION_STAGE,
+  summarizeEvmNativeOperation,
+} from '../chain/evm-native-operation-status'
 import type { WalletSyncItem } from '@frank/cashweb/types/messages'
 
 const mockNode = { url: '' }
@@ -322,6 +326,15 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included?.feeWei).toBe(
       fee.toString(),
     )
+    // What History reads of it on device A: a fee-only cancellation, the cancellation's hash
+    // and fee on its member.
+    const statusA = summarizeEvmNativeOperation(rowOf(swap.handle.operationId))
+    expect(statusA.purpose).toBe('cancellation')
+    expect(statusA.members[0]).toMatchObject({
+      transactionHash: cancellation.transactionHash,
+      feeWei: fee.toString(),
+    })
+    expect(statusA.feeCoverage).toBe('complete')
     expect(await alice.flushNativeSync!()).toEqual([])
     // A note for the cancellation: its signed bytes, and the fee in its debit, as an ordinary
     // send's note carries its fee.
@@ -332,6 +345,7 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
       rawTx: cancellation.rawTransaction,
       spentInputs: [{ address: main, nonce: swap.nonce, valueWei: fee.toString() }],
       createdOutputs: [{ valueWei: '0' }],
+      operation: { id: `tx-${swap.handle.txHash.toLowerCase()}`, stage: EVM_CANCELLATION_STAGE },
     })
     expect(note!.createdOutputs![0]!.address.toLowerCase()).toBe(main)
     expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.syncApplied).toBe(true)
@@ -377,6 +391,9 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
       )
       expect(notedB?.inclusion?.feeWei).toBe(fee.toString())
       expect(notedB?.state).toBe('included')
+      // Named as device A names it, and History keeps it although it went to an own account.
+      expect(notedB?.purpose).toBe('cancellation')
+      expect(notedB?.toOwnAccount).toBe(true)
       // ...and the same balance: what the account holds after the fee.
       expect(await deviceB.getSpendableBalance!()).toBe(spendableA)
       expect(spendableA).toBeGreaterThan(0n)
@@ -386,6 +403,52 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
       await deviceB.close()
       alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
     }
+  })
+
+  it('a cancellation whose receipt could not be read at first has its fee recorded by a later background pass', async () => {
+    const notes: WalletSyncItem[] = []
+    f.config.emitWalletSync = async item => {
+      notes.push(item)
+    }
+    const swap = await submitLostSwap()
+    await passDeadline(swap.deadline)
+    await alice.reobserveNativeOperations!()
+    const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+    await chain.send('evm_mine', [])
+    await chain.send('evm_setAutomine', [true])
+    // The node fails every read of the cancellation's receipt while the wallet first sees the
+    // call's nonce taken.
+    const send = JsonRpcProvider.prototype.send
+    const failing = jest
+      .spyOn(JsonRpcProvider.prototype, 'send')
+      .mockImplementation(async function (this: JsonRpcProvider, method, params) {
+        if (
+          method === 'eth_getTransactionReceipt' &&
+          ((params as string[])[0] ?? '').toLowerCase() === cancellation.transactionHash
+        )
+          throw new Error('node unavailable')
+        return send.call(this, method, params)
+      })
+    try {
+      await alice.getContractCallFunds!()
+    } finally {
+      failing.mockRestore()
+    }
+    const member = rowOf(swap.handle.operationId).members[0]!
+    expect(member.observation.state).toBe('missing')
+    expect(member.cancellation!.included).toBeUndefined()
+
+    // The host's next poll, with no contract call made: the receipt is read again.
+    await alice.reobserveNativeOperations!()
+    const receipt = (await chain.getTransactionReceipt(cancellation.transactionHash))!
+    const fee = receipt.gasUsed * receipt.gasPrice
+    expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included?.feeWei).toBe(
+      fee.toString(),
+    )
+    expect(await alice.flushNativeSync!()).toEqual([])
+    expect(notes.find(item => item.txHash === cancellation.transactionHash)).toMatchObject({
+      spentInputs: [{ address: main, nonce: swap.nonce, valueWei: fee.toString() }],
+    })
   })
 
   it('a resume of an exposed swap past its deadline gives it up instead of re-sending it', async () => {

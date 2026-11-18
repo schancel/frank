@@ -7,7 +7,7 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 export type { EvmChainConfig } from "./evm-chain-config";
 export type { EvmChainWalletHandle, EvmWalletHandle } from "../evm-wallet-handle";
-import { evmNativeOperationDigest, nativeMemberNeedsOwnMoveRecovery, memberSignings, type ArchivedOwnMoveRecoveryInput, type EvmNativeSource } from "../storage/evm-native-operation-journal";
+import { evmNativeOperationDigest, nativeMemberNeedsOwnMoveRecovery, nativeMemberSuperseded, memberSignings, type ArchivedOwnMoveRecoveryInput, type EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type {
   EvmWalletOperationAdmission,
 } from "../storage/evm-wallet-bundle";
@@ -3063,9 +3063,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                   (member) => (member.signed &&
                     member.observation.state === "included-success" &&
                     !member.syncApplied) ||
-                    // A given-up call's included cancellation is told to the other devices too.
-                    (member.cancellation?.included !== undefined &&
-                      member.cancellation.syncApplied !== true)
+                    // A given-up call's included cancellation is told to the other devices too,
+                    // on the same condition `applySync` sends it.
+                    (row.kind === "contract" &&
+                      member.cancellation?.included !== undefined &&
+                      member.cancellation.syncApplied !== true &&
+                      nativeMemberSuperseded(member))
                 ))
                 .map((row) => row.operationId);
             },

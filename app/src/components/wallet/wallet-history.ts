@@ -268,6 +268,15 @@ export function mergedCoins(row: WalletHistoryRow): number | undefined {
   return undefined
 }
 
+/** A row that sent nothing and cost only its network fee: a contract call (a swap past its
+ * deadline) given up by a cancellation the chain included. Every device shows it the same way,
+ * named "Expired swap cancelled", with the cancellation's fee and no amount. */
+export function feeOnly(row: WalletHistoryRow): boolean {
+  if (row.kind === 'native') return row.operation.purpose === 'cancellation'
+  if (row.kind === 'noted') return row.purpose === 'cancellation'
+  return false
+}
+
 /** The members that carry the payment itself: what the recipient is paid with. */
 export function paymentMembers(operation: EvmNativeOperationStatus) {
   return operation.members.filter(member => member.role !== 'change')
@@ -662,10 +671,12 @@ export function buildWalletHistoryGroups(input: {
     )
     for (const [key, all] of sends) {
       // What moved between the wallet's own accounts is no send of its own: only its fee is.
-      // A background merge of coins is the exception: it is one row of its own ("Merged N
-      // coins"), so every device shows what it cost.
+      // A background merge of coins and a given-up call's cancellation (a transfer of nothing
+      // to the account itself) are the exceptions: each is one row of its own ("Merged N
+      // coins", "Expired swap cancelled"), so every device shows what it cost.
+      const purpose = notedGroupPurpose(all)
       const group =
-        notedGroupPurpose(all) === 'consolidation'
+        purpose === 'consolidation' || purpose === 'cancellation'
           ? all
           : all.filter(send => !send.toOwnAccount)
       if (group.length === 0) continue

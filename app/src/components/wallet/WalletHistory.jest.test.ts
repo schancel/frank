@@ -472,6 +472,23 @@ it('reads a background merge of coins as "Merged N coins", with what it was and 
   expect(wrapper.get('[data-testid="wallet-activity-fee"]').exists()).toBe(true)
 })
 
+it('reads a landed cancellation of an expired swap as "Expired swap cancelled", cancelled, with its fee and no amount sent', () => {
+  const wrapper = mountHistory('superseded', 'contract', 'cancellation')
+  expect(wrapper.get('[data-testid="wallet-activity-cancelled"]').text()).toBe(
+    'Expired swap cancelled',
+  )
+  expect(wrapper.get('.wallet-history-amount').text()).not.toContain('MONT')
+  expect(wrapper.get('[data-testid="wallet-activity-status"]').text()).toBe(
+    'Cancelled',
+  )
+  expect(wrapper.text()).toContain(
+    'Nothing was sent; only the network fee was paid',
+  )
+  expect(wrapper.get('[data-testid="wallet-activity-fee"]').text()).toContain(
+    '0.0021',
+  )
+})
+
 it('names one network fee for a send: the card and its details show the same figure', () => {
   // A contact payment of two transactions and one that returned change, each charged 2142 µMON:
   // History's card shows all three (0.006426), and so must the details (not 0.004284).

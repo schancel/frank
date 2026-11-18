@@ -298,6 +298,7 @@ export {
   summarizeEvmNativeStampStages,
   findEvmNativeOperationStatus,
   classifyEvmOperation,
+  EVM_CANCELLATION_STAGE,
 } from "./evm-native-operation-status";
 export type {
   EvmNativeOperationStatus,

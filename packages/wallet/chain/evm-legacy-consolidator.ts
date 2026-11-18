@@ -19,6 +19,7 @@ import {
 import type { EvmTransactionBuilder } from './evm-transaction-builder'
 import { readSpendRuleHead } from './evm-spend-rule'
 import { cancellationOf } from './evm-contract-cancel'
+import { EVM_CANCELLATION_STAGE } from './evm-native-operation-status'
 import type {
   HtlcRecordItem,
   SwapRecordItem,
@@ -1460,7 +1461,12 @@ export class EvmLegacyConsolidator {
               ],
               createdOutputs: [{ address: tx.to!, valueWei: tx.value.toString() }],
               timestamp: Date.now(),
-              operation: syncOperationOf(row, member),
+              // The call's operation, at its cancellation stage: every device names the row
+              // from it (`classifyEvmOperation`), a fee-only "expired swap cancelled".
+              operation: {
+                ...syncOperationOf(row, member)!,
+                stage: EVM_CANCELLATION_STAGE,
+              },
             },
             undefined,
             'cancellation',
@@ -1581,6 +1587,22 @@ export class EvmLegacyConsolidator {
             nativeMemberSuperseded(member)
           ) {
             this.contractResendAt.delete(key)
+            // A given-up call whose cancellation took its nonce, with the cancellation's receipt
+            // not read yet (the first read failed, or the node had no receipt then): read again
+            // here, so its fee is recorded and noted without waiting for another contract call.
+            if (
+              nativeMemberSuperseded(member) &&
+              member.cancellation &&
+              !member.cancellation.included
+            ) {
+              handled++
+              await this.observeCancellation(
+                listed.operationId,
+                index,
+                lifetime,
+                () => !this.reobserveStopped,
+              )
+            }
             continue
           }
           const last = this.contractResendAt.get(key)

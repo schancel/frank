@@ -68,6 +68,11 @@
                   {{ depositUnit(entry.deposit) }}</span
                 >
                 <span
+                  v-else-if="feeOnly(entry)"
+                  data-testid="wallet-activity-cancelled"
+                  >{{ $t('walletHistory.purpose.cancellation') }}</span
+                >
+                <span
                   v-else-if="mergedCoins(entry) !== undefined"
                   data-testid="wallet-activity-merged"
                   >{{
@@ -244,7 +249,13 @@
             </template>
             <template v-else-if="entry.kind === 'noted'">
               <q-item-label caption class="q-mt-xs">
-                {{ $t(`walletHistory.purpose.${entry.purpose}`) }}
+                {{
+                  $t(
+                    feeOnly(entry)
+                      ? 'walletHistory.feeOnly'
+                      : `walletHistory.purpose.${entry.purpose}`,
+                  )
+                }}
                 ·
                 <time
                   :datetime="new Date(entry.timeMs).toISOString()"
@@ -333,7 +344,9 @@
               <q-item-label caption class="q-mt-xs">
                 {{
                   $t(
-                    entry.operation.kind === 'contract'
+                    feeOnly(entry)
+                      ? 'walletHistory.feeOnly'
+                      : entry.operation.kind === 'contract'
                       ? 'walletHistory.contract'
                       : `walletHistory.purpose.${entry.operation.purpose}`,
                   )
@@ -614,6 +627,7 @@ import {
   changeMembers,
   observedFees,
   mergedCoins,
+  feeOnly,
   paymentMembers,
   type WalletHistoryGroup,
   type WalletHistoryLoad,
@@ -697,6 +711,9 @@ function statusLabel(entry: WalletHistoryRow) {
   if (entry.kind === 'deposit') return 'walletHistory.receivedStatus.received'
   if (entry.kind === 'received')
     return `walletHistory.receivedStatus.${entry.payment.status}`
+  // Given up: nothing was sent; the fee its cancellation charged is the row's figure.
+  if (feeOnly(entry) && (entry.kind !== 'noted' || entry.state === 'included'))
+    return 'walletHistory.status.cancelled'
   if (entry.kind === 'noted') return `walletHistory.status.${entry.state}`
   if (entry.contactOutcome === 'failed') return 'walletHistory.status.failed'
   if (entry.contactOutcome === 'released')
@@ -717,6 +734,9 @@ function statusColor(entry: WalletHistoryRow) {
       ? entry.payment.status
       : entry.kind === 'deposit'
       ? 'received'
+      : feeOnly(entry) &&
+        (entry.kind !== 'noted' || entry.state === 'included')
+      ? 'cancelled'
       : entry.kind === 'noted'
       ? entry.state
       : entry.contactOutcome === 'released'

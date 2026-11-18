@@ -1,9 +1,8 @@
 import { PokerBot } from './poker-bot'
 import { commitSeed, foldPokerState } from '@frank/wallet/message-item-plugins/poker'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
+import { harness } from './bot-harness.testutil'
 
-// No deployment record: the registry has no GenericHTLC address for any network.
-jest.mock('../../../contracts/deployments', () => ({ DEPLOYMENTS: {} }))
 
 describe("Texas Hold'em Poker Bot Coordinator", () => {
   let bot: PokerBot
@@ -86,24 +85,26 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(replyFold.mock.calls[0][0][0].text).toContain(otherAddress.slice(0, 8))
   })
 
-  it('sends no settlement transaction while GenericHTLC is not deployed on the bot\'s network', async () => {
+  it('settling a table moves no value, on a real-shaped state store (get/put/batch)', async () => {
+    // The unit harness's in-memory store has `get` and `batch`, as the host's does: an outbox
+    // payout would be owed into it and sent from the bot's wallet.
+    const h = harness()
     const mockSendTx = jest.fn(async () => ({ txHash: '0xsettletx999' }))
-    mockBotCtx.sendTransaction = mockSendTx
-    ;(mockBotCtx as { networkTag: string }).networkTag = 'MONT'
+    const ctx = { ...h.ctx, sendTransaction: mockSendTx } as unknown as BotContext
 
     // 1. Create table
     await bot.onMessage({
       senderAddress: '0xAlice',
       items: [{ type: 'text', text: '/poker create' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // 2. Bob joins
     await bot.onMessage({
       senderAddress: '0xBob',
       items: [{ type: 'text', text: '/poker join' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // 3. Start hand
     const replyStart = jest.fn()
@@ -111,7 +112,7 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       senderAddress: '0xAlice',
       items: [{ type: 'text', text: '/poker start' }],
       reply: replyStart,
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     const firstActAddress = replyStart.mock.calls[0][0][1].activePlayer
 
@@ -121,15 +122,21 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       senderAddress: firstActAddress,
       items: [{ type: 'text', text: '/fold' }],
       reply: replyFold,
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
-    // The registry has no GenericHTLC address for this network, so nothing is sent: a call
-    // to an address without code would be mined and shown as a settlement that moved nothing.
+    // Table escrow is not wired to GenericHTLC: no transaction, no message, nothing owed.
     expect(mockSendTx).not.toHaveBeenCalled()
+    expect(h.sent).toEqual([])
+    expect(bot.schedules).toBeUndefined()
+    expect(bot.getPendingPayouts().size).toBeGreaterThan(0)
+    const keys = [...h.data.keys()]
+    expect(keys.length).toBeGreaterThan(0)
+    for (const key of keys) expect(key).toMatch(/^payout:pending:/)
 
     const textReply = replyFold.mock.calls[0][0][0].text
     expect(textReply).toContain('HAND SETTLED')
     expect(textReply).not.toContain('On-Chain Settlement')
+    expect(textReply).toContain('Not settled on chain')
     expect(replyFold.mock.calls[0][0][1].txHash).toBeUndefined()
   })
 

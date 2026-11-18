@@ -163,6 +163,11 @@ export function htlcLockId(sender: string, terms: EvmHtlcTerms): string {
   );
 }
 
+/** The hash lock GenericHTLC v2 checks a preimage against: sha256 of exactly 32 bytes. */
+export function htlcHashLock(preimage: string | Uint8Array): string {
+  return sha256(requireBytes32(preimage, "preimage")).toLowerCase();
+}
+
 /**
  * The transaction that opens a lock with `terms` on the GenericHTLC at `contractAddress`.
  * A native lock carries exactly `amount` as value; a token lock carries none (the sender

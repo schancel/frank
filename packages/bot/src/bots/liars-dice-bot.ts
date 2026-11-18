@@ -22,7 +22,6 @@ import type {
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { MessageItem, LiarsDiceItem } from "@frank/cashweb/types/messages";
-import { keccak256, toUtf8Bytes } from "ethers";
 import {
   createLiarsDiceGame,
   joinGame,
@@ -42,18 +41,14 @@ import { DEPLOYMENTS } from "../../../contracts/deployments";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { Outbox } from "./money";
+import { tableHtlcEscrow, type TableHtlcEscrow } from "./table-htlc";
 import {
   announceTableToTopic,
   type GameTableDetails,
   DEFAULT_GAMES_TOPIC,
 } from "./table-announcements";
 
-export interface LiarsDiceTableEscrowRecord {
-  preimage: string;
-  hashLock: string;
-  playerLocks: Map<string, string>;
-  settlementTxHash?: string;
-}
+export type LiarsDiceTableEscrowRecord = TableHtlcEscrow;
 export type TableEscrowRecord = LiarsDiceTableEscrowRecord;
 
 export interface PendingPayoutRecord {
@@ -163,6 +158,10 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
   getPendingPayouts(): ReadonlyMap<string, PendingPayoutRecord> {
     return this.pendingPayouts;
+  }
+
+  getTableEscrow(tableId: string): Readonly<LiarsDiceTableEscrowRecord> | undefined {
+    return this.tableEscrows.get(tableId);
   }
 
   private async settleGameEscrow(
@@ -431,11 +430,8 @@ export class LiarsDiceBot implements FrankBotDefinition {
         // Host automatically joins
         joinGame(game, sender);
 
-        const preimage = "0x" + randomBytes(32).toString("hex");
-        const hashLock = keccak256(preimage);
-        const playerLocks = new Map<string, string>();
-        playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`liars-dice:${tableId}:${sender.toLowerCase()}`)));
-        this.tableEscrows.set(tableId, { preimage, hashLock, playerLocks });
+        // A random preimage held in memory: where it should come from is undecided (./table-htlc).
+        this.tableEscrows.set(tableId, tableHtlcEscrow(randomBytes(32)));
 
         this.tables.set(tableId, game);
         this.conversationTables.set(conversationId, tableId);
@@ -480,10 +476,6 @@ export class LiarsDiceBot implements FrankBotDefinition {
         }
 
         this.conversationTables.set(conversationId, tableId);
-        const escrow = this.tableEscrows.get(tableId);
-        if (escrow) {
-          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`liars-dice:${tableId}:${sender.toLowerCase()}`)));
-        }
 
         const item = this.buildLiarsDiceItem(game, "join", sender);
         await msgCtx.reply([
@@ -676,10 +668,6 @@ export class LiarsDiceBot implements FrankBotDefinition {
     if (item.action === "join") {
       const res = joinGame(game, sender);
       if (res.success) {
-        const escrow = this.tableEscrows.get(item.tableId);
-        if (escrow) {
-          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`liars-dice:${item.tableId}:${sender.toLowerCase()}`)));
-        }
         const out = this.buildLiarsDiceItem(game, "join", sender);
         await msgCtx.reply([out]);
       }

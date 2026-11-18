@@ -6,6 +6,7 @@ import {
   encodeHtlcRefund,
   encodeHtlcWithdraw,
   evmHtlcInterface,
+  htlcHashLock,
   htlcLockId,
   HTLC_NATIVE_TOKEN,
   decodeSolanaHtlcLockState,
@@ -54,6 +55,15 @@ describe("swap-escrow service & calldata builders", () => {
   });
 
   describe("GenericHTLC v2 (EVM)", () => {
+    it("a hash lock is sha256 of exactly 32 bytes, and nothing else is a preimage", () => {
+      const preimage = new Uint8Array(32).fill(7);
+      expect(htlcHashLock(preimage)).toBe(ethers.sha256(preimage));
+      expect(htlcHashLock(ethers.hexlify(preimage))).toBe(ethers.sha256(preimage));
+      expect(() => htlcHashLock(new Uint8Array(31))).toThrow(/32 bytes/);
+      expect(() => htlcHashLock(ethers.hexlify(new Uint8Array(33)))).toThrow(/32 bytes/);
+      expect(() => htlcHashLock("poker:table")).toThrow(/32 bytes/);
+    });
+
     const htlc = "0x9999999999999999999999999999999999999999";
     const sender = "0x3333333333333333333333333333333333333333";
     const terms: EvmHtlcTerms = {

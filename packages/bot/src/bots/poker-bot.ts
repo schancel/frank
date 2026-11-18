@@ -22,7 +22,6 @@ import type {
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
 import type { PokerItem, PokerPlayerView, PokerActionType } from "@frank/cashweb/types/messages";
-import { keccak256, toUtf8Bytes } from "ethers";
 import {
   createPokerTable,
   joinPokerTable,
@@ -41,6 +40,7 @@ import { DEPLOYMENTS } from "../../../contracts/deployments";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { Outbox } from "./money";
+import { tableHtlcEscrow, type TableHtlcEscrow } from "./table-htlc";
 import {
   announceTableToTopic,
   type GameTableDetails,
@@ -49,12 +49,7 @@ import {
 
 export const POKER_DEFAULT_BUY_IN_WEI = 100_000_000_000_000_000n; // 0.1 MON
 export const POKER_TURN_TIMEOUT_SECONDS = 45;
-export interface TableEscrowRecord {
-  preimage: string;
-  hashLock: string;
-  playerLocks: Map<string, string>;
-  settlementTxHash?: string;
-}
+export type TableEscrowRecord = TableHtlcEscrow;
 
 export interface PendingPayoutRecord {
   payoutId: string;
@@ -164,6 +159,10 @@ export class PokerBot implements FrankBotDefinition {
 
   getPendingPayouts(): ReadonlyMap<string, PendingPayoutRecord> {
     return this.pendingPayouts;
+  }
+
+  getTableEscrow(tableId: string): Readonly<TableEscrowRecord> | undefined {
+    return this.tableEscrows.get(tableId);
   }
 
   private async settleTableEscrow(
@@ -431,11 +430,8 @@ export class PokerBot implements FrankBotDefinition {
         const table = createPokerTable({ tableId, buyInChips: 1000, smallBlind: 10, bigBlind: 20 });
         joinPokerTable(table, sender);
 
-        const preimage = "0x" + randomBytes(32).toString("hex");
-        const hashLock = keccak256(preimage);
-        const playerLocks = new Map<string, string>();
-        playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`poker:${tableId}:${sender.toLowerCase()}`)));
-        this.tableEscrows.set(tableId, { preimage, hashLock, playerLocks });
+        // A random preimage held in memory: where it should come from is undecided (./table-htlc).
+        this.tableEscrows.set(tableId, tableHtlcEscrow(randomBytes(32)));
 
         this.tables.set(tableId, table);
         this.conversationTables.set(conversationId, tableId);
@@ -480,10 +476,6 @@ export class PokerBot implements FrankBotDefinition {
         }
 
         this.conversationTables.set(conversationId, tableId);
-        const escrow = this.tableEscrows.get(tableId);
-        if (escrow) {
-          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`poker:${tableId}:${sender.toLowerCase()}`)));
-        }
 
         const item = this.buildPokerItem(table, sender);
         await msgCtx.reply([
@@ -658,10 +650,6 @@ export class PokerBot implements FrankBotDefinition {
     if (item.action === "join") {
       const res = joinPokerTable(table, sender);
       if (res.success) {
-        const escrow = this.tableEscrows.get(item.tableId);
-        if (escrow) {
-          escrow.playerLocks.set(sender.toLowerCase(), keccak256(toUtf8Bytes(`poker:${item.tableId}:${sender.toLowerCase()}`)));
-        }
         const out = this.buildPokerItem(table, sender);
         await msgCtx.reply([out]);
       }

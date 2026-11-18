@@ -387,11 +387,25 @@ describe('visible read-only startup failure', () => {
           return originalGet(k)
         })
       const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      const consoleError = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      let logged: string[] = []
       try {
         await setupApis({ app })
       } finally {
         storage.get.mockImplementation(originalGet)
+        logged = consoleError.mock.calls.map(args => args.join(' '))
+        consoleError.mockRestore()
       }
+      // The failing store is named so a stuck or failed startup can be diagnosed, and the
+      // stored text never reaches the console.
+      expect(
+        logged.some(line =>
+          line.startsWith(`[startup] ${key} could not be restored:`),
+        ),
+      ).toBe(true)
+      expect(logged.join('\n')).not.toContain('PRIVATE')
       const store = persistedStores[key]()
       if (kind === 'read-error')
         await expect(store.restored).rejects.toBe(failure)

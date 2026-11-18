@@ -20,6 +20,23 @@ import { hasOtherExtensionViews } from '../../src-bex/runtime-adapter'
 
 const EXTENSION_PEER_PING_TIMEOUT_MS = 300
 
+/**
+ * Names which saved record stopped startup. Logs only the store name and the error's name and
+ * code: a parse error's message can quote the stored text, which may be private.
+ */
+function reportRestoreFailure(store: string, error: unknown) {
+  const name = error instanceof Error ? error.name : typeof error
+  const code =
+    error && typeof error === 'object' && 'code' in error
+      ? String((error as { code: unknown }).code)
+      : undefined
+  console.error(
+    `[startup] ${store} could not be restored: ${name}${
+      code ? ` (${code})` : ''
+    }`,
+  )
+}
+
 export default boot(async ({ app }) => {
   const status = reactive({ loaded: false, setup: false })
   app.config.globalProperties.$status = status
@@ -30,24 +47,29 @@ export default boot(async ({ app }) => {
     // Observe every started restoration and wait for siblings to settle before showing failure.
     // The original store promises remain rejected; this only contains the composition failure.
     const results = await Promise.all(
-      [
-        () => useProfileStore().restored,
-        () => useContactStore().restored,
-        () => useAppearanceStore().restored,
-        () => useForumStore().restored,
-        () => useChatStore().restored,
-        () => useTopicStore().restored,
-        () => useSettingsStore().restored,
-        // Chat metadata may skip hydration; required database admission cannot be skipped.
-        () => messageStore,
-      ].map(restore =>
+      (
+        [
+          ['myProfile', () => useProfileStore().restored],
+          ['contacts', () => useContactStore().restored],
+          ['appearance', () => useAppearanceStore().restored],
+          ['forum', () => useForumStore().restored],
+          ['chats', () => useChatStore().restored],
+          ['topics', () => useTopicStore().restored],
+          ['settings', () => useSettingsStore().restored],
+          // Chat metadata may skip hydration; required database admission cannot be skipped.
+          ['messageStore', () => messageStore],
+        ] as const
+      ).map(([name, restore]) =>
         Promise.resolve()
           .then(async () => {
             await restore()
           })
           .then(
             () => true,
-            () => false,
+            (error: unknown) => {
+              reportRestoreFailure(name, error)
+              return false
+            },
           ),
       ),
     )
@@ -61,7 +83,8 @@ export default boot(async ({ app }) => {
       setStartupRestoration({ phase: 'failed', reason: 'state-restore-failed' })
       return
     }
-  } catch {
+  } catch (error) {
+    reportRestoreFailure('wallet', error)
     setStartupRestoration({ phase: 'failed', reason: 'state-restore-failed' })
     return
   }

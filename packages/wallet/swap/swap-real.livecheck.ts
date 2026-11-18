@@ -116,24 +116,33 @@ async function main(): Promise<void> {
   })
   const wallet: SwapWallet = {
     sendContractCall: params => consolidator.sendContractCall(params),
-    getContractCallFunds: async () => ({
-      mainAddress: account,
-      mainBalance: await provider.getBalance(account),
-      otherBalance: 0n,
-      mainBusy: consolidator.holdsSource(account.toLowerCase()),
-    }),
+    // As the wallet handle answers it: what the chain says of the account's own unresolved
+    // calls first (`observeMainAccount`), then whether one still holds it.
+    getContractCallFunds: async () => {
+      await consolidator.observeMainAccount()
+      return {
+        mainAddress: account,
+        mainBalance: await provider.getBalance(account),
+        otherBalance: 0n,
+        mainBusy: consolidator.holdsSource(account.toLowerCase()),
+      }
+    },
     resumeNativeOperation: id => consolidator.resumeOperation(id),
     getUnresolvedContractCalls: () => consolidator.unresolvedContractCalls(),
     reobserveNativeOperations: () => consolidator.reobservePending(),
   }
   try {
+    // What the wallet does when it opens: a call that never signed is cancelled, and one signed
+    // but never handed to anyone (a crash between signature and broadcast) is ended, never sent
+    // later (`cancelUnsignedOperations`). Only a call that left this process is resumed.
+    await consolidator.cancelUnsignedOperations()
     const unfinished = journal
       .list()
       .filter(
         row =>
           !row.cancelled &&
           row.members.some(
-            m => m.signed && !('transactionHash' in m.observation),
+            m => m.signed && m.exposed && !('transactionHash' in m.observation),
           ),
       )
     for (const row of unfinished) {

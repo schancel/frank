@@ -44,6 +44,14 @@ export interface EvmChainConfig {
    * at or above it is never reverted by the rule, so it needs no spacing. Both facts come from
    * the network's registry row (`ChainRegistryEntry`). */
   reserveBalanceWei?: bigint;
+  /**
+   * The node is a local development node (anvil) standing in for a network whose registry row
+   * carries a spend rule, and it enforces none. Test fixtures only: with it the three spend-rule
+   * fields above may be whatever rule a test exercises, or absent. Without it `createEvmChain`
+   * refuses a configuration whose spend rule differs from the registry row's
+   * (`requireRegistrySpendRule`); take the rule from `registrySpendRule`.
+   */
+  localNodeWithoutSpendRule?: boolean;
   /** Client polling policy for waiting payments (the registry row's `paymentPollIntervalMs`). */
   paymentPollIntervalMs?: number;
   /** Optional pre-reviewed transaction policy, primarily for deterministic local fixtures. */

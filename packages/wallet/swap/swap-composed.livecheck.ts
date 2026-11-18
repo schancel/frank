@@ -23,6 +23,7 @@ import { formatUnits, parseUnits } from 'ethers'
 import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
 import type { MonadRootBundle } from '../chain/active-chain'
 import { getEvmDexDeployment } from '../chain/dex-deployments'
+import { loadMonadChainConfigFromEnv } from '../chain/evm-chain'
 import { createRelayPricedEvmChain } from '../chain/evm-host'
 import { registerMonadIdentity } from '../evm-identity'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
@@ -77,17 +78,17 @@ async function main(): Promise<void> {
   const [fromSymbol, toSymbol, amount, slippage = '100'] = process.argv.slice(2)
   const chainIdentifier = 'monad-testnet'
   const deployment = getEvmDexDeployment(chainIdentifier)!
+  // The network's facts, its spend rule among them, from the registry row the app's wallet
+  // reads (`loadMonadChainConfigFromEnv`); `isTestnet` pins Monad testnet whatever the
+  // environment names. Without the spend rule its transfers at consecutive nonces are mined
+  // and reverted.
+  const network = loadMonadChainConfigFromEnv({ isTestnet: true })
+  if (network.rpcChain !== chainIdentifier)
+    throw new Error(`Expected ${chainIdentifier}, got ${network.rpcChain}`)
   const wallet = (await createRelayPricedEvmChain({
-    networkId: 'monad-testnet',
-    chainIdentifier: 'monad-testnet',
-    chainId: 10143,
-    rpcChain: 'monad-testnet',
+    ...network,
+    chainIdentifier,
     relayBaseUrl,
-    networkTag: 'MONT',
-    stampBurnAddress:
-      process.env.MONAD_STAMP_BURN_ADDRESS ??
-      '0x000000000000000000000000000000000000dEaD',
-
     defaultTopicVoteValueWei: 10n ** 12n,
     subAccountPoolSize: 2,
     walletStorageLocation: join(dir, 'state'),
@@ -146,15 +147,17 @@ async function main(): Promise<void> {
     const dex = new UniswapV4Dex(chainIdentifier, deployment, {
       reader,
       ...swapWallet,
-      sendContractCall: ({ record, ...call }) => {
-        if (record)
+      // The record goes to the wallet with the call, as the app's swap hands it: the wallet
+      // journals it with the signed call and its note to self carries it.
+      sendContractCall: params => {
+        if (params.record)
           console.log(
             `record handed to the contract send: ${JSON.stringify(
-              record,
+              params.record,
               (_k, v) => (typeof v === 'bigint' ? v.toString() : v),
             )}`,
           )
-        return swapWallet.sendContractCall(call)
+        return swapWallet.sendContractCall(params)
       },
     })
     const quote = await dex.quote({

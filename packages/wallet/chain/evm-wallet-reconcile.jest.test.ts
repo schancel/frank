@@ -128,6 +128,7 @@ beforeEach(async () => {
     networkId: "monad-testnet",
     chainId: 10143,
     rpcChain: "monad-testnet",
+    localNodeWithoutSpendRule: true,
     relayBaseUrl: "http://127.0.0.1:1",
     networkTag: "MONT",
     stampBurnAddress: "0x000000000000000000000000000000000000dEaD",

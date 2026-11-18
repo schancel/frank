@@ -19,6 +19,7 @@ import type {
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
 import { findWalletStateNetworks } from '@frank/wallet/storage/wallet-state-location'
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule'
 import { accountSession } from './session'
 import {
   RelayWalletRouteUnavailableError,
@@ -127,13 +128,9 @@ function configured(
     subAccountPoolSize: host.subAccountPoolSize,
     stampBurnAddress: host.stampBurnAddress,
     defaultTopicVoteValueWei: host.defaultTopicVoteValueWei,
-    spendSpacingBlocks: entry.spendSpacingBlocks,
-    spendRuleHead: entry.spendRuleHead,
+    // The network's spend rule, from its registry row: the one source `createEvmChain` checks.
+    ...registrySpendRule(entry.id),
     paymentPollIntervalMs: entry.paymentPollIntervalMs,
-    reserveBalanceWei:
-      entry.reserveBalanceWei === undefined
-        ? undefined
-        : BigInt(entry.reserveBalanceWei),
   }
 }
 /**

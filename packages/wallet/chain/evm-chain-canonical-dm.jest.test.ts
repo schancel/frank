@@ -321,6 +321,7 @@ async function fixture(funded = true) {
   const config: EvmChainConfig = {
     networkId: 'monad-testnet',
     rpcChain: 'monad-testnet',
+    localNodeWithoutSpendRule: true,
     chainId: 10143,
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     relayBaseUrl: RELAY,
@@ -3043,6 +3044,7 @@ describe('two typed wallets on the open directory', () => {
         chainIdentifier: 'monad-mainnet',
         networkId: 'monad-mainnet',
         rpcChain: 'monad-mainnet',
+        localNodeWithoutSpendRule: true,
         networkTag: 'MON1',
         chainId: 143,
       })

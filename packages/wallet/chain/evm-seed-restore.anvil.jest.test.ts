@@ -118,6 +118,7 @@ suite('restore from backup shares on a real EVM node (anvil)', () => {
     const config: EvmChainConfig = {
       networkId: 'monad-testnet',
       rpcChain: 'monad-testnet',
+      localNodeWithoutSpendRule: true,
       chainId: 10143,
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
       relayBaseUrl: 'https://relay-a.example',

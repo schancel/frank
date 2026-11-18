@@ -426,12 +426,19 @@ export function readSwapOutcome(params: {
   return { amountIn, amountOut }
 }
 
-/** Plain-language cause of a failed swap, from the revert data. Undefined when unrecognised. */
+/** Plain-language cause of a failed swap, from the revert data. Undefined when unrecognised.
+ * `token-transfer-failed`: Permit2 could not take the input token from the account
+ * (`TRANSFER_FROM_FAILED`): the account holds less of it than the amount, or the token refused
+ * the transfer. Neither a price move nor a missing approval. */
 export type SwapRevertReason =
   | 'slippage'
   | 'deadline'
   | 'allowance'
   | 'insufficient-funds'
+  | 'token-transfer-failed'
+
+/** `Error(string)`: the revert of a Solidity `require` with a message. */
+const ERROR_STRING_SELECTOR = '0x08c379a0'
 
 export function classifySwapRevert(
   data: string | undefined,
@@ -468,5 +475,17 @@ export function classifySwapRevert(
     is(universalRouterInterface, 'InsufficientToken')
   )
     return 'insufficient-funds'
+  if (selector === ERROR_STRING_SELECTOR) {
+    try {
+      const [message] = AbiCoder.defaultAbiCoder().decode(
+        ['string'],
+        '0x' + data.slice(10),
+      )
+      // Permit2's token transfer (solmate SafeTransferLib) failed.
+      if (message === 'TRANSFER_FROM_FAILED') return 'token-transfer-failed'
+    } catch {
+      return undefined
+    }
+  }
   return undefined
 }

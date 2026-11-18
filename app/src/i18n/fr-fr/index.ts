@@ -2328,6 +2328,8 @@ export const rawFrFR = {
       'L’échange est arrivé sur le réseau après son expiration : il a été annulé. Vous gardez vos fonds et n’avez payé que les frais de réseau.',
     resultRevertedOther:
       'Le réseau a rejeté l’échange. Vous gardez vos fonds et n’avez payé que les frais de réseau.',
+    resultRevertedTokenTransfer:
+      'Le jeton n’a pas pu être prélevé de votre portefeuille (il en détenait moins que le montant, ou le jeton a refusé le transfert). Vous gardez vos fonds et n’avez payé que les frais de réseau.',
     resultPending: 'Envoyé, pas encore confirmé',
     resultPendingDetail:
       'Le réseau n’a pas encore confirmé cet échange. Il peut encore aboutir ; son état est mis à jour dans les échanges récents. Ne le renvoyez pas.',
@@ -2358,6 +2360,10 @@ export const rawFrFR = {
       'Une transaction précédente de ce portefeuille n’est pas encore confirmée. Réessayez dans un instant.',
     errorApprovalFailed:
       'L’approbation n’a pas été confirmée : rien n’a été échangé. Réessayez.',
+    errorInsufficientToken:
+      'Ce portefeuille détient moins du jeton que vous payez que ce montant. Rien n’a été envoyé.',
+    errorTokenTransferFailed:
+      'Le jeton n’a pas pu être prélevé de ce portefeuille : il en détient moins que ce montant, ou le jeton a refusé le transfert. Rien n’a été échangé.',
     errorAccountChanged: 'Le compte a changé. Vérifiez à nouveau l’échange.',
     errorQuote: 'Impossible d’obtenir un prix du réseau. Réessayez.',
     failureDiagnostic: 'Détails de l’échec : {stage} · {code}',

@@ -22,6 +22,7 @@
  *     the `swap-record` item, under the id derived from the chain and the transaction;
  *  4. that wallet reads what the swap did from the chain by the record's transaction and route.
  */
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule'
 import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -88,6 +89,7 @@ async function openWallet(relayBaseUrl: string, dir: string, state: string) {
     chainIdentifier: CHAIN,
     chainId: 10143,
     rpcChain: CHAIN,
+    ...registrySpendRule(CHAIN),
     relayBaseUrl,
     networkTag: 'MONT',
     stampBurnAddress:

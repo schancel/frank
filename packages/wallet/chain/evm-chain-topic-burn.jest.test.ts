@@ -67,6 +67,7 @@ const CONFIG: EvmChainConfig = {
   networkId: 'monad-testnet',
   chainId: CHAIN_ID,
   rpcChain: 'monad-testnet',
+  localNodeWithoutSpendRule: true,
   relayBaseUrl: 'http://relay.test',
   networkTag: 'MONT',
   stampBurnAddress: BURN_ADDRESS,

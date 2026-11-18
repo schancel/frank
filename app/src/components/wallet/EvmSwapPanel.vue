@@ -548,6 +548,8 @@ const FAILURE_KEYS: Record<SwapFailure, string> = {
   'insufficient-native': 'swap.errorInsufficientNative',
   'account-busy': 'swap.errorAccountBusy',
   'approval-failed': 'swap.errorApprovalFailed',
+  'insufficient-token': 'swap.errorInsufficientToken',
+  'token-transfer-failed': 'swap.errorTokenTransferFailed',
 }
 
 export default defineComponent({
@@ -1466,6 +1468,8 @@ export default defineComponent({
           ? 'swap.resultRevertedSlippage'
           : o.reason === 'deadline'
           ? 'swap.resultRevertedDeadline'
+          : o.reason === 'token-transfer-failed'
+          ? 'swap.resultRevertedTokenTransfer'
           : 'swap.resultRevertedOther'
       }),
       resultDetailParams: computed(() => ({

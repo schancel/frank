@@ -8,6 +8,7 @@ import { DERIVATION_REGISTRY_ID } from "@frank/domain-roots";
 const config: EvmChainConfig = {
   networkId: "monad-testnet",
   rpcChain: "monad-testnet",
+  localNodeWithoutSpendRule: true,
   chainId: 10143,
   relayBaseUrl: "http://127.0.0.1:1",
   networkTag: "MONT",

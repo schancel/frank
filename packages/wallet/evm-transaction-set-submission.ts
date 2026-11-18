@@ -14,6 +14,7 @@ import {
 } from './storage/evm-native-operation-journal'
 import type { TransactionSetSubmission } from './transaction-set'
 import { signedTransactionSender } from './evm-signed-sender'
+import { abandonUnfundedMembers } from './evm-transaction-set-taken'
 
 function assertMember(
   actual: PreparedEvmTransaction,
@@ -85,8 +86,9 @@ function assertComplete(
   )
 }
 
-/** Chain settlement and the durable inventory projection are separate completion facts. */
-function needsRecovery(member: EvmNativeMember): boolean {
+/** Chain settlement and the durable inventory projection are separate completion facts. True
+ * while the member is undecided on the chain or its decision is not yet in the coin list. */
+export function transactionSetMemberNeedsRecovery(member: EvmNativeMember): boolean {
   return nativeMemberNeedsOwnMoveRecovery(member) || member.transactionSet?.inventoryApplied !== true || (
     member.observation.state !== 'included-success' &&
     member.observation.state !== 'included-revert' &&
@@ -120,7 +122,7 @@ export function createEvmTransactionSetSubmission(options: {
         member.observation.state === 'included-revert' ||
         (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member)),
     )
-    const pending = operation.members.filter(needsRecovery)
+    const pending = operation.members.filter(transactionSetMemberNeedsRecovery)
     const status = pending.length
       ? 'pending'
       : failed.length
@@ -143,11 +145,20 @@ export function createEvmTransactionSetSubmission(options: {
     const operation = await row(id)
     if (!operation.submissionAuthorized)
       throw new Error('Transaction set has not been authorized for submission')
-    if (!operation.members.some(needsRecovery)) return report(id)
+    if (!operation.members.some(transactionSetMemberNeedsRecovery)) return report(id)
+    // Members a reverted funding move stranded are never handed out; they are given up (only
+    // those that never left the wallet), so the set closes and their accounts are free again.
+    const settleStranded = () =>
+      abandonUnfundedMembers({
+        authority: options.preparer,
+        provider: options.provider,
+        operationId: id,
+      })
     let observationUnavailable = false
     try {
       await options.refresh()
       await options.lifecycle.observe(id, options.provider)
+      await settleStranded()
     } catch {
       // Readiness still gates unknown dependencies; unrelated signed inputs can progress.
       observationUnavailable = true
@@ -162,6 +173,7 @@ export function createEvmTransactionSetSubmission(options: {
     }
     try {
       await options.lifecycle.observe(id, options.provider)
+      await settleStranded()
     } catch {
       return report(
         id,
@@ -203,7 +215,7 @@ export function createEvmTransactionSetSubmission(options: {
       const expected = await options.preparer.readTransactionSet(id)
       const operation = await row(id)
       assertComplete(prepared, expected, operation)
-      if (operation.submissionAuthorized && !operation.members.some(needsRecovery)) return report(id)
+      if (operation.submissionAuthorized && !operation.members.some(transactionSetMemberNeedsRecovery)) return report(id)
       // Atomic journal comparison rejects any concurrent append between validation and this write.
       await options.preparer.authorizeSubmission(
         id,
@@ -222,7 +234,7 @@ export function createEvmTransactionSetSubmission(options: {
             operation.kind === 'transaction-set' &&
             operation.submissionAuthorized &&
             !operation.cancelled &&
-            operation.members.some(needsRecovery),
+            operation.members.some(transactionSetMemberNeedsRecovery),
         )
       // No wallet-wide queue: one slow operation never prevents another from entering replay.
       // Per operation, an attempt already in flight is joined rather than duplicated.

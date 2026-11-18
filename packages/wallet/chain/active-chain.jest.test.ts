@@ -58,6 +58,7 @@ describe('ActiveChain contract address helpers', () => {
       chainIdentifier: 'monad-testnet',
       networkId: 'monad-testnet',
       rpcChain: 'monad-testnet',
+      localNodeWithoutSpendRule: true,
       networkTag: 'MONT',
       isTestnet: true,
     } as any)

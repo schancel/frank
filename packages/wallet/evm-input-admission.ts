@@ -331,7 +331,14 @@ class AdmissionOwner implements EvmInputAdmission {
         const unresolved = recovery ? true : nativeMemberAbandoned(m)
           ? false
           : m.dependencies.length
-          ? m.observation.state !== 'included-success'
+          ? m.observation.state !== 'included-success' &&
+            // A transaction-set member mined and reverted (nonce consumed, fee paid, value not
+            // moved) is decided: it holds its address no longer, and the account is listed
+            // again at what the chain shows (the journal's own `canSelect` agrees). Before, a
+            // revert held the account for ever: Send max and swap funding left it out. A
+            // nonce taken by another transaction (superseded) keeps its address held here
+            // until its set settles (`abandonTakenMembers`), as before.
+            !(row.kind === 'transaction-set' && m.observation.state === 'included-revert')
           : m.observation.state !== 'included-success' &&
             m.observation.state !== 'included-revert' &&
             // Its nonce went to another transaction: it holds its address no longer (the

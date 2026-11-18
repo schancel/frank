@@ -7,6 +7,7 @@ import {
 } from '../evm-transaction-set'
 import type { PreparedEvmTransactionSet } from '../evm-transaction-set-types'
 import type { TransactionSetSubmission } from '../transaction-set'
+import { transactionSetMemberNeedsRecovery } from '../evm-transaction-set-submission'
 import {
   landedSigning,
   nativeMemberEnded,
@@ -122,12 +123,17 @@ export function createLegacyTransactionSetPayments(options: {
       )
     return members[0]!
   }
-  const failed = (row: EvmNativeOperation) =>
-    row.members.some(
-      member =>
-        member.observation.state === 'included-revert' ||
-        (nativeMemberEnded(member) && !nativeMemberNeedsOwnMoveRecovery(member)),
+  /** The transfer failed: its payment was mined and reverted, or can never land. A reverted
+   * move between the wallet's own accounts (funding or change) is not the transfer's outcome:
+   * it consumed its nonce and paid its fee, its value stayed where it was and is listed there
+   * again, and the fee is counted in `totalFeePaid`. Its payment decides the transfer. */
+  const failed = (row: EvmNativeOperation) => {
+    const payment = recipient(row)
+    return (
+      payment.observation.state === 'included-revert' ||
+      (nativeMemberEnded(payment) && !nativeMemberNeedsOwnMoveRecovery(payment))
     )
+  }
   const resumeLegacySend = async (
     operationId: string,
   ): Promise<LegacySendResult> => {
@@ -144,11 +150,9 @@ export function createLegacyTransactionSetPayments(options: {
     }
     const row = await read(operationId)
     if (failed(row)) throw new LegacyTransactionSetFailedError(row)
-    if (
-      row.members.some(
-        member => member.observation.state !== 'included-success',
-      )
-    )
+    // Every member decided on the chain (landed, reverted, or never to land) and that decision
+    // in the coin list: only then is the transfer finished.
+    if (row.members.some(transactionSetMemberNeedsRecovery))
       throw new LegacyTransactionSetPendingError(
         row,
         new Error('Original legacy payment or owned redistribution is pending'),
@@ -180,9 +184,7 @@ export function createLegacyTransactionSetPayments(options: {
           row.kind === 'transaction-set' &&
           row.preparationId?.startsWith(preparationPrefix) &&
           !row.cancelled &&
-          row.members.some(
-            member => member.observation.state !== 'included-success',
-          ),
+          row.members.some(transactionSetMemberNeedsRecovery),
       )
   return {
     isSharedLegacyOperation,

@@ -143,6 +143,7 @@ function config(
   return {
     networkId: network,
     rpcChain: network,
+    localNodeWithoutSpendRule: true,
     chainId: facts.chainId,
     networkTag: facts.networkTag,
     relayBaseUrl: 'http://127.0.0.1:1',

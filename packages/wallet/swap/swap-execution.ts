@@ -10,6 +10,7 @@ import type { EvmContractCallRecord } from '../storage/evm-native-operation-jour
 import {
   chargedGasPrice,
   estimateCallFee,
+  readTokenBalance,
   swapRevertReasonOf,
   type GasChargedOn,
   type NetworkFeeEstimate,
@@ -92,6 +93,7 @@ export type SwapFailure =
   | 'insufficient-native'
   | 'account-busy'
   | 'approval-failed'
+  | 'insufficient-token'
 
 export class SwapRefusedError extends Error {
   constructor(readonly reason: SwapFailure, message: string) {
@@ -546,6 +548,17 @@ export async function executeSwap(params: {
   // One read of the wallet's funds per swap. From here on the wallet's own check, made when
   // each call is planned, is what refuses a call the main account cannot pay for.
   const funds = await readyFunds(reader, wallet, account, timing, onProgress)
+  // A token paid in must be in the account now: otherwise the swap cannot succeed, and nothing
+  // (no consolidation, no approval) is paid for. The native coin is covered by the funds above.
+  const { tokenIn, amountIn } = plan.quote
+  if (
+    tokenIn.address !== null &&
+    (await readTokenBalance(reader, tokenIn, account)) < amountIn
+  )
+    throw new SwapRefusedError(
+      'insufficient-token',
+      `The account holds less ${tokenIn.symbol} than this swap pays in`,
+    )
   const move = params.consolidateWei ?? 0n
   let earlierFeesWei = 0n
   if (move > 0n) {

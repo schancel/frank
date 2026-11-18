@@ -161,6 +161,7 @@ const TEST_CONFIG: EvmChainConfig = {
   chainId: 10143,
   nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
   rpcChain: "monad-testnet",
+  localNodeWithoutSpendRule: true,
   relayBaseUrl: "http://relay.test",
   networkTag: "MONT",
   stampBurnAddress: "0x000000000000000000000000000000000000dEaD",

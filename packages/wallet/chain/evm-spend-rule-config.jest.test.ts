@@ -72,6 +72,26 @@ describe('the spend rule an EVM wallet signs with comes from the registry', () =
     expect(() => createEvmChain({ ...fromEnv, walletStorageLocation: false })).not.toThrow()
   })
 
+  it('taken over a configuration built for Monad, gives a peer chain its own rule, never Monad’s', () => {
+    const sepolia = getChainRegistryEntry('ethereum-sepolia')!
+    const peer = {
+      ...loadMonadChainConfigFromEnv({ isTestnet: true }),
+      walletStorageLocation: false as const,
+      chainIdentifier: sepolia.id,
+      networkId: sepolia.id,
+      rpcChain: sepolia.id,
+      chainId: BigInt(sepolia.nativeChainId!),
+      networkTag: sepolia.networkTag!,
+    }
+    // Monad's rule carried along is refused: Sepolia's row has none.
+    expect(() => createEvmChain(peer)).toThrow(/EVM spend rule mismatch for ethereum-sepolia/)
+    const own = { ...peer, ...registrySpendRule(sepolia.id) }
+    expect(own.spendSpacingBlocks).toBeUndefined()
+    expect(own.spendRuleHead).toBeUndefined()
+    expect(own.reserveBalanceWei).toBeUndefined()
+    expect(() => createEvmChain(own)).not.toThrow()
+  })
+
   it('a local development node standing in for the network says so explicitly', () => {
     expect(() => createEvmChain({ ...base, localNodeWithoutSpendRule: true })).not.toThrow()
     expect(() =>

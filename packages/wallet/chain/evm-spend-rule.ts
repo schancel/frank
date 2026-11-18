@@ -24,12 +24,19 @@ function registrySpendRuleOf(entry: {
 /**
  * The spend rule of `chainIdentifier` (Monad: 10 MON reserve, 3 blocks, counted on the finalized
  * head), from its registry row: the one source every EVM wallet configuration takes it from (the
- * app's wallet owner, `loadMonadChainConfigFromEnv`, the livechecks). Empty for a network without
- * one, or one the registry does not know.
+ * app's wallet owner, `loadMonadChainConfigFromEnv`, the livechecks). Every field is present,
+ * `undefined` where the network has none (or the registry does not know it), so spread over a
+ * configuration built for another network it replaces that network's rule instead of keeping
+ * it: Monad's rule must never travel to a peer chain such as Ethereum Sepolia.
  */
 export function registrySpendRule(chainIdentifier: string): EvmSpendRuleConfig {
   const entry = getChainRegistryEntry(chainIdentifier)
-  return entry ? registrySpendRuleOf(entry) : {}
+  const rule = entry ? registrySpendRuleOf(entry) : {}
+  return {
+    spendSpacingBlocks: rule.spendSpacingBlocks,
+    spendRuleHead: rule.spendRuleHead,
+    reserveBalanceWei: rule.reserveBalanceWei,
+  }
 }
 
 /**

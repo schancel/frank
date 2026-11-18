@@ -2150,6 +2150,8 @@ function peerEvmConfig(network = 'monad-mainnet'): EvmChainConfig {
     chainIdentifier: network,
     networkId: network,
     rpcChain: network,
+    // A stubbed node: it enforces no spend rule, and has no finalized head to count it on.
+    localNodeWithoutSpendRule: true,
     chainId: BigInt(entry.nativeChainId!),
     networkTag: entry.networkTag!,
     relayBaseUrl: 'https://relay.invalid',

@@ -131,6 +131,29 @@ suite('GenericHTLC v2 through the wallet encoders, on a real EVM node (anvil)', 
     expect(await readHtlcLock(chain, htlc, lockId)).toMatchObject({ state: 'refunded', preimage: null })
   })
 
+  it('reads a lock whose refund address is its recipient, as htlc-round opens them', async () => {
+    // Not something the wallet encoder writes, but the contract holds such locks.
+    const contract = new Contract(htlc, GenericHTLCArtifact.abi, dev)
+    const terms: EvmHtlcTerms = {
+      recipient: dev.address,
+      refundAddress: dev.address,
+      token: HTLC_NATIVE_TOKEN,
+      amount: 10n ** 14n,
+      hashLock,
+      expiresAt: (await now()) + 3600n,
+    }
+    await (await contract.lock(...Object.values(terms), { value: terms.amount })).wait()
+    const lockId = htlcLockId(dev.address, terms)
+    await send(encodeHtlcWithdraw(htlc, lockId, preimage))
+    expect(await readHtlcLock(chain, htlc, lockId)).toEqual({
+      lockId,
+      sender: dev.address,
+      ...terms,
+      state: 'withdrawn',
+      preimage,
+    })
+  })
+
   it('reads a lock that does not exist as null', async () => {
     expect(await readHtlcLock(chain, htlc, '0x' + 'ee'.repeat(32))).toBeNull()
   })

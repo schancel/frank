@@ -88,7 +88,7 @@ contract GenericHTLC {
 
     event PaymentDeferred(address indexed to, address indexed token, uint256 amount);
 
-    event OwedClaimed(address indexed to, address indexed token, uint256 amount);
+    event OwedClaimed(address indexed creditor, address indexed token, address to, uint256 amount);
 
     error LockAlreadyExists();
     error LockNotFound();
@@ -220,6 +220,7 @@ contract GenericHTLC {
             l.state = State.Withdrawn;
             l.preimage = preimage;
             totalPool += l.amount;
+            emit Withdrawn(lockIds[i], l.recipient, preimage);
         }
 
         uint256 totalPayout = 0;
@@ -250,20 +251,22 @@ contract GenericHTLC {
     }
 
     /**
-     * @notice Pays the caller everything owed to it in `token` (address(0): native coin), with all
-     * the gas the call has. Reverts, keeping the credit, if the payment fails.
+     * @notice Pays everything owed to the caller in `token` (address(0): native coin) to `to`, with
+     * all the gas the call has. `to` may be the caller itself, or another address for a caller
+     * that cannot receive the asset. Reverts, keeping the credit, if the payment fails.
      */
-    function claimOwed(address token) external nonReentrant {
+    function claimOwed(address token, address to) external nonReentrant {
+        if (to == address(0)) revert InvalidZeroAddress();
         uint256 amount = owed[msg.sender][token];
         if (amount == 0) revert NothingOwed();
         owed[msg.sender][token] = 0;
         if (token == address(0)) {
-            (bool ok, ) = payable(msg.sender).call{value: amount}("");
+            (bool ok, ) = payable(to).call{value: amount}("");
             if (!ok) revert TransferFailed();
         } else {
-            if (!_tokenTransfer(token, msg.sender, amount)) revert TransferFailed();
+            if (!_tokenTransfer(token, to, amount)) revert TransferFailed();
         }
-        emit OwedClaimed(msg.sender, token, amount);
+        emit OwedClaimed(msg.sender, token, to, amount);
     }
 
     function _requireOpen(Lock storage l) private view {

@@ -163,7 +163,7 @@ describe('GenericHTLC v2 on a local EVM node', () => {
         'PAYMENT_GAS()',
         'batchDistribute(bytes32[],(address,uint256)[],bytes32)',
         'batchWithdraw(bytes32[],bytes32)',
-        'claimOwed(address)',
+        'claimOwed(address,address)',
         'lock(address,address,address,uint256,bytes32,uint64)',
         'lockIdOf(address,address,address,address,uint256,bytes32,uint64)',
         'locks(bytes32)',
@@ -435,6 +435,31 @@ describe('GenericHTLC v2 on a local EVM node', () => {
       await expectRevert(claim(htlcAddress, NATIVE), 'NothingOwed')
     })
 
+    it('lets a creditor that cannot take coin direct its credit to another address', async () => {
+      const rejecting = await deploy(testContract('RejectingRecipient'), stranger)
+      const rejectingAddress = await rejecting.getAddress()
+      const { lockId, terms: t } = await lockNative({ recipient: rejectingAddress })
+      await mined(as(stranger).withdraw(lockId, preimage))
+      const claimTo = (rejecting.connect(stranger) as ethers.Contract).claimTo
+
+      // Directed to itself (still refusing) it fails and keeps the credit; to nowhere is refused.
+      await expectRevert(claimTo(htlcAddress, NATIVE, rejectingAddress), 'TransferFailed')
+      await expectRevert(claimTo(htlcAddress, NATIVE, NATIVE), 'InvalidZeroAddress')
+      expect(await htlc.owed(rejectingAddress, NATIVE)).toBe(t.amount)
+
+      const elsewhere = ethers.Wallet.createRandom().address
+      const receipt = await mined(claimTo(htlcAddress, NATIVE, elsewhere))
+      expect(await balance(elsewhere)).toBe(t.amount)
+      expect(await htlc.owed(rejectingAddress, NATIVE)).toBe(0n)
+      const claimed = receipt.logs
+        .filter(log => log.address === htlcAddress)
+        .map(log => htlc.interface.parseLog(log))
+        .find(parsed => parsed?.name === 'OwedClaimed')
+      expect([...claimed!.args]).toEqual([rejectingAddress, NATIVE, elsewhere, t.amount])
+      // Someone else cannot spend that credit.
+      await expectRevert(as(stranger).claimOwed(NATIVE, stranger.address), 'NothingOwed')
+    })
+
     it('defers a token payment the token refuses', async () => {
       const tokenAddress = await token.getAddress()
       const { lockId, terms: t } = await lockToken()
@@ -443,10 +468,10 @@ describe('GenericHTLC v2 on a local EVM node', () => {
       expect(deferred(receipt)).toEqual([{ to: recipient.address, token: tokenAddress, amount: t.amount }])
       expect(await htlc.owed(recipient.address, tokenAddress)).toBe(t.amount)
 
-      await expectRevert(as(recipient).claimOwed(tokenAddress), 'TransferFailed')
+      await expectRevert(as(recipient).claimOwed(tokenAddress, recipient.address), 'TransferFailed')
       await mined((token.connect(sender) as ethers.Contract).setBlocked(recipient.address, false))
       const before = await token.balanceOf(recipient.address)
-      await mined(as(recipient).claimOwed(tokenAddress))
+      await mined(as(recipient).claimOwed(tokenAddress, recipient.address))
       expect((await token.balanceOf(recipient.address)) - before).toBe(t.amount)
       expect(await htlc.owed(recipient.address, tokenAddress)).toBe(0n)
     })
@@ -566,7 +591,7 @@ describe('GenericHTLC v2 on a local EVM node', () => {
       const winnerBefore = await balance(stranger)
       const secondBefore = await balance(refundTo)
 
-      await mined(
+      const receipt = await mined(
         as(arbiter).batchDistribute(
           [a.lockId, b.lockId],
           [
@@ -576,6 +601,16 @@ describe('GenericHTLC v2 on a local EVM node', () => {
           preimage,
         ),
       )
+
+      // Each lock reports its withdraw like the other withdraw paths, then the split.
+      const events = receipt.logs
+        .map(log => htlc.interface.parseLog(log))
+        .filter(parsed => parsed?.name === 'Withdrawn' || parsed?.name === 'BatchDistributed')
+      expect(events.map(e => e!.name)).toEqual(['Withdrawn', 'Withdrawn', 'BatchDistributed'])
+      expect(events.slice(0, 2).map(e => [...e!.args])).toEqual([
+        [a.lockId, arbiter.address, preimage],
+        [b.lockId, arbiter.address, preimage],
+      ])
 
       expect((await balance(stranger)) - winnerBefore).toBe(AMOUNT * 3n)
       expect((await balance(refundTo)) - secondBefore).toBe(AMOUNT)

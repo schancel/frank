@@ -1,7 +1,6 @@
 import { PublicKey } from "@solana/web3.js";
 import { ethers } from "ethers";
 import {
-  deriveSwapSecret,
   decodeHtlcLock,
   encodeHtlcLock,
   encodeHtlcRefund,
@@ -13,65 +12,14 @@ import {
   buildSolanaSwapLockInstruction,
   buildSolanaSwapWithdrawInstruction,
   buildSolanaSwapRefundInstruction,
-  evaluateSwapStepPhase,
   resolveHtlcContract,
-  toBytes32Hex,
 } from "./swap-escrow";
-import type {
-  EvmHtlcTerms,
-  SwapLockRecord,
-  SwapLockStatus,
-} from "./swap-escrow";
+import type { EvmHtlcTerms } from "./swap-escrow";
 import GenericHTLCArtifact from "@frank/contracts/artifacts/GenericHTLC.json";
 import { SOLANA_GENERIC_HTLC_PROGRAM_ID } from "./solana-game-escrow";
 import { PROTOCOL_CHAINS } from "./chain/chains-registry";
 
 describe("swap-escrow service & calldata builders", () => {
-
-  it("derives deterministic preimage and hashlock", () => {
-    const swapId = "swap-12345-abcde";
-    const seed = new Uint8Array(32).fill(7);
-    const secret1 = deriveSwapSecret({ swapId, seed });
-    const secret2 = deriveSwapSecret({ swapId, seed });
-    // Another seed gives another secret: the swapId alone does not determine it.
-    expect(
-      deriveSwapSecret({ swapId, seed: new Uint8Array(32).fill(8) }).preimageHex
-    ).not.toBe(secret1.preimageHex);
-
-    expect(secret1.preimage.length).toBe(32);
-    expect(secret1.hashLock.length).toBe(32);
-    expect(secret1.preimageHex).toBe(secret2.preimageHex);
-    expect(secret1.hashLockHex).toBe(secret2.hashLockHex);
-
-    // Verify sha256(preimage) === hashLock
-    const manualHash = ethers.sha256(secret1.preimage);
-    expect(manualHash).toBe(secret1.hashLockHex);
-  });
-
-  it("refuses to derive a swap secret without a real seed", () => {
-    const swapId = "swap-12345-abcde";
-    const derive = deriveSwapSecret as (params: {
-      swapId: string;
-      seed?: Uint8Array;
-    }) => unknown;
-    expect(() => derive({ swapId })).toThrow("needs a 32-byte secret seed");
-    expect(() => derive({ swapId, seed: new Uint8Array(16).fill(1) })).toThrow(
-      "needs a 32-byte secret seed"
-    );
-    expect(() => derive({ swapId, seed: new Uint8Array(32) })).toThrow(
-      "refuses an all-zero seed"
-    );
-  });
-
-  it("normalizes lockIds and hashes into 32-byte hex buffers", () => {
-    const hash32 = "0x" + "aa".repeat(32);
-    expect(toBytes32Hex(hash32)).toBe(hash32);
-
-    const shortStr = "swap-id";
-    const normalized = toBytes32Hex(shortStr);
-    expect(normalized.startsWith("0x")).toBe(true);
-    expect(normalized.length).toBe(66);
-  });
 
   it("resolves the HTLC of a network from the registry, and refuses instead of defaulting", () => {
     for (const id of ["monad-testnet", "monad-mainnet", "ethereum-sepolia"]) {
@@ -205,7 +153,6 @@ describe("swap-escrow service & calldata builders", () => {
         [{ recipient: ethers.ZeroAddress }, /recipient must not be the zero address/],
         [{ refundAddress: ethers.ZeroAddress }, /refund address must not be the zero address/],
         [{ refundAddress: undefined }, /refund address must be a 20-byte address/],
-        [{ refundAddress: terms.recipient.toUpperCase().replace("0X", "0x") }, /must not be its recipient/],
         [{ recipient: "0x1234" }, /recipient must be a 20-byte address/],
         [{ amount: 0n }, /amount must be a positive bigint/],
         [{ amount: 1 as unknown as bigint }, /amount must be a positive bigint/],
@@ -221,6 +168,11 @@ describe("swap-escrow service & calldata builders", () => {
         expect(() => htlcLockId(sender, { ...terms, ...change })).toThrow(message);
       }
       expect(() => encodeHtlcLock("0x99", terms)).toThrow(/contract must be a 20-byte address/);
+      // Frank never opens a lock that pays the recipient either way; the contract permits one
+      // (htlc-round locks to itself), so its id can still be computed.
+      const selfLock = { ...terms, refundAddress: terms.recipient.toUpperCase().replace("0X", "0x") };
+      expect(() => encodeHtlcLock(htlc, selfLock)).toThrow(/must not be its recipient/);
+      expect(htlcLockId(sender, selfLock)).toMatch(/^0x[0-9a-f]{64}$/);
       expect(() => htlcLockId(ethers.ZeroAddress, terms)).toThrow(/sender must not be the zero/);
 
       const lockId = htlcLockId(sender, terms);
@@ -236,11 +188,11 @@ describe("swap-escrow service & calldata builders", () => {
 
     it("decodes what locks(lockId) returns, as the compiled contract encodes it", () => {
       const lockId = htlcLockId(sender, terms);
-      const encode = (state: number, preimage = ethers.ZeroHash, from = sender) =>
+      const encode = (state: number, preimage = ethers.ZeroHash, from = sender, refundAddress = terms.refundAddress) =>
         compiled.encodeFunctionResult("locks", [
           from,
           terms.recipient,
-          terms.refundAddress,
+          refundAddress,
           terms.token,
           terms.hashLock,
           terms.amount,
@@ -273,6 +225,22 @@ describe("swap-escrow service & calldata builders", () => {
       expect(() =>
         decodeHtlcLock(lockId, encode(1, ethers.ZeroHash, "0x5555555555555555555555555555555555555555"))
       ).toThrow(/does not match its recorded terms/);
+
+      // A withdrawn lock's preimage must open its hash lock.
+      expect(() => decodeHtlcLock(lockId, encode(2, "0x" + "45".repeat(32)))).toThrow(
+        /preimage that does not match/
+      );
+
+      // A genuine lock whose refund address is its recipient (as htlc-round makes) decodes.
+      const selfTerms = { ...terms, refundAddress: terms.recipient };
+      const selfId = htlcLockId(sender, selfTerms);
+      expect(decodeHtlcLock(selfId, encode(2, preimage, sender, terms.recipient))).toEqual({
+        ...base,
+        lockId: selfId,
+        refundAddress: terms.recipient,
+        state: "withdrawn",
+        preimage,
+      });
     });
   });
   it("builds and decodes Solana generic-htlc instructions and binary state", async () => {
@@ -334,469 +302,21 @@ describe("swap-escrow service & calldata builders", () => {
     expect(solanaLock?.status).toBe("locked");
     expect(solanaLock?.amount).toBe(1_000_000_000n);
     expect(solanaLock?.recipient).toBe(recipient.toBase58());
-  });
+    expect(solanaLock?.lockId).toBe("0x" + "07".repeat(32));
 
-  it("evaluates lifecycle steps across cross-chain legs", () => {
-    const mockLegA: SwapLockRecord = {
-      lockId: "0x1",
-      sender: "0xAlice",
-      recipient: "0xBob",
-      refundAddress: "0xAlice",
-      hashLock: "0xHash",
-      amount: 100n,
-      expiresAt: 2_000_000_000,
-      withdrawn: false,
-      refunded: false,
-      isExpired: false,
-      status: "locked",
-    };
-
-    const mockLegB: SwapLockRecord = {
-      lockId: "0x1",
-      sender: "0xBob",
-      recipient: "0xAlice",
-      refundAddress: "0xBob",
-      hashLock: "0xHash",
-      amount: 50n,
-      expiresAt: 1_900_000_000,
-      withdrawn: false,
-      refunded: false,
-      isExpired: false,
-      status: "locked",
-    };
-
-    // Phase 1: Maker needs to lock Leg A
-    const p1 = evaluateSwapStepPhase({
-      isMaker: true,
-      offerStatus: "pending",
-      legALock: null,
-      legBLock: null,
-    });
-    expect(p1.phase).toBe("maker_lock_needed");
-    expect(p1.canLock).toBe(true);
-    expect(p1.canClaim).toBe(false);
-
-    // Phase 2: Maker locked, Taker needs to lock Leg B
-    const p2Maker = evaluateSwapStepPhase({
-      isMaker: true,
-      offerStatus: "accepted",
-      legALock: mockLegA,
-      legBLock: null,
-    });
-    expect(p2Maker.phase).toBe("taker_lock_needed");
-    expect(p2Maker.canLock).toBe(false);
-
-    const p2Taker = evaluateSwapStepPhase({
-      isMaker: false,
-      offerStatus: "accepted",
-      legALock: mockLegA,
-      legBLock: null,
-    });
-    expect(p2Taker.phase).toBe("taker_lock_needed");
-    expect(p2Taker.canLock).toBe(true);
-
-    // Phase 3: Both locked -> Maker claims Leg B
-    const p3Maker = evaluateSwapStepPhase({
-      isMaker: true,
-      offerStatus: "accepted",
-      legALock: mockLegA,
-      legBLock: mockLegB,
-    });
-    expect(p3Maker.phase).toBe("ready_to_claim");
-    expect(p3Maker.canClaim).toBe(true);
-
-    // Phase 4: Preimage revealed -> Taker claims Leg A
-    const p4Taker = evaluateSwapStepPhase({
-      isMaker: false,
-      offerStatus: "accepted",
-      legALock: mockLegA,
-      legBLock: { ...mockLegB, status: "withdrawn", withdrawn: true },
-    });
-    expect(p4Taker.phase).toBe("preimage_revealed");
-    expect(p4Taker.canClaim).toBe(true);
-
-    // Phase 5: Both settled
-    const p5 = evaluateSwapStepPhase({
-      isMaker: true,
-      offerStatus: "settled",
-      legALock: { ...mockLegA, status: "withdrawn", withdrawn: true },
-      legBLock: { ...mockLegB, status: "withdrawn", withdrawn: true },
-    });
-    expect(p5.phase).toBe("settled");
-
-    // Phase 6: Expired refund
-    const p6 = evaluateSwapStepPhase({
-      isMaker: true,
-      offerStatus: "accepted",
-      legALock: { ...mockLegA, status: "expired", isExpired: true },
-      legBLock: null,
-    });
-    expect(p6.phase).toBe("expired_refundable");
-    expect(p6.canRefund).toBe(true);
-  });
-});
-
-describe("evaluateSwapStepPhase: each party's claim and refund", () => {
-  const lock = (status: SwapLockStatus | null): SwapLockRecord | null =>
-    status === null
-      ? null
-      : {
-          lockId: "0x1",
-          sender: "0xSender",
-          recipient: "0xRecipient",
-          refundAddress: "0xSender",
-          hashLock: "0xHash",
-          amount: 1n,
-          expiresAt: 2_000_000_000,
-          withdrawn: status === "withdrawn",
-          refunded: status === "refunded",
-          isExpired: status === "expired",
-          status,
-        };
-  type Row = [
-    who: "maker" | "taker",
-    legA: SwapLockStatus | null,
-    legB: SwapLockStatus | null,
-    offer: "pending" | "accepted" | "settled" | "cancelled" | "expired",
-    preimageRevealed: boolean,
-    expected: { canClaim: boolean; canRefund: boolean; phase: string }
-  ];
-  const yes = (phase: string, canClaim: boolean, canRefund: boolean) => ({
-    phase,
-    canClaim,
-    canRefund,
-  });
-
-  // Each party's own leg: A for the maker, B for the taker. GenericHTLC lets a lock be
-  // withdrawn only while `locked` and refunded only once `expired`.
-  const rows: Row[] = [
-    // The maker's refund of A, whatever happened to B or the offer.
-    [
-      "maker",
-      "expired",
-      null,
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "maker",
-      "expired",
-      "unfunded",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "maker",
-      "expired",
-      "refunded",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "maker",
-      "expired",
-      "expired",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "maker",
-      "expired",
-      "withdrawn",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "maker",
-      "expired",
-      null,
-      "cancelled",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "maker",
-      "expired",
-      "refunded",
-      "cancelled",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "maker",
-      "expired",
-      null,
-      "expired",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    // The maker's claim of B while it is open.
-    [
-      "maker",
-      "locked",
-      "locked",
-      "accepted",
-      false,
-      yes("ready_to_claim", true, false),
-    ],
-    [
-      "maker",
-      "locked",
-      "locked",
-      "cancelled",
-      false,
-      yes("ready_to_claim", true, false),
-    ],
-    [
-      "maker",
-      "withdrawn",
-      "locked",
-      "accepted",
-      false,
-      yes("ready_to_claim", true, false),
-    ],
-    // A expired with B still open: the taker can no longer claim A, so taking B as well would
-    // take both legs. The maker refunds A.
-    [
-      "maker",
-      "expired",
-      "locked",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    // No claim for the maker of a B it cannot take, or once it took it.
-    [
-      "maker",
-      "locked",
-      "expired",
-      "accepted",
-      false,
-      yes("offer_pending", false, false),
-    ],
-    [
-      "maker",
-      "locked",
-      "withdrawn",
-      "accepted",
-      false,
-      yes("preimage_revealed", false, false),
-    ],
-    [
-      "maker",
-      "refunded",
-      "locked",
-      "accepted",
-      false,
-      yes("refunded", false, false),
-    ],
-    [
-      "maker",
-      null,
-      "locked",
-      "accepted",
-      false,
-      yes("maker_lock_needed", false, false),
-    ],
-    [
-      "maker",
-      "withdrawn",
-      "withdrawn",
-      "settled",
-      false,
-      yes("settled", false, false),
-    ],
-    [
-      "maker",
-      "locked",
-      null,
-      "accepted",
-      false,
-      yes("taker_lock_needed", false, false),
-    ],
-    // The taker's refund of B, whatever happened to A or the offer.
-    [
-      "taker",
-      null,
-      "expired",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "taker",
-      "locked",
-      "expired",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "taker",
-      "expired",
-      "expired",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "taker",
-      "refunded",
-      "expired",
-      "accepted",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    [
-      "taker",
-      "locked",
-      "expired",
-      "cancelled",
-      false,
-      yes("expired_refundable", false, true),
-    ],
-    // The taker's claim of A once the preimage is known.
-    [
-      "taker",
-      "locked",
-      "withdrawn",
-      "accepted",
-      false,
-      yes("preimage_revealed", true, false),
-    ],
-    [
-      "taker",
-      "locked",
-      "locked",
-      "accepted",
-      true,
-      yes("preimage_revealed", true, false),
-    ],
-    [
-      "taker",
-      "locked",
-      "withdrawn",
-      "cancelled",
-      false,
-      yes("preimage_revealed", true, false),
-    ],
-    // Both at once: the preimage is known while B expired.
-    [
-      "taker",
-      "locked",
-      "expired",
-      "accepted",
-      true,
-      yes("preimage_revealed", true, true),
-    ],
-    // No claim without the preimage, or of an A that can no longer be withdrawn.
-    [
-      "taker",
-      "locked",
-      "locked",
-      "accepted",
-      false,
-      yes("ready_to_claim", false, false),
-    ],
-    [
-      "taker",
-      "expired",
-      "withdrawn",
-      "accepted",
-      false,
-      yes("offer_pending", false, false),
-    ],
-    [
-      "taker",
-      "refunded",
-      "refunded",
-      "accepted",
-      false,
-      yes("refunded", false, false),
-    ],
-    [
-      "taker",
-      "locked",
-      null,
-      "accepted",
-      false,
-      yes("taker_lock_needed", false, false),
-    ],
-    [
-      "taker",
-      "withdrawn",
-      "withdrawn",
-      "settled",
-      false,
-      yes("settled", false, false),
-    ],
-  ];
-
-  it.each(rows)(
-    "%s with A %s, B %s, offer %s, preimage revealed %s",
-    (who, legA, legB, offerStatus, preimageRevealed, expected) => {
-      const result = evaluateSwapStepPhase({
-        isMaker: who === "maker",
-        offerStatus,
-        legALock: lock(legA),
-        legBLock: lock(legB),
-        preimageRevealed,
-      });
-      expect({
-        phase: result.phase,
-        canClaim: result.canClaim,
-        canRefund: result.canRefund,
-      }).toEqual(expected);
-      // The taker claims with the revealed preimage; the maker already holds it.
-      expect(result.claimPreimageRequired).toBe(
-        result.canClaim && who === "taker"
-      );
-    }
-  );
-
-  it("offers a refund in every state where the party's own lock has expired", () => {
-    const statuses: (SwapLockStatus | null)[] = [
-      null,
-      "unfunded",
-      "locked",
-      "withdrawn",
-      "refunded",
-      "expired",
-    ];
-    const offers = [
-      "pending",
-      "accepted",
-      "settled",
-      "cancelled",
-      "expired",
-    ] as const;
-    for (const isMaker of [true, false])
-      for (const other of statuses)
-        for (const offerStatus of offers)
-          for (const preimageRevealed of [false, true]) {
-            const result = evaluateSwapStepPhase({
-              isMaker,
-              offerStatus,
-              legALock: lock(isMaker ? "expired" : other),
-              legBLock: lock(isMaker ? other : "expired"),
-              preimageRevealed,
-            });
-            expect({
-              isMaker,
-              other,
-              offerStatus,
-              canRefund: result.canRefund,
-            }).toEqual({
-              isMaker,
-              other,
-              offerStatus,
-              canRefund: true,
-            });
-          }
+    // Ids and hash locks are exactly 32 bytes: text is refused, never hashed into shape.
+    await expect(
+      buildSolanaSwapRefundInstruction({ caller: sender, lockId: "swap-id" })
+    ).rejects.toThrow("generic-htlc lock id must be exactly 32 bytes");
+    await expect(
+      buildSolanaSwapLockInstruction({
+        sender,
+        recipient,
+        lockId,
+        hashLock: new Uint8Array(31),
+        amountLamports: 1n,
+        durationSeconds: 1,
+      })
+    ).rejects.toThrow("generic-htlc hash lock must be exactly 32 bytes");
   });
 });

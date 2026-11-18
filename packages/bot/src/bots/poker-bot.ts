@@ -17,7 +17,6 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
-  InterruptedMessage,
   NewUserEvent,
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
@@ -38,7 +37,6 @@ import {
 } from "@frank/wallet/message-item-plugins/poker";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
-import { Outbox } from "./money";
 import {
   tableHtlcEscrow,
   TABLE_SETTLEMENT_UNSUPPORTED,
@@ -62,8 +60,6 @@ export interface PendingPayoutRecord {
   winnerAddress: string;
   amountChips: number;
   amountWei: string;
-  status: "pending" | "paid" | "failed";
-  txHash?: string;
   recordedAtMs: number;
 }
 
@@ -88,27 +84,10 @@ async function writeBotState(
 export async function recordPendingPayout(
   ctx: BotContext | undefined,
   record: PendingPayoutRecord,
-  outbox?: Outbox,
 ): Promise<PendingPayoutRecord> {
-  const key = `payout:pending:${record.payoutId}`;
-  await writeBotState(ctx, key, JSON.stringify(record));
-  if (
-    outbox &&
-    ctx?.state &&
-    typeof (ctx.state as { batch?: unknown }).batch === "function" &&
-    typeof (ctx.state as { get?: unknown }).get === "function"
-  ) {
-    await outbox.owe(ctx, `payout:${record.payoutId}`, {
-      to: record.winnerAddress,
-      items: [
-        {
-          type: "text",
-          text: `Poker table ${record.tableId} hand #${record.handNumber} payout: ${record.amountChips} chips.`,
-        },
-      ],
-      valueWei: BigInt(record.amountWei),
-    });
-  }
+  // Only a record of what was won: table escrow is unsupported (./table-htlc), so nothing is
+  // owed or sent from the bot's wallet for it.
+  await writeBotState(ctx, `payout:pending:${record.payoutId}`, JSON.stringify(record));
   return record;
 }
 
@@ -120,18 +99,12 @@ export class PokerBot implements FrankBotDefinition {
   readonly defaultIdentityPath =
     process.env.POKER_BOT_IDENTITY_JSON ?? "/tmp/poker-bot-identity.json";
 
-  private readonly outbox = new Outbox("poker");
-  readonly schedules = [this.outbox.schedule];
   private readonly tables = new Map<string, PokerGameState>();
   private readonly tableEscrows = new Map<string, TableEscrowRecord>();
   private readonly pendingPayouts = new Map<string, PendingPayoutRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
-
-  onInterrupted(message: InterruptedMessage, ctx: BotContext): Promise<void> {
-    return this.outbox.interrupted(ctx, message);
-  }
 
   getPendingPayouts(): ReadonlyMap<string, PendingPayoutRecord> {
     return this.pendingPayouts;
@@ -152,7 +125,7 @@ export class PokerBot implements FrankBotDefinition {
     const totalBuyInWei =
       POKER_DEFAULT_BUY_IN_WEI * BigInt(Math.max(1, table.players.length));
 
-    // 1. Durably record every winner's pending payout BEFORE any send or announcement
+    // 1. Record what each winner won before the announcement
     for (const w of winners) {
       const shareWei =
         totalPotChips > 0
@@ -166,15 +139,14 @@ export class PokerBot implements FrankBotDefinition {
         winnerAddress: w.address,
         amountChips: w.amount,
         amountWei: shareWei.toString(),
-        status: "pending",
         recordedAtMs: Date.now(),
       };
       this.pendingPayouts.set(payoutId, record);
-      await recordPendingPayout(ctx, record, this.outbox);
+      await recordPendingPayout(ctx, record);
     }
 
     // 2. Table escrow is not wired to GenericHTLC (./table-htlc): nothing is sent and no
-    //    payout is marked paid. The pending records above stay pending.
+    //    value moves. The records above only say what was won.
     return TABLE_SETTLEMENT_UNSUPPORTED;
   }
 

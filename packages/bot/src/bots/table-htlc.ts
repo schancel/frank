@@ -31,7 +31,7 @@ export interface TableHtlcEscrow {
 }
 
 /** What settling a table gives until its escrow is wired to GenericHTLC (the open decisions
- * above): an explicit unsupported result. No transaction is sent and no payout is paid. */
+ * above): an explicit unsupported result. No transaction is sent and no value moves. */
 export interface TableSettlementUnsupported {
   readonly status: "unsupported";
   readonly reason: string;
@@ -40,7 +40,7 @@ export interface TableSettlementUnsupported {
 export const TABLE_SETTLEMENT_UNSUPPORTED: TableSettlementUnsupported = Object.freeze({
   status: "unsupported",
   reason:
-    "table escrow is not supported yet. No buy-in was locked, so no pot moves on chain and no payout is marked paid.",
+    "table escrow is not supported yet. No buy-in was locked, so no pot moves and nothing is paid out.",
 });
 
 export function tableHtlcEscrow(preimage: Uint8Array): TableHtlcEscrow {

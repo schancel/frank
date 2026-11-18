@@ -1,6 +1,7 @@
 import { PokerBot } from './poker-bot'
 import { commitSeed, foldPokerState } from '@frank/wallet/message-item-plugins/poker'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
+import { harness } from './bot-harness.testutil'
 
 
 describe("Texas Hold'em Poker Bot Coordinator", () => {
@@ -84,23 +85,26 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(replyFold.mock.calls[0][0][0].text).toContain(otherAddress.slice(0, 8))
   })
 
-  it('settling is explicitly unsupported: no transaction is sent and no payout is marked paid', async () => {
+  it('settling a table moves no value, on a real-shaped state store (get/put/batch)', async () => {
+    // The unit harness's in-memory store has `get` and `batch`, as the host's does: an outbox
+    // payout would be owed into it and sent from the bot's wallet.
+    const h = harness()
     const mockSendTx = jest.fn(async () => ({ txHash: '0xsettletx999' }))
-    mockBotCtx.sendTransaction = mockSendTx
+    const ctx = { ...h.ctx, sendTransaction: mockSendTx } as unknown as BotContext
 
     // 1. Create table
     await bot.onMessage({
       senderAddress: '0xAlice',
       items: [{ type: 'text', text: '/poker create' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // 2. Bob joins
     await bot.onMessage({
       senderAddress: '0xBob',
       items: [{ type: 'text', text: '/poker join' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // 3. Start hand
     const replyStart = jest.fn()
@@ -108,7 +112,7 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       senderAddress: '0xAlice',
       items: [{ type: 'text', text: '/poker start' }],
       reply: replyStart,
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     const firstActAddress = replyStart.mock.calls[0][0][1].activePlayer
 
@@ -118,18 +122,16 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       senderAddress: firstActAddress,
       items: [{ type: 'text', text: '/fold' }],
       reply: replyFold,
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
-    // Table escrow is not wired to GenericHTLC: nothing is sent, whatever the network.
+    // Table escrow is not wired to GenericHTLC: no transaction, no message, nothing owed.
     expect(mockSendTx).not.toHaveBeenCalled()
-    const payouts = [...bot.getPendingPayouts().values()]
-    expect(payouts.length).toBeGreaterThan(0)
-    for (const payout of payouts) {
-      expect(payout.status).toBe('pending')
-      expect(payout.txHash).toBeUndefined()
-    }
-    const putKeys = ((mockBotCtx.state as any).put as jest.Mock).mock.calls.map(c => c[0] as string)
-    expect(putKeys.some(k => k.startsWith('payout:paid:'))).toBe(false)
+    expect(h.sent).toEqual([])
+    expect(bot.schedules).toBeUndefined()
+    expect(bot.getPendingPayouts().size).toBeGreaterThan(0)
+    const keys = [...h.data.keys()]
+    expect(keys.length).toBeGreaterThan(0)
+    for (const key of keys) expect(key).toMatch(/^payout:pending:/)
 
     const textReply = replyFold.mock.calls[0][0][0].text
     expect(textReply).toContain('HAND SETTLED')

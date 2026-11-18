@@ -17,7 +17,6 @@ import type {
   BotProfile,
   BotContext,
   BotMessageContext,
-  InterruptedMessage,
   NewUserEvent,
 } from "@frank/bot-framework";
 import { GAME_MAX_REPLIES_PER_PEER } from "@frank/bot-framework";
@@ -39,7 +38,6 @@ import {
 } from "@frank/wallet/message-item-plugins/liars-dice";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
-import { Outbox } from "./money";
 import {
   tableHtlcEscrow,
   TABLE_SETTLEMENT_UNSUPPORTED,
@@ -61,8 +59,6 @@ export interface PendingPayoutRecord {
   roundNumber: number;
   winnerAddress: string;
   amountWei: string;
-  status: "pending" | "paid" | "failed";
-  txHash?: string;
   recordedAtMs: number;
 }
 
@@ -87,27 +83,10 @@ async function writeBotState(
 export async function recordPendingPayout(
   ctx: BotContext | undefined,
   record: PendingPayoutRecord,
-  outbox?: Outbox,
 ): Promise<PendingPayoutRecord> {
-  const key = `payout:pending:${record.payoutId}`;
-  await writeBotState(ctx, key, JSON.stringify(record));
-  if (
-    outbox &&
-    ctx?.state &&
-    typeof (ctx.state as { batch?: unknown }).batch === "function" &&
-    typeof (ctx.state as { get?: unknown }).get === "function"
-  ) {
-    await outbox.owe(ctx, `payout:${record.payoutId}`, {
-      to: record.winnerAddress,
-      items: [
-        {
-          type: "text",
-          text: `Liar's Dice table ${record.tableId} payout: ${record.amountWei} wei.`,
-        },
-      ],
-      valueWei: BigInt(record.amountWei),
-    });
-  }
+  // Only a record of what was won: table escrow is unsupported (./table-htlc), so nothing is
+  // owed or sent from the bot's wallet for it.
+  await writeBotState(ctx, `payout:pending:${record.payoutId}`, JSON.stringify(record));
   return record;
 }
 
@@ -119,18 +98,12 @@ export class LiarsDiceBot implements FrankBotDefinition {
   readonly defaultIdentityPath =
     process.env.LIARS_DICE_BOT_IDENTITY_JSON ?? "/tmp/liars-dice-bot-identity.json";
 
-  private readonly outbox = new Outbox("liars-dice");
-  readonly schedules = [this.outbox.schedule];
   private readonly tables = new Map<string, LiarsDiceGameState>();
   private readonly tableEscrows = new Map<string, LiarsDiceTableEscrowRecord>();
   private readonly pendingPayouts = new Map<string, PendingPayoutRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
-
-  onInterrupted(message: InterruptedMessage, ctx: BotContext): Promise<void> {
-    return this.outbox.interrupted(ctx, message);
-  }
 
   getPendingPayouts(): ReadonlyMap<string, PendingPayoutRecord> {
     return this.pendingPayouts;
@@ -146,7 +119,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
   ): Promise<TableSettlementUnsupported | undefined> {
     if (!game.winnerAddress) return undefined;
 
-    // 1. Durably record the winner's pending payout BEFORE any send or announcement
+    // 1. Record what the winner won before the announcement
     const payoutId = `${game.tableId}:${game.roundNumber}:${game.winnerAddress.toLowerCase()}`;
     const record: PendingPayoutRecord = {
       payoutId,
@@ -154,14 +127,13 @@ export class LiarsDiceBot implements FrankBotDefinition {
       roundNumber: game.roundNumber,
       winnerAddress: game.winnerAddress,
       amountWei: game.potWei.toString(),
-      status: "pending",
       recordedAtMs: Date.now(),
     };
     this.pendingPayouts.set(payoutId, record);
-    await recordPendingPayout(ctx, record, this.outbox);
+    await recordPendingPayout(ctx, record);
 
     // 2. Table escrow is not wired to GenericHTLC (./table-htlc): nothing is sent and no
-    //    payout is marked paid. The pending records above stay pending.
+    //    value moves. The records above only say what was won.
     return TABLE_SETTLEMENT_UNSUPPORTED;
   }
 

@@ -2,6 +2,7 @@ import { LiarsDiceBot } from './liars-dice-bot'
 import { commitSeed, foldLiarsDiceState } from '@frank/wallet/message-item-plugins/liars-dice'
 import { amountsOf } from './chain-amounts.testutil'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
+import { harness } from './bot-harness.testutil'
 
 
 describe("Liar's Dice Bot Table Coordinator", () => {
@@ -117,23 +118,26 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(item.playerSeeds).toBeDefined()
   })
 
-  it('settling is explicitly unsupported: no transaction is sent and no payout is marked paid', async () => {
+  it('settling a table moves no value, on a real-shaped state store (get/put/batch)', async () => {
+    // The unit harness's in-memory store has `get` and `batch`, as the host's does: an outbox
+    // payout would be owed into it and sent from the bot's wallet.
+    const h = harness()
     const mockSendTx = jest.fn(async () => ({ txHash: '0xdicetx777' }))
-    mockBotCtx.sendTransaction = mockSendTx
+    const ctx = { ...h.ctx, sendTransaction: mockSendTx } as unknown as BotContext
 
     // 1. Create table
     await bot.onMessage({
       senderAddress: '0xAlice',
       items: [{ type: 'text', text: '/create' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // 2. Bob joins
     await bot.onMessage({
       senderAddress: '0xBob',
       items: [{ type: 'text', text: '/join' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // Set both players' dice counts to 1 so any challenge eliminates the loser immediately
     const tableId = (bot as any).latestTableId
@@ -146,14 +150,14 @@ describe("Liar's Dice Bot Table Coordinator", () => {
       senderAddress: '0xAlice',
       items: [{ type: 'text', text: '/start' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // 4. Alice bids 1 two (Alice acts first)
     await bot.onMessage({
       senderAddress: '0xAlice',
       items: [{ type: 'text', text: '/bid 1 2' }],
       reply: jest.fn(),
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     // 5. Bob calls Liar!
     const replyLiar = jest.fn()
@@ -161,19 +165,17 @@ describe("Liar's Dice Bot Table Coordinator", () => {
       senderAddress: '0xBob',
       items: [{ type: 'text', text: '/liar' }],
       reply: replyLiar,
-    } as unknown as BotMessageContext, mockBotCtx)
+    } as unknown as BotMessageContext, ctx)
 
     expect(game.status).toBe('resolved')
-    // Table escrow is not wired to GenericHTLC: nothing is sent, whatever the network.
+    // Table escrow is not wired to GenericHTLC: no transaction, no message, nothing owed.
     expect(mockSendTx).not.toHaveBeenCalled()
-    const payouts = [...bot.getPendingPayouts().values()]
-    expect(payouts.length).toBeGreaterThan(0)
-    for (const payout of payouts) {
-      expect(payout.status).toBe('pending')
-      expect(payout.txHash).toBeUndefined()
-    }
-    const putKeys = ((mockBotCtx.state as any).put as jest.Mock).mock.calls.map(c => c[0] as string)
-    expect(putKeys.some(k => k.startsWith('payout:paid:'))).toBe(false)
+    expect(h.sent).toEqual([])
+    expect(bot.schedules).toBeUndefined()
+    expect(bot.getPendingPayouts().size).toBeGreaterThan(0)
+    const keys = [...h.data.keys()]
+    expect(keys.length).toBeGreaterThan(0)
+    for (const key of keys) expect(key).toMatch(/^payout:pending:/)
 
     const msg = replyLiar.mock.calls[0][0][0].text
     expect(msg).toContain('GAME OVER')

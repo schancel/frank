@@ -481,10 +481,13 @@ describe('a landed cancellation of an expired swap', () => {
     shallowMount(History, {
       props: {
         chainIdentifier: 'monad-testnet',
-        groups: [{ id: 'activity', label: 'walletPanel.tabHistory', rows: [row] }],
+        groups: [
+          { id: 'activity', label: 'walletPanel.tabHistory', rows: [row] },
+        ],
         inspectionStatus: 'available',
         nativeUnit: 'MONT',
-        nativeAmount: value => (value === fee ? '0.0000231' : `amount:${value}`),
+        nativeAmount: value =>
+          value === fee ? '0.0000231' : `amount:${value}`,
         networkName: () => 'Monad Testnet',
         transactionExplorerLink: hash => `https://explorer.example/${hash}`,
         formatSwapTime: () => 'Oct 11',
@@ -513,14 +516,16 @@ describe('a landed cancellation of an expired swap', () => {
   // The card both devices show: the label, Cancelled, no amount, the account that paid the fee
   // (never the contract), and the fee.
   const expectFeeOnlyCard = (wrapper: ReturnType<typeof mount>) => {
-    expect(wrapper.get('[data-testid="wallet-activity-cancelled"]').text()).toBe(
-      'Expired swap cancelled',
-    )
+    expect(
+      wrapper.get('[data-testid="wallet-activity-cancelled"]').text(),
+    ).toBe('Expired swap cancelled')
     expect(wrapper.get('.wallet-history-amount').text()).not.toContain('MONT')
     expect(wrapper.get('[data-testid="wallet-activity-status"]').text()).toBe(
       'Cancelled',
     )
-    expect(wrapper.text()).toContain('Nothing was sent; only the network fee was paid')
+    expect(wrapper.text()).toContain(
+      'Nothing was sent; only the network fee was paid',
+    )
     expect(wrapper.get('[data-testid="wallet-activity-fee"]').text()).toBe(
       'Network fee 0.0000231 MONT',
     )
@@ -579,9 +584,9 @@ describe('a landed cancellation of an expired swap', () => {
     expect(transaction.text()).toContain('Cancellation')
     expect(transaction.text()).toContain('Confirmed')
     expect(transaction.text()).toContain(cancelHash)
-    expect(details.get('[data-testid="wallet-native-operation-fee"]').text()).toContain(
-      '0.0000231',
-    )
+    expect(
+      details.get('[data-testid="wallet-native-operation-fee"]').text(),
+    ).toContain('0.0000231')
   })
 
   it('on another device, from the note: the same card; Cancelled only once the chain shows it', () => {
@@ -625,9 +630,9 @@ describe('a landed cancellation of an expired swap', () => {
     expectFeeOnlyCard(mount(row('included')))
     // Not in a block yet: the note says what it is, but not yet that it was cancelled.
     const pending = mount(row('pending'))
-    expect(pending.get('[data-testid="wallet-activity-cancelled"]').text()).toBe(
-      'Expired swap cancelled',
-    )
+    expect(
+      pending.get('[data-testid="wallet-activity-cancelled"]').text(),
+    ).toBe('Expired swap cancelled')
     expect(pending.get('[data-testid="wallet-activity-status"]').text()).toBe(
       'Pending',
     )

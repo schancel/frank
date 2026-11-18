@@ -265,7 +265,9 @@ describe('buildWalletHistoryGroups', () => {
     }
     // What the cancellation's note says, as every device of the account reads it: the call's
     // operation at its cancellation stage, a transfer of nothing from the account to itself.
-    const facts = { operation: { id: `tx-${call}`, stage: EVM_CANCELLATION_STAGE } }
+    const facts = {
+      operation: { id: `tx-${call}`, stage: EVM_CANCELLATION_STAGE },
+    }
     const note = sent(cancel, {
       from: main,
       to: main,

@@ -755,8 +755,7 @@ function statusColor(entry: WalletHistoryRow) {
       ? entry.payment.status
       : entry.kind === 'deposit'
       ? 'received'
-      : feeOnly(entry) &&
-        (entry.kind !== 'noted' || entry.state === 'included')
+      : feeOnly(entry) && (entry.kind !== 'noted' || entry.state === 'included')
       ? 'cancelled'
       : entry.kind === 'noted'
       ? entry.state

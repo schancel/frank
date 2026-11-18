@@ -688,6 +688,10 @@ export class Seat {
   balance(): Promise<bigint> {
     return this.wallet.getSpendableBalance!()
   }
+  /** The display total, for bounds that must also catch a display balance that overcounts. */
+  displayBalance(): Promise<bigint> {
+    return this.wallet.getBalance()
+  }
   private record(event: HandEvent) {
     if (this.seen.has(event.digest)) return
     this.seen.add(event.digest)

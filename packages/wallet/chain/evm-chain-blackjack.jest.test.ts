@@ -238,10 +238,10 @@ describe('two typed wallets play blackjack through stamped messages', () => {
       // offline chain charges no gas, so nothing more than the stamps themselves left it.)
       // What a wallet received as stamps is money it can spend (a coin once the chain shows
       // it), so a balance is at most what it started with, less what it paid, plus that.
-      expect(await player.balance()).toBeLessThanOrEqual(
+      expect(await player.displayBalance()).toBeLessThanOrEqual(
         START_BALANCE - totalStakeWei(final) + player.totalReceived(),
       )
-      expect(await dealer.balance()).toBeLessThanOrEqual(
+      expect(await dealer.displayBalance()).toBeLessThanOrEqual(
         START_BALANCE - script.owed + dealer.totalReceived(),
       )
     })

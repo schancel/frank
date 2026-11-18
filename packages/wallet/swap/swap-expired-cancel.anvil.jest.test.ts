@@ -331,6 +331,48 @@ suite('a swap past its deadline is cancelled, not sent again, on a real EVM node
     expect(rowOf(swap.handle.operationId).members[0]!.observation.state).toBe('included-success')
   })
 
+  it('a nonce another transaction took after the cancellation was recorded ends the swap, and the next look says so', async () => {
+    const swap = await submitSwap()
+    await chain.send('anvil_dropTransaction', [swap.handle.txHash])
+    await passDeadline(swap.deadline)
+    // The cancellation is recorded and lost; another transaction of the account (another
+    // device, say) takes the nonce instead.
+    const first = await reconcile(
+      swap,
+      minedTiming(async step => {
+        if (step > 0) return
+        const cancelHash = rowOf(swap.handle.operationId).members[0]!.cancellation!.transactionHash
+        await chain.send('anvil_dropTransaction', [cancelHash])
+        await chain.send('anvil_impersonateAccount', [main])
+        await chain.send('eth_sendTransaction', [
+          {
+            from: main,
+            to: dev.address,
+            value: '0x1',
+            nonce: '0x' + swap.nonce.toString(16),
+            gas: '0x5208',
+          },
+        ])
+        await chain.send('anvil_stopImpersonatingAccount', [main])
+      }),
+    )
+    expect(first).toMatchObject({ status: 'pending' })
+    expect(await chain.getTransactionCount(main, 'latest')).toBe(swap.nonce + 1)
+    const cancelHash = rowOf(swap.handle.operationId).members[0]!.cancellation!.transactionHash
+    expect(await chain.getTransactionReceipt(cancelHash)).toBeNull()
+    expect(await chain.getTransactionReceipt(swap.handle.txHash)).toBeNull()
+    // Looked at again: neither the swap nor its cancellation can land, and nothing was charged
+    // for either.
+    const result = await reconcile(swap, minedTiming())
+    expect(result).toEqual({
+      status: 'cancelled',
+      ...swap.handle,
+      feeWei: 0n,
+      totalFeeWei: 0n,
+    })
+    await expectFreed(swap.nonce)
+  })
+
   it('a swap still within its deadline is sent again as recorded, not cancelled', async () => {
     const swap = await submitSwap()
     await chain.send('anvil_dropTransaction', [swap.handle.txHash])

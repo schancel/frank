@@ -64,8 +64,10 @@ export class LegacyTransactionSetPendingError extends EvmNativeOperationPendingE
       txHash: payment?.signed?.transactionHash ?? '',
       relatedTxHashes: operation.members
         .filter(member => member !== payment)
+        // Only bytes handed to the network: a member signed and never broadcast is not a
+        // transaction anyone can see or that can land.
         .flatMap(member =>
-          member.signed ? [member.signed.transactionHash] : [],
+          member.signed && member.exposed ? [member.signed.transactionHash] : [],
         ),
     }
     this.message = `Legacy transaction set retained pending for ${this.transaction.txHash}`
@@ -159,11 +161,18 @@ export function createLegacyTransactionSetPayments(options: {
       )
     const final = recipient(row)
     // Each member's hash is that of the signing the chain included (an earlier signing of a
-    // member signed again because the node refused it may be the one that landed).
+    // member signed again because the node refused it may be the one that landed). Only
+    // members the chain included (succeeded or reverted) are named: a member given up, or
+    // whose nonce another transaction took, has no transaction on the chain to name.
     return {
       txHash: landedSigning(final)!.transactionHash,
       intermediateTxHashes: row.members
-        .filter(member => member !== final)
+        .filter(
+          member =>
+            member !== final &&
+            (member.observation.state === 'included-success' ||
+              member.observation.state === 'included-revert'),
+        )
         .map(member => landedSigning(member)!.transactionHash),
       totalValueSent: Transaction.from(final.signed!.rawTransaction).value,
       totalFeePaid: row.members.reduce(

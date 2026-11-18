@@ -1423,6 +1423,22 @@ export class EvmLegacyConsolidator {
         member.observation.state === 'included-revert'
       )
         return { state: 'call-included' as const }
+      // The nonce is taken and the call has no receipt: the call can never land. Which
+      // transaction took it decides the answer, read from the chain: this wallet's
+      // cancellation (its receipt), or another one, after the cancellation was recorded too.
+      if (nativeMemberSuperseded(member)) {
+        const cancelled = member.cancellation
+          ? await this.config.provider.getTransactionReceipt(
+              member.cancellation.transactionHash,
+            )
+          : null
+        return cancelled
+          ? {
+              state: 'cancelling' as const,
+              cancelTxHash: member.cancellation!.transactionHash,
+            }
+          : { state: 'nonce-taken' as const }
+      }
       if (member.cancellation) {
         await this.config.provider
           .broadcastTransaction(member.cancellation.rawTransaction)
@@ -1432,7 +1448,6 @@ export class EvmLegacyConsolidator {
           cancelTxHash: member.cancellation.transactionHash,
         }
       }
-      if (nativeMemberSuperseded(member)) return { state: 'nonce-taken' as const }
       const fee = await this.config.provider.getFeeData()
       const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
       if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')

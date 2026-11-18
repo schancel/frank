@@ -56,6 +56,25 @@ function checkRuns(bitcoind: string): void {
   }
 }
 
+/**
+ * The `bitcoind` that `ensureBitcoinAbc` would run without downloading anything (an own build in
+ * FRANK_BITCOIN_ABC_BIN_DIR, or the verified release already in the cache), or undefined. Test
+ * suites use it to report NOT RUN instead of fetching a node.
+ */
+export function availableBitcoinAbc(env: Record<string, string | undefined> = process.env): string | undefined {
+  if (env.FRANK_BITCOIN_ABC_BIN_DIR) {
+    const own = join(resolve(env.FRANK_BITCOIN_ABC_BIN_DIR), 'bitcoind')
+    return existsSync(own) ? own : undefined
+  }
+  const archive = ARCHIVES[`${process.platform}-${process.arch}`]
+  if (!archive) return undefined
+  const cache = resolve(env.FRANK_REGTEST_CACHE_DIR ?? join(REPO_ROOT, '.regtest-cache'))
+  const home = join(cache, `bitcoin-abc-${BITCOIN_ABC_VERSION}`)
+  const marker = join(home, '.verified-sha256')
+  if (!existsSync(marker) || readFileSync(marker, 'utf8').trim() !== archive.sha256) return undefined
+  return join(home, 'bin', 'bitcoind')
+}
+
 /** Returns the path of a runnable `bitcoind`, downloading and verifying the release if needed. */
 export async function ensureBitcoinAbc(
   env: Record<string, string | undefined> = process.env,

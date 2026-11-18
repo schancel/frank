@@ -108,6 +108,7 @@ async function createBackend(
   const imported = await import("ecash-wallet/dist/index.js");
   const { HdNode } = await import("ecash-lib");
   const { EcashSdkBackend } = await import("./ecash-sdk-backend");
+  const { xecHtlcKeyRoot } = await import("./ecash-htlc-keys");
   const sdk = imported as unknown as {
     Wallet?: unknown;
     default?: { Wallet?: unknown };
@@ -130,6 +131,8 @@ async function createBackend(
     ),
     chronik,
     addressPrefix,
-    custody
+    custody,
+    // Explicit derivation frank/xec-htlc-key/v1 (ecash-htlc-keys.ts) from this same account.
+    xecHtlcKeyRoot(secretKey)
   );
 }

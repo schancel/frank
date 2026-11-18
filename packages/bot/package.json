@@ -27,6 +27,7 @@
     "regtest:fetch": "node --import tsx demo/regtest/bitcoin-abc.ts",
     "regtest:check": "node --import tsx demo/regtest/regtest-stack.livecheck.ts",
     "regtest:ecash-send": "node --import tsx demo/regtest/ecash-send.livecheck.ts",
+    "regtest:ecash-htlc": "node --import tsx demo/regtest/ecash-htlc.livecheck.ts",
     "regtest:monad-check": "node --import tsx demo/regtest/monad-check.livecheck.ts",
     "regtest:monad-reserve": "node --import tsx demo/regtest/monad-reserve.livecheck.ts",
     "regtest:monad-one-coin": "node --import tsx demo/regtest/monad-one-coin.livecheck.ts",

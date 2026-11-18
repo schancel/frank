@@ -1260,6 +1260,57 @@ export async function transactionAccountsOf(
     .flat()
 }
 
+/**
+ * Jupiter's swap API (`/swap/v1`) pays a platform fee only into a token account that already
+ * exists ("needs to be initialized beforehand"), of the swap's input or output mint, and
+ * collects it in a Token-2022 mint only for quotes asked with `instructionVersion=V2`, whose
+ * instructions this wallet does not read. Jupiter does not open the account, and this wallet
+ * never signs a transaction that opens a token account for someone else. So before Jupiter is
+ * asked for a quote with a fee, the collector's account for the output mint must be open, be
+ * that mint's, belong to the collector, and be a classic SPL token account; otherwise no quote
+ * is made, and the reason says so (instead of a swap that cannot land, or one that pays Frank's
+ * fee nowhere).
+ */
+async function assertJupiterFeeAccountIsOpen(
+  connection: Pick<SolanaSwapConnection, 'getMultipleAccountsInfo'>,
+  feeAccount: PublicKey,
+  expected: { recipient: PublicKey; mint: PublicKey; tokenProgram: PublicKey },
+): Promise<void> {
+  const refuse = (why: string): never => {
+    throw new SolanaSwapError(
+      'venue-unavailable',
+      `the interface fee cannot be collected: ${why}`,
+    )
+  }
+  if (!expected.tokenProgram.equals(TOKEN_PROGRAM_ID)) {
+    refuse(
+      'Jupiter collects fees in Token-2022 tokens only with instructions this wallet does not check',
+    )
+  }
+  const [account] = await connection.getMultipleAccountsInfo([feeAccount])
+  if (!account) {
+    return refuse(
+      `the fee collector has no token account for ${expected.mint.toBase58()} (${feeAccount.toBase58()})`,
+    )
+  }
+  let token: TokenAccountState | undefined
+  try {
+    token = decodeTokenAccount(account)
+  } catch {
+    token = undefined
+  }
+  if (
+    !token ||
+    !account.owner.equals(TOKEN_PROGRAM_ID) ||
+    !token.mint.equals(expected.mint) ||
+    !token.owner.equals(expected.recipient)
+  ) {
+    refuse(
+      `${feeAccount.toBase58()} is not the fee collector's token account for ${expected.mint.toBase58()}`,
+    )
+  }
+}
+
 export async function prepareJupiterSwap(
   deps: SolanaSwapDeps,
   venue: JupiterVenue,
@@ -1281,6 +1332,13 @@ export async function prepareJupiterSwap(
         state.output.tokenProgram,
       )
     : undefined
+  if (feeAccount) {
+    await assertJupiterFeeAccountIsOpen(connection, feeAccount, {
+      recipient: new PublicKey(venue.interfaceFee!.recipient),
+      mint: state.output.mint,
+      tokenProgram: state.output.tokenProgram,
+    })
+  }
   let quote, swap
   try {
     quote = await fetchJupiterQuote(client, {

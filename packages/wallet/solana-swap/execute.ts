@@ -136,14 +136,29 @@ export interface SolanaLegacyJournalEntry {
  * bytes can be followed and re-sent after a restart. An entry leaves when its transaction
  * expired unseen, or when it is final and its note to self has been sent.
  *
+ * The journal is also what reserves the account for one swap at a time. Several wallet
+ * instances may write the same journal (two tabs of the same account, each with its own
+ * wallet, over one device's storage), so every change is one atomic read-check-write against
+ * the stored entries as they are at that moment, never against a copy read earlier:
+ * - `put` records the transaction only if the account has no other unsettled transaction, and
+ *   otherwise refuses with `SolanaSwapError('swap-pending')`. The check and the write are one
+ *   step, so of two swaps signed at once by two instances exactly one is recorded, and only a
+ *   recorded transaction is ever broadcast;
+ * - `settle` returns true only for the instance that settled the entry (false when it is
+ *   already settled, or gone: another instance decided it first and announces it);
+ * - none of them overwrites an entry another instance wrote in between.
+ *
  * `list` must throw when the stored data cannot be read: an unreadable journal is not "nothing
- * pending". `put` must not return until the entry is durable.
+ * pending". `put` must not resolve until the entry is durable.
  */
 export interface SolanaLegacyJournal {
   list(): SolanaLegacyJournalEntry[]
-  put(record: SolanaSwapRecord): void
-  settle(transactionId: string, status: 'confirmed' | 'failed'): void
-  remove(transactionId: string): void
+  put(record: SolanaSwapRecord): Promise<void>
+  settle(
+    transactionId: string,
+    status: 'confirmed' | 'failed',
+  ): Promise<boolean>
+  remove(transactionId: string): Promise<void>
 }
 
 /**
@@ -445,9 +460,10 @@ async function followSolanaSwap(
   const finish = async (outcome: SolanaSwapOutcome) => {
     if (outcome.status === 'expired') {
       // It never reached the chain: there is nothing to tell anyone.
-      journal.remove(signature)
-    } else {
-      journal.settle(signature, outcome.status)
+      await journal.remove(signature)
+    } else if (await journal.settle(signature, outcome.status)) {
+      // Only the instance that settled it announces it; another one following the same
+      // transaction (another tab) that decided first has already taken that on.
       await announceSolanaLegacyTransaction(journal, swap, options.onSync)
     }
     return outcome
@@ -556,7 +572,7 @@ export async function announceSolanaLegacyTransaction(
   announcing.add(record.transactionId)
   try {
     await onSync?.(swapRecordItemOf(record))
-    journal.remove(record.transactionId)
+    await journal.remove(record.transactionId)
   } catch {
     // Owed: offered again by `resumeSolanaLegacyTransactions`.
   } finally {
@@ -675,8 +691,11 @@ export function createSolanaLegacySender(parts: {
           lastValidBlockHeight: prepared.lastValidBlockHeight.toString(),
         },
       }
-      // Recorded before it is broadcast. If this throws, nothing is sent.
-      journal.put(record)
+      // Recorded before it is broadcast. If this throws, nothing is sent. The check above that
+      // nothing is pending was made before the network reads and the signature; `put` makes
+      // it again atomically with the write, so a swap another instance (another tab) recorded
+      // meanwhile refuses this one here, and these signed bytes never leave the device.
+      await journal.put(record)
       // From here on the transaction may land. A send error proves nothing either way, so
       // the tracker decides the outcome from the chain.
       await connection

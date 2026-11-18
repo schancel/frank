@@ -48,6 +48,9 @@
     "regtest:monad-sweep": "node --import tsx demo/regtest/monad-regtest.ts sweep",
     "regtest:monad-sweep-state": "node --import tsx demo/regtest/solonet-keys.ts sweep-state",
     "demo:directory-browser": "node demo/directory-trust/check-admission-browser.cjs",
+    "livecheck:solana-swap-note": "node --import tsx demo/solana-swap-note.livecheck.ts",
+    "livecheck:swap-note": "node --import tsx demo/swap-note.livecheck.ts",
+    "livecheck:received-coin-note": "node --import tsx demo/received-coin-note.livecheck.ts",
     "test": "jest"
   },
   "dependencies": {

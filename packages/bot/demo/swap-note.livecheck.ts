@@ -5,8 +5,10 @@
  *
  *   SWAP_LIVECHECK_RELAY_URL=http://127.0.0.1:<port> \
  *   SWAP_LIVECHECK_WALLET_DIR=/path/outside/the/repo \
- *   TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx \
- *     packages/bot/demo/swap-note.livecheck.ts <FROM> <TO> <amount>
+ *   yarn workspace @frank/bot livecheck:swap-note <FROM> <TO> <amount>
+ *
+ * (The script runs in packages/bot so tsx reads its tsconfig `paths`; see
+ * solana-swap-note.livecheck.ts.)
  *
  * `SWAP_LIVECHECK_WALLET_DIR/roots.json` holds the wallet's roots (created when missing, mode
  * 600, never printed); fund the printed main address first. Each run uses new state directories

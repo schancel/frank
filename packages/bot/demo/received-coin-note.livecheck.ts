@@ -12,8 +12,7 @@
  *
  *   FRANK_DEMO_ENV_FILE=/path/to/.env \            # MONAD_TESTNET_HTTP_RPC_URL, read by the relay
  *   COIN_NOTE_LIVECHECK_DIR=/path/outside/the/repo \
- *   TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx \
- *     packages/bot/demo/received-coin-note.livecheck.ts
+ *   yarn workspace @frank/bot livecheck:received-coin-note
  *
  * `COIN_NOTE_LIVECHECK_RELAY_URL` uses a relay that is already running; otherwise this starts
  * the real relay (`backend/cashweb/run-local-monad.sh`) on a free port, with its database under

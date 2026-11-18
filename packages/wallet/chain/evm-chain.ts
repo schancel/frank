@@ -3060,9 +3060,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               }
               return owner.listOperations()
                 .filter((row) => !row.cancelled && row.members.some(
-                  (member) => member.signed &&
+                  (member) => (member.signed &&
                     member.observation.state === "included-success" &&
-                    !member.syncApplied
+                    !member.syncApplied) ||
+                    // A given-up call's included cancellation is told to the other devices too.
+                    (member.cancellation?.included !== undefined &&
+                      member.cancellation.syncApplied !== true)
                 ))
                 .map((row) => row.operationId);
             },

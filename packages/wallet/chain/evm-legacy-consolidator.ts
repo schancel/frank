@@ -535,12 +535,57 @@ export class EvmLegacyConsolidator {
       /* Missing/unavailable/inconsistent evidence never proves nonexecution. */
     }
     if (wanted && !wanted()) return
-    await journal.recordObservation(
+    const recorded = await journal.recordObservation(
       capture,
       observation,
       account,
       contradiction,
     )
+    if (recorded) await this.observeCancellation(operationId, index, lifetime, wanted)
+  }
+  /**
+   * A given-up call whose nonce the chain shows taken, with no receipt of its own: when the
+   * cancellation (`chain/evm-contract-cancel.ts`) is what took it, its receipt is read and
+   * recorded with the fee it charged (`recordCancellationIncluded`), so the account's other
+   * devices are told of that spend as of any included send (`applySync`). A read that fails,
+   * or a receipt that does not check, records nothing; the next look reads it again.
+   */
+  private async observeCancellation(
+    operationId: string,
+    index: number,
+    lifetime?: WalletOperationLifetime,
+    wanted?: () => boolean,
+  ): Promise<void> {
+    const journal = this.journal(lifetime)
+    const member = journal.get(operationId).members[index]
+    const cancellation = member?.cancellation
+    if (!member || !cancellation || cancellation.included || !nativeMemberSuperseded(member))
+      return
+    try {
+      const { provider } = this.config
+      const receipt = await provider.getTransactionReceipt(cancellation.transactionHash)
+      if (!receipt || (wanted && !wanted())) return
+      const block = await provider.getBlock(receipt.blockNumber)
+      if (wanted && !wanted()) return
+      const cancel = Transaction.from(cancellation.rawTransaction)
+      if (
+        receipt.hash.toLowerCase() !== cancellation.transactionHash ||
+        receipt.from.toLowerCase() !== member.source.address ||
+        receipt.to?.toLowerCase() !== cancel.to?.toLowerCase() ||
+        receipt.status !== 1 ||
+        block?.hash?.toLowerCase() !== receipt.blockHash.toLowerCase() ||
+        receipt.blockNumber > member.account!.blockNumber
+      )
+        return
+      await journal.recordCancellationIncluded(operationId, index, {
+        blockHash: receipt.blockHash.toLowerCase(),
+        blockNumber: receipt.blockNumber,
+        transactionIndex: receipt.index,
+        feeWei: (receipt.gasUsed * receipt.gasPrice).toString(),
+      })
+    } catch {
+      /* Unavailable evidence records nothing. */
+    }
   }
   /** The signed, exposed members spending `address` that the chain has not answered for: not seen in a
    * block (successful or reverted), and the account's nonce not seen past theirs. */
@@ -1384,6 +1429,43 @@ export class EvmLegacyConsolidator {
             contractCallRecordItemOf(row),
           )
         }
+        // A given-up call's cancellation took its nonce: a transfer of nothing from the account
+        // to itself whose fee the account paid. Its other devices are told of it as of any
+        // included send: the signed bytes, and the fee in the spent input's debit. No record
+        // item rides with it: the call it gives up did nothing.
+        const cancellation = member.cancellation
+        if (
+          !row.cancelled &&
+          row.kind === 'contract' &&
+          cancellation?.included &&
+          !cancellation.syncApplied &&
+          nativeMemberSuperseded(member)
+        ) {
+          const tx = Transaction.from(cancellation.rawTransaction)
+          this.transport(
+            id,
+            i,
+            {
+              type: 'wallet-sync',
+              direction: 'out',
+              chainIdentifier: journal.binding.chainIdentifier,
+              txHash: cancellation.transactionHash,
+              rawTx: cancellation.rawTransaction,
+              spentInputs: [
+                {
+                  address: member.source.address,
+                  nonce: tx.nonce,
+                  valueWei: (tx.value + BigInt(cancellation.included.feeWei)).toString(),
+                },
+              ],
+              createdOutputs: [{ address: tx.to!, valueWei: tx.value.toString() }],
+              timestamp: Date.now(),
+              operation: syncOperationOf(row, member),
+            },
+            undefined,
+            'cancellation',
+          )
+        }
       }
     if (unapplied !== undefined)
       throw new EvmNativeOperationPendingError(
@@ -1394,7 +1476,9 @@ export class EvmLegacyConsolidator {
     await this.config.onSyncCheckpoint?.()
     for (const id of this.transportFailed) {
       const row = journal.list().find(candidate => candidate.operationId === id)
-      if (!row || row.members.every(member => member.observation.state !== 'included-success' || member.syncApplied))
+      if (!row || row.members.every(member =>
+        (member.observation.state !== 'included-success' || member.syncApplied) &&
+        (!member.cancellation?.included || member.cancellation.syncApplied === true)))
         this.transportFailed.delete(id)
     }
     return { transported: this.transportTail }
@@ -1407,12 +1491,16 @@ export class EvmLegacyConsolidator {
     memberIndex: number,
     item: WalletSyncItem,
     record?: ContractCallRecordItem,
+    /** Which transaction of the member the item reports: its own signing, or its cancellation. */
+    of: 'member' | 'cancellation' = 'member',
   ): void {
-    const key = `${operationId}:${memberIndex}`
+    const key = `${operationId}:${memberIndex}${of === 'cancellation' ? ':cancellation' : ''}`
     if (this.transporting.has(key)) return
     this.transporting.add(key)
     const mark = (lifetime?: WalletOperationLifetime) =>
-      this.journal(lifetime).markSyncApplied(operationId, memberIndex)
+      of === 'cancellation'
+        ? this.journal(lifetime).markCancellationSyncApplied(operationId, memberIndex)
+        : this.journal(lifetime).markSyncApplied(operationId, memberIndex)
     this.transportTail = this.transportTail
       .then(async () => {
         await this.config.onSyncTransaction!(item, record)

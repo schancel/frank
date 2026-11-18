@@ -32,7 +32,10 @@ import {
   type Fixture,
 } from '../chain/canonical-two-wallets.testutil'
 import { getEvmDexDeployment } from '../chain/dex-deployments'
-import { swapRecordItemOf } from '../chain/evm-legacy-consolidator'
+import {
+  EvmLegacyConsolidator,
+  swapRecordItemOf,
+} from '../chain/evm-legacy-consolidator'
 import type { EvmContractCallRecord } from '../storage/evm-native-operation-journal'
 import { encodeSwap, findToken, routesFor } from './uniswap-v4'
 
@@ -284,6 +287,50 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     expect(offered).toContain(cancellation!.rawTransaction.toLowerCase())
     await chain.send('evm_mine', [])
     await expectFreed(swap.nonce)
+  })
+
+  it('a resume that began within the deadline, while a background pass gives the call up past it, hands out the cancellation, never the swap', async () => {
+    const swap = await submitLostSwap()
+    // The resume is held where it waits before handing the call out: the wait for the money a
+    // transaction spends to show settled (`untilFundsSettled`, blocks on Monad), outside every
+    // lock, so a background pass runs meanwhile as it would on a real network.
+    let release!: () => void
+    let reached!: () => void
+    const atHandOut = new Promise<void>(resolve => (reached = resolve))
+    const held = new Promise<void>(resolve => (release = resolve))
+    type Waits = { untilFundsSettled(member: unknown): Promise<void> }
+    const prototype = EvmLegacyConsolidator.prototype as unknown as Waits
+    const untilFundsSettled = prototype.untilFundsSettled
+    const hold = jest
+      .spyOn(prototype, 'untilFundsSettled')
+      .mockImplementation(async function (this: Waits, member) {
+        reached()
+        await held
+        return untilFundsSettled.call(this, member)
+      })
+    try {
+      watchOffers()
+      const resumed = alice.resumeNativeOperation!(swap.handle.operationId).catch(
+        () => undefined,
+      )
+      await atHandOut
+      // Meanwhile a later block passes the deadline and the host's poll gives the call up.
+      await passDeadline(swap.deadline)
+      await alice.reobserveNativeOperations!()
+      const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+      expect(cancellation).toBeDefined()
+      release()
+      await resumed
+      expect(offered).not.toContain(swap.raw)
+      expect(offered).toContain(cancellation.rawTransaction.toLowerCase())
+      await chain.send('evm_mine', [])
+      expect((await chain.getTransactionReceipt(cancellation.transactionHash))!.status).toBe(1)
+      expect(await chain.getTransactionReceipt(swap.handle.txHash)).toBeNull()
+      await expectFreed(swap.nonce)
+    } finally {
+      release()
+      hold.mockRestore()
+    }
   })
 
   it('a cancellation lost before any block is handed out again after a restart, the same bytes, never the swap', async () => {

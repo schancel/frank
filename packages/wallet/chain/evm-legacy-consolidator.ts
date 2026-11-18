@@ -667,17 +667,35 @@ export class EvmLegacyConsolidator {
         nativeMemberSuperseded(member)
       )
         return
-      if (!member.cancellation && (await this.pastDeadline(row))) {
+      const expired = !member.cancellation && (await this.pastDeadline(row))
+      const next = this.nextHandOut(operationId, index, expired)
+      if (next === 'give-up') {
         await this.giveUp(operationId, lifetime)
         return
       }
       if (missing)
         await this.config.provider
-          .broadcastTransaction(handedOut(member))
+          .broadcastTransaction(next.rawTransaction)
           .catch(() => undefined)
     } catch {
       /* Nothing is known or it could not be given up: the call stays as it is, and held. */
     }
+  }
+  /**
+   * What to hand out for a member now, read from the journal at this moment, with no wait
+   * between this read and the broadcast that follows it: its recorded cancellation, if it has
+   * one (a give-up elsewhere may have recorded it while the caller waited); else `give-up` when
+   * `expired` (the caller's `pastDeadline`); else its own signed bytes.
+   */
+  private nextHandOut(
+    operationId: string,
+    index: number,
+    expired: boolean,
+  ): { rawTransaction: string; transactionHash: string } | 'give-up' {
+    const member = this.config.journal.get(operationId).members[index]!
+    if (member.cancellation) return member.cancellation
+    if (expired) return 'give-up'
+    return member.signed!
   }
   /**
    * Whether the chain's newest block is past the contract call's deadline. False for a row with
@@ -820,13 +838,26 @@ export class EvmLegacyConsolidator {
           new Error('Original native prerequisites are pending'),
         )
       if (member.observation.state !== 'included-success') {
-        // Past its deadline a call is never handed out again: it is given up if it ever was
-        // handed out, and otherwise never sent (`sendContractCall` then ends it).
-        if (!member.cancellation && (await this.pastDeadline(row))) {
-          if (!member.exposed)
-            throw new Error(
-              "The call's deadline passed before it was sent; nothing was sent",
-            )
+        try {
+          await this.untilFundsSettled(member)
+        } catch (reason) {
+          throw new EvmNativeOperationPendingError(journal.get(id), reason)
+        }
+        // Past its deadline a call that was never handed out is never sent
+        // (`sendContractCall` then ends it).
+        if (
+          !journal.get(id).members[i]!.exposed &&
+          (await this.pastDeadline(journal.get(id)))
+        )
+          throw new Error(
+            "The call's deadline passed before it was sent; nothing was sent",
+          )
+        await journal.markExposed(id, i)
+        // The same decision as every other hand-out (`nextHandOut`), made from the journal
+        // as it is now: a background pass may have given the call up during the waits above.
+        const expired = await this.pastDeadline(journal.get(id))
+        const next = this.nextHandOut(id, i, expired)
+        if (next === 'give-up') {
           try {
             await this.giveUp(id, lifetime)
           } catch (reason) {
@@ -835,14 +866,8 @@ export class EvmLegacyConsolidator {
           return journal.get(id)
         }
         try {
-          await this.untilFundsSettled(member)
-        } catch (reason) {
-          throw new EvmNativeOperationPendingError(journal.get(id), reason)
-        }
-        await journal.markExposed(id, i)
-        try {
           // A call given up is never handed out again: its cancellation is, in its place.
-          const bytes = member.cancellation ?? member.signed!
+          const bytes = next
           const response = await provider.broadcastTransaction(
             bytes.rawTransaction,
           )

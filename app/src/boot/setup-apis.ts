@@ -20,34 +20,63 @@ import { hasOtherExtensionViews } from '../../src-bex/runtime-adapter'
 
 const EXTENSION_PEER_PING_TIMEOUT_MS = 300
 
+/**
+ * Names which saved record stopped startup. Logs only the store name and the error's name and
+ * code: a parse error's message can quote the stored text, which may be private.
+ */
+function reportRestoreFailure(store: string, error: unknown) {
+  let detail: string = typeof error
+  try {
+    if (error instanceof Error) detail = error.name
+    const code =
+      error && typeof error === 'object' && 'code' in error
+        ? (error as { code: unknown }).code
+        : undefined
+    // Only plain string or number codes: anything else could throw or carry stored data.
+    if (typeof code === 'string' || typeof code === 'number')
+      detail += ` (${code})`
+  } catch {
+    // An unusual error object must never stop the failure screen from showing.
+  }
+  console.error(`[startup] ${store} could not be restored: ${detail}`)
+}
+
 export default boot(async ({ app }) => {
   const status = reactive({ loaded: false, setup: false })
   app.config.globalProperties.$status = status
   applyLocale({ $q: Quasar, locale: defaultLocale })
   try {
     // Wallet inspection remains first and never hydrates secrets.
-    await useWalletStore().restored
+    await useWalletStore().restored.catch((error: unknown) => {
+      reportRestoreFailure('wallet', error)
+      throw error
+    })
     // Observe every started restoration and wait for siblings to settle before showing failure.
     // The original store promises remain rejected; this only contains the composition failure.
     const results = await Promise.all(
-      [
-        () => useProfileStore().restored,
-        () => useContactStore().restored,
-        () => useAppearanceStore().restored,
-        () => useForumStore().restored,
-        () => useChatStore().restored,
-        () => useTopicStore().restored,
-        () => useSettingsStore().restored,
-        // Chat metadata may skip hydration; required database admission cannot be skipped.
-        () => messageStore,
-      ].map(restore =>
+      (
+        [
+          ['myProfile', () => useProfileStore().restored],
+          ['contacts', () => useContactStore().restored],
+          ['appearance', () => useAppearanceStore().restored],
+          ['forum', () => useForumStore().restored],
+          ['chats', () => useChatStore().restored],
+          ['topics', () => useTopicStore().restored],
+          ['settings', () => useSettingsStore().restored],
+          // Chat metadata may skip hydration; required database admission cannot be skipped.
+          ['messageStore', () => messageStore],
+        ] as const
+      ).map(([name, restore]) =>
         Promise.resolve()
           .then(async () => {
             await restore()
           })
           .then(
             () => true,
-            () => false,
+            (error: unknown) => {
+              reportRestoreFailure(name, error)
+              return false
+            },
           ),
       ),
     )

@@ -313,10 +313,9 @@ describe('visible read-only startup failure', () => {
   it.each(['corrupt', 'read-error'])(
     'gates actual startup on required chats %s without reconstructing or writing',
     async kind => {
-      const failure = new Error('required chats IO unavailable')
+      const failure = new Error('required chats PRIVATE IO unavailable')
       const { app, pinia, storage } = await fixture('en-us')
-      if (kind === 'corrupt')
-        storage.data.set('chats', '{PRIVATE corrupt chats')
+      if (kind === 'corrupt') storage.data.set('chats', 'PRIVATE corrupt chats')
       const originalGet = storage.get.getMockImplementation()!
       if (kind === 'read-error')
         storage.get.mockImplementation(async key => {
@@ -324,7 +323,17 @@ describe('visible read-only startup failure', () => {
           return originalGet(key)
         })
       const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      const consoleError = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
       await setupApis({ app })
+      const logged = consoleError.mock.calls.map(args => args.join(' '))
+      expect(
+        logged.some(line =>
+          line.startsWith('[startup] chats could not be restored:'),
+        ),
+      ).toBe(true)
+      expect(logged.join('\n')).not.toContain('PRIVATE')
       const chats = useChatStore()
       if (kind === 'read-error')
         await expect(chats.restored).rejects.toBe(failure)
@@ -373,12 +382,13 @@ describe('visible read-only startup failure', () => {
   )(
     'gates actual startup on %s %s without resetting or writing',
     async (key, kind) => {
-      const failure = new Error(`${key} IO unavailable`)
+      const failure = new Error(`${key} PRIVATE IO unavailable`)
       const { app, pinia, storage } = await fixture('en-us')
       // A real record is present; a read error must never turn it into a saved empty state.
       storage.data.set(
         key,
-        kind === 'corrupt' ? '{PRIVATE corrupt' : '{"PRIVATE":"stored"}',
+        // V8 quotes this input in its parse error, so a logged message would leak it.
+        kind === 'corrupt' ? 'PRIVATE corrupt' : '{"PRIVATE":"stored"}',
       )
       const originalGet = storage.get.getMockImplementation()!
       if (kind === 'read-error')
@@ -387,11 +397,25 @@ describe('visible read-only startup failure', () => {
           return originalGet(k)
         })
       const snapshot = [...mockDatabases.values()].map(db => new Map(db.data))
+      const consoleError = jest
+        .spyOn(console, 'error')
+        .mockImplementation(() => undefined)
+      let logged: string[] = []
       try {
         await setupApis({ app })
       } finally {
         storage.get.mockImplementation(originalGet)
+        logged = consoleError.mock.calls.map(args => args.join(' '))
+        consoleError.mockRestore()
       }
+      // The failing store is named so a stuck or failed startup can be diagnosed, and the
+      // stored text never reaches the console.
+      expect(
+        logged.some(line =>
+          line.startsWith(`[startup] ${key} could not be restored:`),
+        ),
+      ).toBe(true)
+      expect(logged.join('\n')).not.toContain('PRIVATE')
       const store = persistedStores[key]()
       if (kind === 'read-error')
         await expect(store.restored).rejects.toBe(failure)

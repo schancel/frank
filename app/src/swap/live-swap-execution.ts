@@ -283,10 +283,11 @@ export function xecEscrowFundingObservation(input: {
  * or has sent a transaction (it was swept, which only a funded escrow can be).
  *
  * The depth counts from the earliest block the escrow is known funded at (`blockHeight`):
- * found from the account's state over the latest blocks where the node serves it, and in any
- * case no later than the block of an earlier observation (`previous`, as stored in the swap
- * record). A node without historical state therefore still lets a funded leg grow deep and
- * become final across observations.
+ * found from the account's state over the latest blocks where the node serves it. The block of
+ * an earlier observation (`previous`, as stored in the swap record) is used only once the node
+ * confirms the escrow is still funded there (a reorg may have moved the funding later), or,
+ * unverified, when the node serves no older state at all; so such a node still lets a funded
+ * leg grow deep and become final across observations.
  */
 export async function observeEvmEscrowFunding(
   provider: Pick<
@@ -311,34 +312,42 @@ export async function observeEvmEscrowFunding(
   }
   const spent = latest.balance < principalWei
 
-  let fundedAt = tip
-  if (
+  const stored =
     previous &&
     previous.status !== 'unseen' &&
     previous.blockHeight !== undefined &&
     previous.blockHeight <= tip
-  ) {
-    fundedAt = previous.blockHeight
-  }
+      ? previous.blockHeight
+      : undefined
+  let fundedAt = tip
   try {
+    // The stored height is trusted only while the node still shows the escrow funded there:
+    // a reorg may have moved the funding to a later block.
+    let latestFunded = tip
+    if (stored !== undefined) {
+      const atStored = await stateAt(stored)
+      if (atStored.funded) latestFunded = stored
+    }
     const deepest = Math.max(0, tip - (SWAP_FINALITY_CONFIRMATIONS - 1))
-    if (fundedAt > deepest) {
-      if ((await stateAt(deepest)).funded) {
-        fundedAt = deepest
-      } else {
-        // The earliest block of the window in which the escrow is funded.
-        let low = deepest + 1
-        let high = fundedAt
-        while (low < high) {
-          const mid = Math.floor((low + high) / 2)
-          if ((await stateAt(mid)).funded) high = mid
-          else low = mid + 1
-        }
-        fundedAt = low
+    if (latestFunded <= deepest) {
+      fundedAt = latestFunded
+    } else if ((await stateAt(deepest)).funded) {
+      fundedAt = deepest
+    } else {
+      // The earliest block of the window in which the escrow is funded.
+      let low = deepest + 1
+      let high = latestFunded
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2)
+        if ((await stateAt(mid)).funded) high = mid
+        else low = mid + 1
       }
+      fundedAt = low
     }
   } catch {
-    // The node serves no state for those blocks: the earliest block seen funded stands.
+    // The node serves no state for older blocks: the earliest block seen funded stands,
+    // unverified.
+    fundedAt = stored ?? tip
   }
   return {
     ...depthObservation(tip - fundedAt + 1),

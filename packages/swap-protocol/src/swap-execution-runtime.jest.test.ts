@@ -551,3 +551,98 @@ describe('SwapExecutionCoordinator when one chain does not answer', () => {
     ])
   })
 })
+
+describe('SwapExecutionCoordinator keeps a started claim or refund', () => {
+  const responder = { ...baseInput, role: 'responder' as const }
+  const evmOf = (h: ReturnType<typeof createHarness>) =>
+    (
+      h.coordinator as unknown as {
+        options: { evm: { broadcastTransaction: (tx: string) => unknown } }
+      }
+    ).options.evm
+
+  it('replays a refund whose send failed once the chain answers again', async () => {
+    const h = createHarness()
+    h.setXecFunding({ status: 'final', confirmations: 10 })
+    h.setEvmFunding({ status: 'final', confirmations: 10 })
+    const prepared = await h.coordinator.prepare(responder)
+    await h.coordinator.fund(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+    )
+    const evm = evmOf(h)
+    const working = evm.broadcastTransaction
+    evm.broadcastTransaction = async () => {
+      throw new Error('rpc refused')
+    }
+    await expect(
+      h.coordinator.refund(
+        responder.accountIncarnation,
+        responder.localPublicKey,
+        responder.swapId,
+        prepared.evmOpeningTimestamp + prepared.evmChallengeDuration,
+      ),
+    ).rejects.toThrow('rpc refused')
+
+    // Nothing of the refund is seen on chain, so phase would read `funded` again.
+    evm.broadcastTransaction = working
+    h.evmBroadcasts.length = 0
+    const record = await h.coordinator.reconcile(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+    )
+    expect(record.phase).toBe('refund-pending')
+    expect(h.evmBroadcasts).toContain('0x02evmrefund')
+  })
+
+  it('keeps claiming while the claim is not seen yet', async () => {
+    const h = createHarness()
+    h.setXecFunding({ status: 'final', confirmations: 10 })
+    h.setEvmFunding({ status: 'final', confirmations: 10 })
+    await h.coordinator.prepare(baseInput)
+    await h.coordinator.fund(
+      baseInput.accountIncarnation,
+      baseInput.localPublicKey,
+      baseInput.swapId,
+    )
+    await h.coordinator.claim(
+      baseInput.accountIncarnation,
+      baseInput.localPublicKey,
+      baseInput.swapId,
+    )
+    h.evmBroadcasts.length = 0
+    const record = await h.coordinator.reconcile(
+      baseInput.accountIncarnation,
+      baseInput.localPublicKey,
+      baseInput.swapId,
+    )
+    expect(record.phase).toBe('claiming')
+    expect(h.evmBroadcasts).toContain('0x02evmclaim')
+  })
+
+  it('reports the failed send even when the reconcile after it fails too', async () => {
+    const h = createHarness()
+    h.setXecFunding({ status: 'final', confirmations: 10 })
+    h.setEvmFunding({ status: 'final', confirmations: 10 })
+    await h.coordinator.prepare(responder)
+    await h.coordinator.fund(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+    )
+    evmOf(h).broadcastTransaction = async () => {
+      // The store refuses the next write, so the reconcile after the send fails as well.
+      h.store.compareAndSwap = async () => false
+      throw new Error('rpc refused')
+    }
+    await expect(
+      h.coordinator.claim(
+        responder.accountIncarnation,
+        responder.localPublicKey,
+        responder.swapId,
+      ),
+    ).rejects.toThrow('rpc refused')
+  })
+})

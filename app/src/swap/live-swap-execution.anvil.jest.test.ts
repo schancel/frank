@@ -298,5 +298,32 @@ suite('the live EVM swap leg (anvil)', () => {
         blockHeight: first.blockHeight,
       })
     })
+
+    // Runs last: it rewinds the chain.
+    it('does not trust a stored funding block that a reorg has moved later', async () => {
+      const escrow = escrowAddress('c5'.repeat(32))
+      const observe = (previous?: Awaited<ReturnType<typeof watch>>) =>
+        observeEvmEscrowFunding(chain, escrow, PRINCIPAL, previous)
+      const beforeFunding = await chain.send('evm_snapshot', [])
+
+      await (await dev.sendTransaction({ to: escrow, value: PRINCIPAL })).wait()
+      const first = await observe()
+      expect(first).toMatchObject({ status: 'included', confirmations: 1 })
+
+      // The reorg: the chain without that block, where the funding lands 5 blocks later.
+      await chain.send('evm_revert', [beforeFunding])
+      await mine(5)
+      await (await dev.sendTransaction({ to: escrow, value: PRINCIPAL })).wait()
+      await mine(4)
+      const tip = await chain.getBlockNumber()
+      // Counted from the stored block the funding would read as 10 deep, and final.
+      expect(tip - first.blockHeight! + 1).toBe(10)
+
+      expect(await observe(first)).toMatchObject({
+        status: 'included',
+        confirmations: 5,
+        blockHeight: tip - 4,
+      })
+    })
   })
 })

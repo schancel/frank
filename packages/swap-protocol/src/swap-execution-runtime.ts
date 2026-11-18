@@ -738,14 +738,16 @@ export class SwapExecutionCoordinator {
     ...sends: readonly (() => Promise<unknown>)[]
   ): Promise<SwapExecutionRecord> {
     const sent = await Promise.allSettled(sends.map(send => send()))
-    const record = await this.reconcile(
-      accountIncarnation,
-      localPublicKey,
-      swapId,
-    )
     const failed = sent.find(
       (r): r is PromiseRejectedResult => r.status === 'rejected',
     )
+    let record: SwapExecutionRecord
+    try {
+      record = await this.reconcile(accountIncarnation, localPublicKey, swapId)
+    } catch (error) {
+      // A failed send is what the party acted on: it is the error reported.
+      throw failed ? failed.reason : error
+    }
     if (failed) throw failed.reason
     return record
   }
@@ -921,6 +923,14 @@ export class SwapExecutionCoordinator {
       phase = 'funded'
     } else if (record.fundingAuthorized) {
       phase = 'funding'
+    }
+    // A claim or refund the party started stays started until its effect is observed (or the
+    // party starts the other): a send that has not landed yet is replayed, not forgotten.
+    if (
+      (record.phase === 'claiming' || record.phase === 'refund-pending') &&
+      (phase === 'funded' || phase === 'funding')
+    ) {
+      phase = record.phase
     }
 
     let retentionReleased = record.retentionReleased

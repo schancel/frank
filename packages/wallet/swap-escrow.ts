@@ -33,6 +33,12 @@ import type {
   SolanaHtlcRefundParams,
 } from "./solana-game-escrow";
 
+/**
+ * The GenericHTLC functions Frank calls, with the parameter and return types of the compiled
+ * contract (`packages/contracts/artifacts/GenericHTLC.json`, rebuilt from
+ * `packages/contracts/contracts/GenericHTLC.sol` by `yarn --cwd packages/contracts build`).
+ * `swap-escrow.jest.test.ts` checks every entry against that artifact.
+ */
 export const EVM_GENERIC_HTLC_ABI = [
   "function lock(bytes32 lockId, address recipient, address refundAddress, bytes32 hashLock, uint256 duration) external payable",
   "function lock(bytes32 lockId, address recipient, bytes32 hashLock, uint256 duration) external payable",
@@ -40,7 +46,7 @@ export const EVM_GENERIC_HTLC_ABI = [
   "function refund(bytes32 lockId) external",
   "function batchDistribute(bytes32[] calldata lockIds, tuple(address recipient, uint256 amount)[] calldata payouts, bytes calldata preimage) external",
   "function batchWithdraw(bytes32[] calldata lockIds, bytes calldata preimage) external",
-  "function locks(bytes32 lockId) external view returns (address sender, address recipient, address refundAddress, bytes32 hashLock, uint256 amount, uint256 expiresAt, bool withdrawn, bool refunded)",
+  "function locks(bytes32 lockId) external view returns (address sender, address recipient, address refundAddress, address token, bytes32 hashLock, uint256 amount, uint256 expiresAt, bool withdrawn, bool refunded)",
 ];
 
 export const evmHtlcInterface = new Interface(EVM_GENERIC_HTLC_ABI);
@@ -57,6 +63,11 @@ export interface SwapLockRecord {
   sender: string;
   recipient: string;
   refundAddress: string;
+  /**
+   * EVM only: the ERC-20 the lock holds, or the zero address for the native coin. `amount`
+   * is in that asset's units.
+   */
+  token?: string;
   hashLock: string;
   amount: bigint;
   expiresAt: number;
@@ -74,6 +85,7 @@ export type SwapStepPhase =
   | "preimage_revealed"
   | "settled"
   | "expired_refundable"
+  | "refunded"
   | "cancelled";
 
 export interface EvmHtlcLockTxParams {
@@ -261,18 +273,32 @@ export function encodeEvmHtlcRefund(params: EvmHtlcRefundTxParams): {
   };
 }
 
+/** What GenericHTLC.locks(lockId) returns, in the order of the contract's `Lock` struct. */
+export type EvmHtlcLockTuple = readonly [
+  sender: string,
+  recipient: string,
+  refundAddress: string,
+  token: string,
+  hashLock: string,
+  amount: bigint,
+  expiresAt: bigint,
+  withdrawn: boolean,
+  refunded: boolean
+];
+
 /**
  * Decodes the raw lock tuple returned from GenericHTLC.locks(lockId).
  */
 export function decodeEvmHtlcLockState(params: {
   lockId: string | Uint8Array;
-  result: [string, string, string, string, bigint, bigint, boolean, boolean];
+  result: EvmHtlcLockTuple;
   currentTimestampSec?: number;
 }): SwapLockRecord {
   const [
     sender,
     recipient,
     refundAddress,
+    token,
     hashLock,
     amount,
     expiresAt,
@@ -303,6 +329,7 @@ export function decodeEvmHtlcLockState(params: {
     sender,
     recipient,
     refundAddress,
+    token,
     hashLock,
     amount,
     expiresAt: exp,
@@ -455,7 +482,21 @@ export async function buildSolanaSwapRefundInstruction(params: {
 }
 
 /**
- * Comprehensive cross-chain swap status evaluator.
+ * What one party of a two-leg HTLC swap can do now, from the state of both locks.
+ *
+ * The maker locks leg A (to the taker) and holds the preimage; the taker locks leg B (to the
+ * maker). Each party's own leg is its deposit: A for the maker, B for the taker.
+ *
+ * - Refund is the party's unilateral recovery. It is offered whenever the party's own lock has
+ *   expired unclaimed (`status === "expired"`, the only state `GenericHTLC.refund` accepts),
+ *   whatever the other leg or the offer says.
+ * - Claim is offered whenever the counter-leg is still claimable (`locked`, before expiry, the
+ *   only state `GenericHTLC.withdraw` accepts) and the party may take it: the maker once its
+ *   own leg A was locked for the taker and has not been refunded (locked, or already claimed by
+ *   the taker); the taker once the preimage is known (revealed, or leg B was withdrawn).
+ *
+ * Both can hold at once (the taker knows the preimage while its own B has expired); `phase`
+ * then names the claim.
  */
 export function evaluateSwapStepPhase(params: {
   isMaker: boolean;
@@ -471,141 +512,101 @@ export function evaluateSwapStepPhase(params: {
   claimPreimageRequired: boolean;
   summary: string;
 } {
-  const { isMaker, offerStatus, legALock, legBLock, preimageRevealed } = params;
+  const { isMaker, offerStatus, preimageRevealed } = params;
+  const legA: SwapLockStatus = params.legALock?.status ?? "unfunded";
+  const legB: SwapLockStatus = params.legBLock?.status ?? "unfunded";
+  const own = isMaker ? legA : legB;
+  const counter = isMaker ? legB : legA;
+  const offerOpen = offerStatus === "pending" || offerStatus === "accepted";
 
-  if (offerStatus === "cancelled") {
-    return {
-      phase: "cancelled",
-      canLock: false,
-      canClaim: false,
-      canRefund: false,
-      claimPreimageRequired: false,
-      summary: "Swap cancelled",
-    };
+  const canRefund = own === "expired";
+  const canClaim =
+    counter === "locked" &&
+    (isMaker
+      ? legA === "locked" || legA === "withdrawn"
+      : !!preimageRevealed || legB === "withdrawn");
+  const canLock = isMaker
+    ? offerOpen && legA === "unfunded"
+    : offerOpen && legA === "locked" && legB === "unfunded";
+
+  const result = (
+    phase: SwapStepPhase,
+    summary: string
+  ): ReturnType<typeof evaluateSwapStepPhase> => ({
+    phase,
+    canLock,
+    canClaim,
+    canRefund,
+    claimPreimageRequired: canClaim && !isMaker,
+    summary,
+  });
+
+  if (legA === "withdrawn" && legB === "withdrawn") {
+    return result("settled", "Swap completed and settled on both chains");
   }
-
-  const legAFunded = legALock && legALock.status !== "unfunded";
-  const legBFunded = legBLock && legBLock.status !== "unfunded";
-
-  // Both completed/withdrawn
-  if (legALock?.status === "withdrawn" && legBLock?.status === "withdrawn") {
-    return {
-      phase: "settled",
-      canLock: false,
-      canClaim: false,
-      canRefund: false,
-      claimPreimageRequired: false,
-      summary: "Swap completed and settled on both chains",
-    };
+  if (canClaim) {
+    return isMaker
+      ? result(
+          "ready_to_claim",
+          "Counter-leg locked. Claim it, which reveals the preimage"
+        )
+      : result(
+          "preimage_revealed",
+          "Preimage revealed. Claim the offered leg with it"
+        );
   }
-
-  // Check for expired refundability
-  if (isMaker && legALock?.status === "expired" && !legBFunded) {
-    return {
-      phase: "expired_refundable",
-      canLock: false,
-      canClaim: false,
-      canRefund: true,
-      claimPreimageRequired: false,
-      summary: "Offered leg timelock expired; refund available",
-    };
+  if (canRefund) {
+    return result(
+      "expired_refundable",
+      "Your lock expired unclaimed; refund available"
+    );
   }
-  if (!isMaker && legBLock?.status === "expired") {
-    return {
-      phase: "expired_refundable",
-      canLock: false,
-      canClaim: false,
-      canRefund: true,
-      claimPreimageRequired: false,
-      summary: "Counter leg timelock expired; refund available",
-    };
+  if (own === "refunded") {
+    return result("refunded", "Your deposit was refunded");
   }
-
-  // Both legs locked or Leg B claimed -> Ready to claim!
-  if (
-    legALock?.status === "locked" &&
-    (legBLock?.status === "locked" ||
-      legBLock?.status === "withdrawn" ||
-      preimageRevealed)
-  ) {
-    if (isMaker) {
-      if (legBLock?.status === "locked") {
-        return {
-          phase: "ready_to_claim",
-          canLock: false,
-          canClaim: true,
-          canRefund: false,
-          claimPreimageRequired: false, // Maker already owns preimage
-          summary: "Both legs locked. Maker ready to claim and reveal preimage",
-        };
-      }
-    } else {
-      // Taker waits for Maker to claim Leg B or receives preimage
-      if (preimageRevealed || legBLock?.status === "withdrawn") {
-        return {
-          phase: "preimage_revealed",
-          canLock: false,
-          canClaim: true,
-          canRefund: false,
-          claimPreimageRequired: true,
-          summary: "Preimage revealed on chain. Taker ready to claim Leg A",
-        };
-      }
-      return {
-        phase: "ready_to_claim",
-        canLock: false,
-        canClaim: false,
-        canRefund: false,
-        claimPreimageRequired: false,
-        summary:
-          "Counter-leg locked. Waiting for maker to claim and reveal secret",
-      };
+  if (counter === "withdrawn") {
+    return result(
+      "preimage_revealed",
+      "You claimed the counter-leg. Waiting for the counterparty to claim theirs"
+    );
+  }
+  if (own === "locked") {
+    if (counter === "locked") {
+      return result(
+        "ready_to_claim",
+        "Both legs locked. Waiting for the maker to claim and reveal the preimage"
+      );
     }
-  }
-
-  // Leg A locked, Leg B unfunded
-  if (legALock?.status === "locked" && !legBFunded) {
-    if (isMaker) {
-      return {
-        phase: "taker_lock_needed",
-        canLock: false,
-        canClaim: false,
-        canRefund: false,
-        claimPreimageRequired: false,
-        summary: "Leg A locked. Waiting for counterparty to lock counter-leg",
-      };
-    } else {
-      return {
-        phase: "taker_lock_needed",
-        canLock: true,
-        canClaim: false,
-        canRefund: false,
-        claimPreimageRequired: false,
-        summary: "Maker locked Leg A. Counterparty ready to lock counter-leg",
-      };
+    if (isMaker && counter === "unfunded" && offerOpen) {
+      return result(
+        "taker_lock_needed",
+        "Leg A locked. Waiting for counterparty to lock counter-leg"
+      );
     }
+    return result(
+      "offer_pending",
+      "Your lock is open; refund becomes available when it expires"
+    );
   }
-
-  // Offer pending before any deposit
-  if (offerStatus === "pending" || !legAFunded) {
-    return {
-      phase: isMaker ? "maker_lock_needed" : "offer_pending",
-      canLock: isMaker,
-      canClaim: false,
-      canRefund: false,
-      claimPreimageRequired: false,
-      summary: isMaker
-        ? "Offer created. Lock offered funds into HTLC contract"
-        : "Offer received. Waiting for acceptance",
-    };
+  if (!offerOpen) {
+    return result(
+      offerStatus === "settled" ? "settled" : "cancelled",
+      offerStatus === "settled" ? "Swap settled" : "Swap cancelled"
+    );
   }
-
-  return {
-    phase: "offer_pending",
-    canLock: false,
-    canClaim: false,
-    canRefund: false,
-    claimPreimageRequired: false,
-    summary: "Swap pending",
-  };
+  if (canLock) {
+    return isMaker
+      ? result(
+          "maker_lock_needed",
+          "Offer created. Lock offered funds into HTLC contract"
+        )
+      : result(
+          "taker_lock_needed",
+          "Maker locked Leg A. Counterparty ready to lock counter-leg"
+        );
+  }
+  return result(
+    "offer_pending",
+    isMaker ? "Swap pending" : "Offer received. Waiting for the maker's lock"
+  );
 }

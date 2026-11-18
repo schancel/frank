@@ -1,5 +1,4 @@
 import { shallowReactive } from 'vue'
-import { toHex } from '@frank/codec'
 import {
   InMemorySwapExecutionStore,
   SwapExecutionCoordinator,
@@ -13,16 +12,49 @@ import {
   type XecSwapCapability,
 } from '@frank/swap-protocol/src/swap-execution-runtime'
 import { BrowserSwapExecutionStore } from '@frank/swap-protocol/src/storage/execution-browser'
-import { accountSession } from '../accounts/session'
 import { negotiationErrorCode } from './negotiation-commands'
 
 export { BrowserSwapExecutionStore }
+
+/**
+ * Whose swap records these are: the account incarnation (`appNegotiationIncarnation`, the
+ * same one the negotiation journals use) and the wallet's compressed secp256k1 key. Records
+ * are written and read back under exactly this pair, so the runtime derives it once, when it
+ * starts, and every command uses it.
+ */
+export interface SwapExecutionOwner {
+  readonly accountIncarnation: string
+  readonly localPublicKey: string
+}
+
+/**
+ * Whether this device's swap records are open. `failed` is shown on the card: a swap funded
+ * earlier may need its claim or refund, so records that cannot be opened are never shown as
+ * "no swap".
+ */
+export type SwapExecutionRestore = 'off' | 'loading' | 'ready' | 'failed'
+
+export type SwapExecutionRestoreFailure =
+  | 'storage-unavailable'
+  | 'account-unavailable'
+  | 'records-unreadable'
+  /**
+   * The wallet's record store holds records written under another owner key: by an older
+   * build (which keyed them `${accountId}:${revision}`). They are not migrated (development
+   * baseline). Reset path: delete the IndexedDB database
+   * `frank-swap-execution-v1-<namespace>` (`swapExecutionStoreNamespace`) in the browser's
+   * developer tools; the escrow keys of those swaps derive from public swap data.
+   */
+  | 'records-from-older-version'
 
 export const swapExecutionState = shallowReactive({
   busy: false,
   error: '',
   records: {} as Record<string, SwapExecutionRecord>,
   coordinator: null as SwapExecutionCoordinator | null,
+  owner: null as SwapExecutionOwner | null,
+  restore: 'off' as SwapExecutionRestore,
+  restoreFailure: null as SwapExecutionRestoreFailure | null,
 })
 
 function syncRecords(records: readonly SwapExecutionRecord[]): void {
@@ -35,15 +67,29 @@ function syncRecords(records: readonly SwapExecutionRecord[]): void {
 
 export function installSwapExecutionCoordinator(
   coordinator: SwapExecutionCoordinator | null,
+  owner: SwapExecutionOwner | null = null,
 ): void {
   swapExecutionState.coordinator = coordinator
+  swapExecutionState.owner = coordinator ? owner : null
   swapExecutionState.error = ''
+  swapExecutionState.restore = coordinator ? 'ready' : 'off'
+  swapExecutionState.restoreFailure = null
   if (!coordinator) {
     swapExecutionState.records = {}
   }
 }
 
+/** This device's swap records could not be opened: no coordinator, and the card says so. */
+export function failSwapExecutionRestore(
+  failure: SwapExecutionRestoreFailure,
+): void {
+  installSwapExecutionCoordinator(null)
+  swapExecutionState.restore = 'failed'
+  swapExecutionState.restoreFailure = failure
+}
+
 export function createSwapExecutionCoordinator(options: {
+  owner: SwapExecutionOwner
   store?: SwapExecutionStore
   custody: SwapCustodyHoldCapability
   secretVault?: SwapSecretVaultCapability
@@ -63,17 +109,44 @@ export function createSwapExecutionCoordinator(options: {
     verifySecretMatchesPoint: options.verifySecretMatchesPoint,
     onUpdate: syncRecords,
   })
-  installSwapExecutionCoordinator(coordinator)
+  installSwapExecutionCoordinator(coordinator, options.owner)
   return coordinator
 }
 
-export async function refreshSwapExecutionRecords(filter?: {
-  accountIncarnation?: string
-  localPublicKey?: string
-}): Promise<void> {
-  if (!swapExecutionState.coordinator) return
-  const list = await swapExecutionState.coordinator.listOperations(filter)
-  syncRecords(list)
+/**
+ * Reads the installed owner's records from the store. A store that cannot be read leaves
+ * `restore` at `failed`, and the error is thrown on.
+ */
+export async function refreshSwapExecutionRecords(): Promise<void> {
+  const { coordinator, owner } = swapExecutionState
+  if (!coordinator || !owner) return
+  swapExecutionState.restore = 'loading'
+  swapExecutionState.restoreFailure = null
+  try {
+    // The store is this wallet's own (`swapExecutionStoreNamespace`), so every row in it
+    // belongs to this owner. A row that does not is a record this build cannot address: it
+    // is reported, never silently left out.
+    const all = await coordinator.listOperations()
+    if (swapExecutionState.coordinator !== coordinator) return
+    const mine = all.filter(
+      r =>
+        r.accountIncarnation === owner.accountIncarnation &&
+        r.localPublicKey.toLowerCase() === owner.localPublicKey.toLowerCase(),
+    )
+    syncRecords(mine)
+    if (mine.length === all.length) {
+      swapExecutionState.restore = 'ready'
+    } else {
+      swapExecutionState.restore = 'failed'
+      swapExecutionState.restoreFailure = 'records-from-older-version'
+    }
+  } catch (error) {
+    if (swapExecutionState.coordinator === coordinator) {
+      swapExecutionState.restore = 'failed'
+      swapExecutionState.restoreFailure = 'records-unreadable'
+    }
+    throw error
+  }
 }
 
 export function getSwapExecutionRecord(
@@ -82,21 +155,12 @@ export function getSwapExecutionRecord(
   return swapExecutionState.records[swapIdHex.toLowerCase()]
 }
 
-function currentExecutionOwner(): {
-  accountIncarnation: string
-  localPublicKey: string
-} {
-  const pub = accountSession.getCachedCurvePublicKey('secp256k1')
-  const accountId =
-    accountSession.state.account?.receipt.context.accountId ?? 'default'
-  const revision = accountSession.state.account?.receipt.revision ?? 1
-  if (!pub) {
-    throw new Error('Session changed')
+function currentExecutionOwner(): SwapExecutionOwner {
+  const owner = swapExecutionState.owner
+  if (!swapExecutionState.coordinator || !owner) {
+    throw new Error('Swap execution unavailable')
   }
-  return {
-    accountIncarnation: `${accountId}:${revision}`,
-    localPublicKey: toHex(pub),
-  }
+  return owner
 }
 
 async function runExclusive<T>(fn: () => Promise<T>): Promise<T> {

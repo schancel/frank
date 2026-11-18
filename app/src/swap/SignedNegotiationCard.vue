@@ -91,6 +91,20 @@
         @click="respond"
       />
     </div>
+    <p
+      v-if="executionRestoreFailed"
+      class="snc-error-banner"
+      data-testid="swap-execution-restore-failed"
+      role="alert"
+    >
+      {{
+        $t(
+          execState.restoreFailure === 'records-from-older-version'
+            ? 'chatMessageSwap.executionRecordsFromOlderVersion'
+            : 'chatMessageSwap.executionRestoreFailed',
+        )
+      }}
+    </p>
     <div
       v-if="showExecutionPanel"
       class="snc-execution-panel"
@@ -135,6 +149,18 @@
         role="alert"
       >
         {{ $t('signedSwap.error') }}: {{ executionRecord.reorgWarning }}
+      </p>
+      <p
+        v-if="executionRecord && executionRecord.unobservedChains"
+        class="snc-error-banner"
+        data-testid="swap-unobserved-chains"
+        role="alert"
+      >
+        {{
+          $t('chatMessageSwap.executionObservationFailed', {
+            chains: executionRecord.unobservedChains.join(', '),
+          })
+        }}
       </p>
       <div class="snc-action-row">
         <q-btn
@@ -312,8 +338,20 @@ export default defineComponent({
           this.journal.reduction.history.decision === 'accept')
       )
     },
+    // This device's swap records could not be opened, so a swap funded earlier may have a
+    // claim or refund the card cannot show. Said on every accepted negotiation.
+    executionRestoreFailed(): boolean {
+      return (
+        this.execState.restore === 'failed' &&
+        !!this.offer &&
+        !!this.journal &&
+        this.journal.reduction.history.decision === 'accept'
+      )
+    },
     executionStatusKey(): string {
       const phase = this.executionRecord?.phase
+      if (!phase && this.execState.restore === 'loading')
+        return 'executionRestoring'
       if (!phase || phase === 'prepared' || phase === 'cancelled')
         return 'statusUnfunded'
       if (phase === 'funding' || phase === 'funded' || phase === 'claiming')
@@ -328,6 +366,7 @@ export default defineComponent({
     executionTurnedOff(): boolean {
       return (
         this.showExecutionPanel &&
+        this.execState.restore === 'ready' &&
         (!this.executionRecord || this.executionRecord.phase === 'prepared')
       )
     },
@@ -362,8 +401,11 @@ export default defineComponent({
       return (
         r.phase === 'recovery-required' ||
         r.phase === 'refund-pending' ||
-        Number(this.now) >= r.xecRefundTimestamp ||
-        Number(this.now) >= r.evmOpeningTimestamp + r.evmChallengeDuration
+        // The own deposit's timelock: XEC for the initiator, EVM for the responder.
+        Number(this.now) >=
+          (r.role === 'initiator'
+            ? r.xecRefundTimestamp
+            : r.evmOpeningTimestamp + r.evmChallengeDuration)
       )
     },
     state(): string {

@@ -1,9 +1,10 @@
 /**
  * Live browser swap execution runtime for testnet (`xec-testnet` ↔ `monad-testnet`).
  *
- * Wires `SwapExecutionCoordinator` to `BrowserSwapExecutionStore` (or `InMemorySwapExecutionStore`
- * when `indexedDB` is unavailable), the session's `xec-testnet` `EcashWallet` + Chronik client,
- * and the session's `monad-testnet` `EvmChainWalletHandle` + `MonadAccountTxSigner`.
+ * Wires `SwapExecutionCoordinator` to `BrowserSwapExecutionStore` (with no `indexedDB` nothing
+ * runs and the card shows that the records could not be opened), the session's `xec-testnet`
+ * `EcashWallet` + Chronik client, and the session's `monad-testnet` `EvmChainWalletHandle` +
+ * `MonadAccountTxSigner`.
  */
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import { sha256 } from '@noble/hashes/sha256.js'
@@ -20,13 +21,11 @@ import type { EcashWallet } from '@frank/wallet/ecash-wallet'
 import type { EcashSdkWallet } from '@frank/wallet/ecash-sdk-backend'
 import { MonadAccountTxSigner } from '@frank/wallet/evm-account-tx'
 import {
-  InMemorySwapExecutionStore,
   SWAP_FINALITY_CONFIRMATIONS,
   type EvmSwapCapability,
   type LegFundingObservation,
   type LegSettlementObservation,
   type SwapCustodyHoldCapability,
-  type SwapExecutionStore,
   type SwapRole,
   type XecSwapCapability,
 } from '@frank/swap-protocol/src/swap-execution-runtime'
@@ -37,8 +36,10 @@ import type { PublicAccount } from '../accounts/custody'
 import { openUtxoWallet } from '../accounts/utxo-wallets'
 import {
   createSwapExecutionCoordinator,
+  failSwapExecutionRestore,
   installSwapExecutionCoordinator,
   refreshSwapExecutionRecords,
+  type SwapExecutionOwner,
 } from './swap-execution-commands'
 
 const XEC_SWEEP_FEE_BUFFER_SATS = 300n
@@ -209,6 +210,153 @@ function parseActionDescriptor(raw: string): {
   }
 }
 
+/** A funding seen `confirmations` blocks deep (the block it is in counts as one). */
+function depthObservation(
+  confirmations: number,
+): Pick<LegFundingObservation, 'status' | 'confirmations'> {
+  return {
+    status:
+      confirmations >= SWAP_FINALITY_CONFIRMATIONS
+        ? 'final'
+        : confirmations > 0
+        ? 'included'
+        : 'unseen',
+    confirmations: Math.max(0, confirmations),
+  }
+}
+
+/**
+ * The funding of a swap's eCash escrow address, from its Chronik history: the payment that
+ * brought what it received to the principal, how deep that payment is, and whether the
+ * escrow has been swept since (it holds less than the principal now).
+ */
+export function xecEscrowFundingObservation(input: {
+  principalSats: bigint
+  /** The escrow's P2PKH output script, hex. */
+  escrowOutputScript: string
+  tipHeight: number
+  history: readonly {
+    txid: string
+    block?: { height: number; hash: string }
+    outputs: readonly { outputScript: string; sats: bigint }[]
+  }[]
+  /** What the escrow address holds now, mempool included. */
+  unspentSats: bigint
+}): LegFundingObservation {
+  const payments = input.history
+    .map(tx => ({
+      txid: tx.txid,
+      block: tx.block,
+      sats: tx.outputs
+        .filter(o => o.outputScript === input.escrowOutputScript)
+        .reduce((sum, o) => sum + o.sats, 0n),
+    }))
+    .filter(p => p.sats > 0n)
+    // Oldest first; mempool payments last.
+    .sort(
+      (a, b) =>
+        (a.block?.height ?? Number.MAX_SAFE_INTEGER) -
+        (b.block?.height ?? Number.MAX_SAFE_INTEGER),
+    )
+  let received = 0n
+  const funding = payments.find(
+    p => (received += p.sats) >= input.principalSats,
+  )
+  if (!funding || input.principalSats <= 0n) {
+    return { status: 'unseen', confirmations: 0 }
+  }
+  const spent = input.unspentSats < input.principalSats
+  if (!funding.block) {
+    return { status: 'unseen', txId: funding.txid, confirmations: 0, spent }
+  }
+  return {
+    ...depthObservation(input.tipHeight - funding.block.height + 1),
+    txId: funding.txid,
+    blockHeight: funding.block.height,
+    blockHash: funding.block.hash,
+    spent,
+  }
+}
+
+/**
+ * The funding of a swap's EVM escrow account. Funded means the account held the principal,
+ * or has sent a transaction (it was swept, which only a funded escrow can be).
+ *
+ * The depth counts from the earliest block the escrow is known funded at (`blockHeight`):
+ * found from the account's state over the latest blocks where the node serves it. The block of
+ * an earlier observation (`previous`, as stored in the swap record) is used only once the node
+ * confirms the escrow is still funded there (a reorg may have moved the funding later), or,
+ * unverified, when the node serves no older state at all; so such a node still lets a funded
+ * leg grow deep and become final across observations.
+ */
+export async function observeEvmEscrowFunding(
+  provider: Pick<
+    ethers.Provider,
+    'getBlockNumber' | 'getBalance' | 'getTransactionCount'
+  >,
+  escrowAddress: string,
+  principalWei: bigint,
+  previous?: LegFundingObservation,
+): Promise<LegFundingObservation> {
+  const stateAt = async (block: number) => {
+    const [balance, nonce] = await Promise.all([
+      provider.getBalance(escrowAddress, block),
+      provider.getTransactionCount(escrowAddress, block),
+    ])
+    return { balance, nonce, funded: balance >= principalWei || nonce > 0 }
+  }
+  const tip = await provider.getBlockNumber()
+  const latest = await stateAt(tip)
+  if (principalWei <= 0n || !latest.funded) {
+    return { status: 'unseen', confirmations: 0 }
+  }
+  const spent = latest.balance < principalWei
+
+  const stored =
+    previous &&
+    previous.status !== 'unseen' &&
+    previous.blockHeight !== undefined &&
+    previous.blockHeight <= tip
+      ? previous.blockHeight
+      : undefined
+  let fundedAt = tip
+  try {
+    // The stored height is trusted only while the node still shows the escrow funded there:
+    // a reorg may have moved the funding to a later block.
+    let latestFunded = tip
+    if (stored !== undefined) {
+      const atStored = await stateAt(stored)
+      if (atStored.funded) latestFunded = stored
+    }
+    const deepest = Math.max(0, tip - (SWAP_FINALITY_CONFIRMATIONS - 1))
+    if (latestFunded <= deepest) {
+      fundedAt = latestFunded
+    } else if ((await stateAt(deepest)).funded) {
+      fundedAt = deepest
+    } else {
+      // The earliest block of the window in which the escrow is funded.
+      let low = deepest + 1
+      let high = latestFunded
+      while (low < high) {
+        const mid = Math.floor((low + high) / 2)
+        if ((await stateAt(mid)).funded) high = mid
+        else low = mid + 1
+      }
+      fundedAt = low
+    }
+  } catch {
+    // The node serves no state for older blocks: the earliest block seen funded stands,
+    // unverified.
+    fundedAt = stored ?? tip
+  }
+  return {
+    ...depthObservation(tip - fundedAt + 1),
+    txId: escrowAddress,
+    blockHeight: fundedAt,
+    spent,
+  }
+}
+
 export function createLiveXecSwapCapability(): XecSwapCapability {
   return {
     // A new swap cannot be funded (see `SwapExecutionDisabledError`).
@@ -297,43 +445,35 @@ export function createLiveXecSwapCapability(): XecSwapCapability {
           desc.responderPub,
           chronik,
         )
-        const [utxoRes, histRes] = await Promise.all([
-          chronik
-            .script('p2pkh', escrow.pkhHex)
-            .utxos()
-            .catch(() => ({ utxos: [] })),
-          chronik
-            .script('p2pkh', escrow.pkhHex)
-            .history(0, 25)
-            .catch(() => ({ txs: [] })),
+        const script = chronik.script('p2pkh', escrow.pkhHex)
+        const [utxoRes, histRes, info] = await Promise.all([
+          script.utxos(),
+          script.history(0, 200),
+          chronik.blockchainInfo(),
         ])
-        const unspentSats = utxoRes.utxos.reduce(
-          (sum, u) => sum + BigInt(u.sats),
-          0n,
-        )
-        const hasHistory = Array.isArray(histRes.txs) && histRes.txs.length > 0
-        if (unspentSats >= principalSats || hasHistory) {
-          const observedTxid =
-            utxoRes.utxos[0]?.outpoint.txid ?? histRes.txs?.[0]?.txid ?? txid
-          return {
-            status: 'final',
-            txId: observedTxid,
-            confirmations: SWAP_FINALITY_CONFIRMATIONS,
-          }
-        }
-        return { status: 'unseen', confirmations: 0 }
+        return xecEscrowFundingObservation({
+          principalSats,
+          escrowOutputScript: `76a914${escrow.pkhHex}88ac`,
+          tipHeight: info.tipHeight,
+          history: histRes.txs,
+          unspentSats: utxoRes.utxos.reduce((sum, u) => sum + u.sats, 0n),
+        })
       }
 
       const tx = await chronik.tx(txid).catch(() => null)
       if (!tx) {
         return { status: 'unseen', confirmations: 0 }
       }
+      if (!tx.block) {
+        // In the mempool: seen, but not yet in a block.
+        return { status: 'unseen', txId: tx.txid, confirmations: 0 }
+      }
+      const { tipHeight } = await chronik.blockchainInfo()
       return {
-        status: 'final',
+        ...depthObservation(tipHeight - tx.block.height + 1),
         txId: tx.txid,
-        confirmations: SWAP_FINALITY_CONFIRMATIONS,
-        blockHeight: tx.block?.height,
-        blockHash: tx.block?.hash,
+        blockHeight: tx.block.height,
+        blockHash: tx.block.hash,
       }
     },
 
@@ -479,7 +619,10 @@ export function createLiveEvmSwapCapability(
       return { txHash }
     },
 
-    async observeFunding(txHash: string): Promise<LegFundingObservation> {
+    async observeFunding(
+      txHash: string,
+      previous?: LegFundingObservation,
+    ): Promise<LegFundingObservation> {
       const evmWallet = getEvmWallet()
       const desc = parseActionDescriptor(txHash)
       if (desc && desc.kind === 'swap-evm-watch-id') {
@@ -489,21 +632,12 @@ export function createLiveEvmSwapCapability(
           desc.initiatorPub,
           desc.responderPub,
         )
-        const escrowWallet = new ethers.Wallet(escrowPrivKey)
-        const [balance, nonce] = await Promise.all([
-          evmWallet.provider.getBalance(escrowWallet.address).catch(() => 0n),
-          evmWallet.provider
-            .getTransactionCount(escrowWallet.address)
-            .catch(() => 0),
-        ])
-        if (balance >= (principalWei * 90n) / 100n || nonce >= 1) {
-          return {
-            status: 'final',
-            txId: escrowWallet.address,
-            confirmations: SWAP_FINALITY_CONFIRMATIONS,
-          }
-        }
-        return { status: 'unseen', confirmations: 0 }
+        return await observeEvmEscrowFunding(
+          evmWallet.provider,
+          new ethers.Wallet(escrowPrivKey).address,
+          principalWei,
+          previous,
+        )
       }
 
       const receipt = await evmWallet.provider
@@ -512,10 +646,10 @@ export function createLiveEvmSwapCapability(
       if (!receipt || receipt.status !== 1) {
         return { status: 'unseen', confirmations: 0 }
       }
+      const tip = await evmWallet.provider.getBlockNumber()
       return {
-        status: 'final',
+        ...depthObservation(tip - receipt.blockNumber + 1),
         txId: receipt.hash,
-        confirmations: SWAP_FINALITY_CONFIRMATIONS,
         blockHeight: receipt.blockNumber,
         blockHash: receipt.blockHash,
       }
@@ -606,21 +740,35 @@ export function startAppSwapExecution(input: {
   }
 
   let browserStore: BrowserSwapExecutionStore | undefined
-  let store: SwapExecutionStore
-  if (typeof indexedDB !== 'undefined') {
-    try {
-      const rawAddress = input.wallet.identity.address?.raw ?? 'default'
-      const namespace =
-        `${activeChain.chainIdentifier}:${rawAddress}:${input.revision}`
-          .replace(/[^a-zA-Z0-9_:-]/g, '_')
-          .slice(0, 128) || 'default'
-      browserStore = new BrowserSwapExecutionStore(namespace)
-      store = browserStore
-    } catch {
-      store = new InMemorySwapExecutionStore()
+  const stop = async () => {
+    if (activeExecutionScope === mine) {
+      activeExecutionScope = undefined
+      installSwapExecutionCoordinator(null)
     }
-  } else {
-    store = new InMemorySwapExecutionStore()
+    browserStore?.close()
+  }
+
+  // Swap records live only in this device's IndexedDB. Without it they cannot be kept or read
+  // back, so nothing runs and the card says the records could not be opened; a swap funded
+  // earlier is never shown as if there were none.
+  try {
+    if (typeof indexedDB === 'undefined') throw new Error('No IndexedDB')
+    browserStore = new BrowserSwapExecutionStore(
+      swapExecutionStoreNamespace(input),
+    )
+  } catch (error) {
+    console.error('[swapExecution] swap records unavailable:', error)
+    failSwapExecutionRestore('storage-unavailable')
+    return { stop }
+  }
+
+  let owner: SwapExecutionOwner
+  try {
+    owner = appSwapExecutionOwner(input)
+  } catch (error) {
+    console.error('[swapExecution] swap record owner unavailable:', error)
+    failSwapExecutionRestore('account-unavailable')
+    return { stop }
   }
 
   const activeHolds = new Set<string>()
@@ -636,36 +784,54 @@ export function startAppSwapExecution(input: {
 
   const evmWallet = input.wallet as unknown as EvmChainWalletHandle
   createSwapExecutionCoordinator({
-    store,
+    owner,
+    store: browserStore,
     custody,
     xec: createLiveXecSwapCapability(),
     evm: createLiveEvmSwapCapability(() => evmWallet),
   })
+  // A failed read is kept in `swapExecutionState.restore` and shown on the card.
+  void refreshSwapExecutionRecords().catch(error =>
+    console.error('[swapExecution] swap records unreadable:', error),
+  )
 
-  try {
-    const accountIncarnation = appNegotiationIncarnation(
-      input.revision,
-      (input.account as PublicAccount).receipt,
-    )
-    const identity = input.wallet.identity as unknown as {
-      compressedPubKey: Uint8Array
-    }
-    const localPublicKey = toHex(identity.compressedPubKey)
-    void refreshSwapExecutionRecords({
-      accountIncarnation,
-      localPublicKey,
-    }).catch(() => undefined)
-  } catch {
-    // ignore if receipt/identity not shaped for incarnation
+  return { stop }
+}
+
+/** The IndexedDB namespace of a wallet's swap records on the active chain. */
+export function swapExecutionStoreNamespace(input: {
+  wallet: NativeWalletHandle
+  revision: number
+}): string {
+  const rawAddress = input.wallet.identity.address?.raw ?? 'default'
+  return (
+    `${activeChain.chainIdentifier}:${rawAddress}:${input.revision}`
+      .replace(/[^a-zA-Z0-9_:-]/g, '_')
+      .slice(0, 128) || 'default'
+  )
+}
+
+/**
+ * The owner every swap record of this session is written and read under: the account's
+ * negotiation incarnation and the wallet's compressed secp256k1 key. Derived only from the
+ * custody receipt and the wallet, so every start of the same account computes the same one.
+ */
+export function appSwapExecutionOwner(input: {
+  wallet: NativeWalletHandle
+  revision: number
+  account: unknown
+}): SwapExecutionOwner {
+  const accountIncarnation = appNegotiationIncarnation(
+    input.revision,
+    (input.account as PublicAccount).receipt,
+  )
+  const identity = input.wallet.identity as unknown as {
+    compressedPubKey?: Uint8Array
   }
-
+  if (!(identity.compressedPubKey instanceof Uint8Array))
+    throw new TypeError('The wallet has no compressed public key')
   return {
-    stop: async () => {
-      if (activeExecutionScope === mine) {
-        activeExecutionScope = undefined
-        installSwapExecutionCoordinator(null)
-      }
-      browserStore?.close()
-    },
+    accountIncarnation,
+    localPublicKey: toHex(identity.compressedPubKey),
   }
 }

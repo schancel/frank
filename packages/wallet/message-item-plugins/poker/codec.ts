@@ -5,7 +5,6 @@ import {
   bool,
   cborItemCodec,
   evmAddress,
-  hash32,
   listOf,
   oneOf,
   opt,
@@ -78,6 +77,6 @@ export const pokerCodec = cborItemCodec<PokerItem>('poker', {
     ),
   ),
   winnerAddress: opt(16, evmAddress),
-  txHash: opt(17, hash32),
+  // Key 17 was the settlement tx hash; removed with fake settlement, never reuse it.
   stealthAddress: opt(18, evmAddress),
 })

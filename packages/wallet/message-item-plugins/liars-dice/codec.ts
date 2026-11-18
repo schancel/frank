@@ -80,6 +80,6 @@ export const liarsDiceCodec = cborItemCodec<LiarsDiceItem>('liars-dice', {
   ),
   winnerAddress: opt(19, evmAddress),
   potWei: opt(20, amount),
-  txHash: opt(21, hash32),
+  // Key 21 was the settlement tx hash; removed with fake settlement, never reuse it.
   stealthAddress: opt(22, evmAddress),
 })

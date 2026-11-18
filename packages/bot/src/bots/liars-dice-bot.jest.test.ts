@@ -181,7 +181,6 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(msg).toContain('GAME OVER')
     expect(msg).not.toContain('On-Chain Settlement')
     expect(msg).toContain('Not settled on chain')
-    expect(replyLiar.mock.calls[0][0][1].txHash).toBeUndefined()
   })
 
   it('durably records pending payouts before sending settlement announcement and verifies multi-party commitments', async () => {

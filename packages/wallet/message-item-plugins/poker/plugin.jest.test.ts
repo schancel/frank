@@ -106,8 +106,6 @@ describePluginContract({
         ...base,
         action: 'settle',
         winnerAddress: '0xbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        txHash:
-          '0x0101010101010101010101010101010101010101010101010101010101010101',
         stealthAddress: '0x5555555555555555555555555555555555555555',
       },
       preview: "Texas Hold'em: Hand settled!",

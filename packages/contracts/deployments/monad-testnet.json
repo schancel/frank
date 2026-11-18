@@ -7,13 +7,13 @@
   },
   "contracts": {
     "GenericHTLC": {
-      "address": "0xA66eFc8AcC533896Ac55479CAad2AcF125d29Ee7",
+      "address": "0x67C3231b8F28309a84004643C592FFc9eAd939cB",
       "deployer": "0xE128CC764bBCD085C525CB873ad30520DD8cC4B9",
       "deployedVia": "create2-proxy",
-      "transactionHash": "0xf63a0329d02d2c607ede6ac0832d2c54ada94417955a0886bb7b67c98037ffd7",
-      "blockNumber": 72848446,
-      "initCodeHash": "0xcdca43319909cba985742b3e06adeecb5b5e250e6ec001948fb55026ac3a195c",
-      "runtimeCodeHash": "0x09c5bee1193bd3134435e7ba1c0187fe1f05f3d59dca189d1255a22ccc2fb60f",
+      "transactionHash": "0x8b09f9500b924d01c06107f63c7a70f3a641199cf2af683046c41f2b61f5f38c",
+      "blockNumber": 80849178,
+      "initCodeHash": "0xe349aaf1c802d1d1532cd473bff3631902b340c8150bd0f3a54c4834e879e2f5",
+      "runtimeCodeHash": "0x01e40b9321a1395defc23f184ac0e038a052b9d96d563a1b74bc360580c429e9",
       "compiler": {
         "version": "0.8.37+commit.f401782d.Emscripten.clang",
         "settings": {

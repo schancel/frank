@@ -2,14 +2,14 @@
 pragma solidity ^0.8.20;
 
 interface IHtlc {
-    function withdraw(bytes32 lockId, bytes calldata preimage) external;
+    function withdraw(bytes32 lockId, bytes32 preimage) external;
 }
 
 /// A lock recipient that, when paid, tries to withdraw a second lock from inside the payment.
 contract ReentrantRecipient {
     IHtlc public immutable htlc;
     bytes32 public secondLockId;
-    bytes public preimage;
+    bytes32 public preimage;
     bool public attempted;
     bool public reentrySucceeded;
 
@@ -17,7 +17,7 @@ contract ReentrantRecipient {
         htlc = htlc_;
     }
 
-    function arm(bytes32 secondLockId_, bytes calldata preimage_) external {
+    function arm(bytes32 secondLockId_, bytes32 preimage_) external {
         secondLockId = secondLockId_;
         preimage = preimage_;
     }

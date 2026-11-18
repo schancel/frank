@@ -24,6 +24,7 @@ import {
 } from './evm-stealth'
 import type { EvmChainWalletHandle } from "./evm-wallet-handle";
 import { parseAddressWithOptionalRelay } from './chain/active-chain'
+import { evmHtlcInterface } from './swap-escrow'
 import { fromHex, toHex } from '@frank/codec'
 
 export interface ChannelSettlementDigestParams {
@@ -86,15 +87,7 @@ const STATE_CHANNEL_ABI = [
   'function checkpoint(bytes32 channelId, uint256 seq, uint256[2] calldata balances, bytes calldata sig0, bytes calldata sig1) external',
 ]
 
-const GENERIC_HTLC_ABI = [
-  'function batchDistribute(bytes32[] calldata lockIds, tuple(address recipient, uint256 amount)[] calldata payouts, bytes calldata preimage) external',
-  'function batchWithdraw(bytes32[] calldata lockIds, bytes calldata preimage) external',
-  'function withdraw(bytes32 lockId, bytes calldata preimage) external',
-  'function refund(bytes32 lockId) external',
-]
-
 const stateChannelInterface = new Interface(STATE_CHANNEL_ABI)
-const genericHtlcInterface = new Interface(GENERIC_HTLC_ABI)
 
 /**
  * Derives a one-time DKSAP stealth address for game escrow winnings.
@@ -307,23 +300,33 @@ export function encodeStateChannelCloseCall(params: {
   )
 }
 
+const BYTES32 = /^0x[0-9a-fA-F]{64}$/
+
 /**
- * Encodes the calldata for GenericHTLC.batchDistribute(lockIds, payouts, preimage).
+ * Encodes the calldata for GenericHTLC.batchDistribute(lockIds, payouts, preimage). The
+ * preimage is the 32-byte secret whose sha256 is every lock's hash lock; nothing else is
+ * accepted (no text, no other length).
  */
 export function encodeBatchDistributeCall(params: {
   lockIds: string[]
   payouts: TablePayoutRecipient[]
   preimage: Uint8Array | string
 }): string {
-  const preimageBytes =
-    typeof params.preimage === 'string'
-      ? getBytes(params.preimage.startsWith('0x') ? params.preimage : hexlify(toUtf8Bytes(params.preimage)))
-      : params.preimage
+  const preimage =
+    params.preimage instanceof Uint8Array ? hexlify(params.preimage) : params.preimage
+  if (typeof preimage !== 'string' || !BYTES32.test(preimage)) {
+    throw new Error('batchDistribute needs a 32-byte preimage')
+  }
+  for (const lockId of params.lockIds) {
+    if (typeof lockId !== 'string' || !BYTES32.test(lockId)) {
+      throw new Error('batchDistribute lock ids must be 32 bytes of 0x-prefixed hex')
+    }
+  }
 
-  return genericHtlcInterface.encodeFunctionData('batchDistribute', [
+  return evmHtlcInterface.encodeFunctionData('batchDistribute', [
     params.lockIds,
     params.payouts,
-    preimageBytes,
+    preimage,
   ])
 }
 

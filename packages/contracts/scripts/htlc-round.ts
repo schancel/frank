@@ -1,6 +1,7 @@
 /**
  * Proves a recorded GenericHTLC deployment works, with dust: locks and withdraws with the
- * preimage, then locks with a short timelock and refunds after it. Both locks pay the
+ * preimage (and reads the preimage back from the lock), then locks with a short absolute
+ * deadline and refunds once the chain's clock reaches it. Both locks pay the
  * sending wallet itself, so the only cost is gas.
  *
  *   yarn --cwd packages/contracts htlc-round --chain monad-testnet --rpc <url> --wallet-json <file>
@@ -14,7 +15,10 @@ import { ethers } from 'ethers'
 import GenericHTLCArtifact from '../artifacts/GenericHTLC.json'
 import { confirmedSender, resolveCliTarget, type DeploymentRecord } from './deploy'
 
-const LOCK = 'lock(bytes32,address,address,bytes32,uint256)'
+const NATIVE = ethers.ZeroAddress
+/** GenericHTLC `State`: 0 none, 1 open, 2 withdrawn, 3 refunded. */
+const WITHDRAWN = 2n
+const REFUNDED = 3n
 
 export interface HtlcRoundResult {
   lockTx: string
@@ -68,41 +72,55 @@ export async function htlcRound(options: {
   const preimage = ethers.hexlify(ethers.randomBytes(32))
   const hashLock = ethers.sha256(preimage)
 
-  const first = ethers.hexlify(ethers.randomBytes(32))
-  const lock = await send('lock', LOCK, [first, self, self, hashLock, 3600], amount)
-  const withdraw = await send('withdraw', 'withdraw', [first, preimage])
-  if ((await lockAt(first, withdraw)).withdrawn !== true) {
-    throw new Error(`lock ${first} is not withdrawn`)
+  // A lock's deadline is absolute and judged by the chain's clock, not this machine's.
+  const chainNow = async () => BigInt((await provider.getBlock('latest'))!.timestamp)
+  const openLock = async (label: string, expiresAt: bigint) => {
+    const terms = [self, self, NATIVE, amount, hashLock, expiresAt] as const
+    const lockId: string = await htlc.lockIdOf(self, ...terms)
+    const receipt = await send(label, 'lock', [...terms], amount)
+    return { lockId, receipt }
   }
 
-  const second = ethers.hexlify(ethers.randomBytes(32))
-  const shortLock = await send(
-    'lock (short timelock)',
-    LOCK,
-    [second, self, self, hashLock, refundAfter],
-    amount,
-  )
-  const expiresAt = Number((await lockAt(second, shortLock)).expiresAt)
-  // A refund before the timelock must be refused by the deployed contract.
-  if (Date.now() / 1000 < expiresAt - 1) {
+  const first = await openLock('lock', (await chainNow()) + 3600n)
+  const withdraw = await send('withdraw', 'withdraw', [first.lockId, preimage])
+  const withdrawn = await lockAt(first.lockId, withdraw)
+  if (withdrawn.state !== WITHDRAWN || withdrawn.preimage !== preimage) {
+    throw new Error(`lock ${first.lockId} is not withdrawn with its preimage`)
+  }
+
+  // Far enough ahead that the lock transaction is mined before the deadline.
+  const shortExpiresAt = (await chainNow()) + BigInt(refundAfter) + 5n
+  const second = await openLock('lock (short deadline)', shortExpiresAt)
+  const shortLock = second.receipt
+  // A refund before the deadline must be refused by the deployed contract.
+  const lockBlock = await provider.getBlock(shortLock.blockNumber)
+  if (BigInt(lockBlock!.timestamp) < shortExpiresAt) {
     const early = await htlc.refund
-      .staticCall(second, { blockTag: shortLock.blockNumber })
+      .staticCall(second.lockId, { blockTag: shortLock.blockNumber })
       .then(
         () => 'accepted',
         () => 'refused',
       )
-    if (early !== 'refused') throw new Error('refund before the timelock was not refused')
-    log('refund before the timelock: refused')
+    if (early !== 'refused') throw new Error('refund before the deadline was not refused')
+    log('refund before the deadline: refused')
   }
-  while (Date.now() / 1000 < expiresAt + 2) {
+  // The refund is mined in a later block, whose timestamp must have reached the deadline. A
+  // quiet node mines no blocks, so its latest timestamp does not move: wait by this clock, with
+  // a margin for the node's clock.
+  while (Date.now() / 1000 < Number(shortExpiresAt) + 2) {
     await new Promise(r => setTimeout(r, 1000))
   }
-  const refund = await send('refund', 'refund', [second])
-  if ((await lockAt(second, refund)).refunded !== true) {
-    throw new Error(`lock ${second} is not refunded`)
+  const refund = await send('refund', 'refund', [second.lockId])
+  if ((await lockAt(second.lockId, refund)).state !== REFUNDED) {
+    throw new Error(`lock ${second.lockId} is not refunded`)
   }
 
-  const [lockTx, withdrawTx, shortLockTx, refundTx] = [lock, withdraw, shortLock, refund].map(
+  const [lockTx, withdrawTx, shortLockTx, refundTx] = [
+    first.receipt,
+    withdraw,
+    shortLock,
+    refund,
+  ].map(
     receipt => receipt.hash,
   )
   return { lockTx, withdrawTx, shortLockTx, refundTx }

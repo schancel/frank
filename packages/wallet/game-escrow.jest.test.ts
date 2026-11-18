@@ -1,4 +1,5 @@
 import { ethers, Wallet } from 'ethers'
+import GenericHTLCArtifact from '@frank/contracts/artifacts/GenericHTLC.json'
 import {
   deriveEscrowStealthPayout,
   buildChannelSettlementDigest,
@@ -169,14 +170,35 @@ describe('Game Escrow DKSAP Stealth Payouts (GAME-3)', () => {
       { recipient: ethers.Wallet.createRandom().address, amount: ethers.parseEther('7.0') },
       { recipient: ethers.Wallet.createRandom().address, amount: ethers.parseEther('3.0') },
     ]
-    const preimage = 'secret-preimage-data'
+    const preimage = '0x' + '5a'.repeat(32)
 
     const calldata = encodeBatchDistributeCall({
       lockIds: [lock1, lock2],
       payouts,
       preimage,
     })
-    expect(calldata.startsWith('0x')).toBe(true)
+    // What the compiled contract decodes from it.
+    const compiled = new ethers.Interface(GenericHTLCArtifact.abi)
+    const parsed = compiled.parseTransaction({ data: calldata })
+    expect(parsed?.signature).toBe('batchDistribute(bytes32[],(address,uint256)[],bytes32)')
+    expect([...parsed!.args[0]]).toEqual([lock1, lock2])
+    expect(parsed!.args[1].map((p: any) => [p.recipient, p.amount])).toEqual(
+      payouts.map(p => [p.recipient, p.amount]),
+    )
+    expect(parsed!.args[2]).toBe(preimage)
+    expect(
+      encodeBatchDistributeCall({ lockIds: [lock1, lock2], payouts, preimage: ethers.getBytes(preimage) }),
+    ).toBe(calldata)
+
+    // Only a 32-byte preimage: text and other lengths are refused, never hashed or padded.
+    for (const bad of ['secret-preimage-data', '0x' + '5a'.repeat(31), '0x' + '5a'.repeat(33), new Uint8Array(31)]) {
+      expect(() => encodeBatchDistributeCall({ lockIds: [lock1], payouts, preimage: bad })).toThrow(
+        'batchDistribute needs a 32-byte preimage',
+      )
+    }
+    expect(() =>
+      encodeBatchDistributeCall({ lockIds: ['lock.p1'], payouts, preimage }),
+    ).toThrow('lock ids must be 32 bytes')
   })
 
   it('rejects registration if expected stealth address does not match derived', async () => {

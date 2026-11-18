@@ -39,6 +39,7 @@ import {
   decodeMint,
   decodeTokenAccount,
   findAssociatedTokenAddress,
+  readAccountsInChunks,
   TOKEN_2022_PROGRAM_ID,
   TOKEN_ACCOUNT_SIZE,
   TOKEN_PROGRAM_ID,
@@ -302,7 +303,8 @@ async function readWalletState(
     ),
   )
   const [accounts, lamports] = await Promise.all([
-    connection.getMultipleAccountsInfo([...tokenAccounts, ...known]),
+    // `known` is every token account of the wallet, which can be many more than one read.
+    readAccountsInChunks(connection, [...tokenAccounts, ...known]),
     connection.getBalance(request.owner),
   ])
   const state = (i: number): MintState => ({
@@ -410,7 +412,8 @@ export interface SwapCheck {
   /**
    * Every account the reviewed transaction loads, its lookup tables resolved when it was
    * reviewed (a table's entries are append-only, so the same message keeps loading the same
-   * accounts). A token account not among them cannot be changed by it.
+   * accounts). A token account not among them cannot be changed by it. Used for the quote's
+   * simulation; the check before signing reads them from the transaction again.
    */
   readonly transactionAccounts: readonly PublicKey[]
   /** Platform-fee token account, and whether this swap is what opens it (and pays its rent). */
@@ -670,11 +673,16 @@ export async function checkSwapBeforeSigning(
       'is not the transaction that was reviewed',
     )
   }
-  await simulateAndCheckSwap(
-    connection,
-    transaction,
-    await withWalletAsItIsNow(connection, check),
-  )
+  // Which accounts the transaction loads is read from the transaction itself, not taken
+  // from the check: only the message bytes were held to what was reviewed.
+  const [now, transactionAccounts] = await Promise.all([
+    withWalletAsItIsNow(connection, check),
+    transactionAccountsOf(connection, transaction),
+  ])
+  await simulateAndCheckSwap(connection, transaction, {
+    ...now,
+    transactionAccounts,
+  })
 }
 
 const COMPUTE_BUDGET_PROGRAM = 'ComputeBudget111111111111111111111111111111'
@@ -1132,20 +1140,7 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
   ) {
     refuse('transaction is not paid and signed by this wallet alone')
   }
-  const tableKeys = message.addressTableLookups.map(lookup => lookup.accountKey)
-  const tableAccounts = tableKeys.length
-    ? await connection.getMultipleAccountsInfo(tableKeys)
-    : []
-  const tables = tableKeys.map((key, i) => {
-    const account = tableAccounts[i]
-    if (!account)
-      return refuse('uses an address lookup table that does not exist')
-    return new AddressLookupTableAccount({
-      key,
-      state: AddressLookupTableAccount.deserialize(account.data),
-    })
-  })
-  const keys = message.getAccountKeys({ addressLookupTableAccounts: tables })
+  const keys = await resolveAccountKeys(connection, transaction)
   const key = (index: number): string => keys.get(index)?.toBase58() ?? ''
   const owner = expected.owner.toBase58()
   const wrapped = expected.wrappedSolAccount.toBase58()
@@ -1223,6 +1218,46 @@ export async function assertJupiterTransactionIsTheQuotedSwap(
   }
   if (jupiterCalls !== 1) refuse('does not contain exactly one swap')
   return keys.keySegments().flat()
+}
+
+/** A transaction's account keys, its lookup tables resolved from the chain. */
+async function resolveAccountKeys(
+  connection: Pick<SolanaSwapConnection, 'getMultipleAccountsInfo'>,
+  transaction: VersionedTransaction,
+) {
+  const { message } = transaction
+  // A legacy message has no lookup tables.
+  const tableKeys =
+    message.version === 0
+      ? message.addressTableLookups.map(lookup => lookup.accountKey)
+      : []
+  const tableAccounts = tableKeys.length
+    ? await readAccountsInChunks(connection, tableKeys)
+    : []
+  const tables = tableKeys.map((key, i) => {
+    const account = tableAccounts[i]
+    if (!account) {
+      throw new SolanaSwapError(
+        'unsafe-transaction',
+        'uses an address lookup table that does not exist',
+      )
+    }
+    return new AddressLookupTableAccount({
+      key,
+      state: AddressLookupTableAccount.deserialize(account.data),
+    })
+  })
+  return message.getAccountKeys({ addressLookupTableAccounts: tables })
+}
+
+/** Every account a transaction loads, its lookup tables resolved from the chain. */
+export async function transactionAccountsOf(
+  connection: Pick<SolanaSwapConnection, 'getMultipleAccountsInfo'>,
+  transaction: VersionedTransaction,
+): Promise<PublicKey[]> {
+  return (await resolveAccountKeys(connection, transaction))
+    .keySegments()
+    .flat()
 }
 
 export async function prepareJupiterSwap(

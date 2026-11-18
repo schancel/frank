@@ -503,6 +503,65 @@ describe('Orca devnet quote (recorded devnet responses)', () => {
     expect(other.made).toContain('getTokenAccountsByOwner')
   })
 
+  it('re-quotes a wallet holding more token accounts than one read returns', async () => {
+    const cycle: { tokenAccounts?: { owner: string; addresses: PublicKey[] } } =
+      {}
+    const quote = await orca(solToDevUsdc.calls).quote(
+      request(solToDevUsdc),
+      cycle,
+    )
+    // 150 airdropped token accounts of some other token, found by the run's listing.
+    const spam = Array.from(
+      { length: 150 },
+      (_, i) =>
+        new PublicKey(
+          Uint8Array.from({ length: 32 }, (_, j) => (j ? i + 1 : 7)),
+        ),
+    )
+    const spamAccount = (address: PublicKey) => {
+      const data = Buffer.alloc(165)
+      Buffer.from(address.toBytes()).copy(data, 0) // its own mint, as good as any
+      Buffer.from(OWNER.toBytes()).copy(data, 32)
+      data.writeBigUInt64LE(1n, 64)
+      data[108] = 1 // initialized
+      return { owner: TOKEN_PROGRAM_ID, lamports: 2_039_280n, data }
+    }
+    cycle.tokenAccounts!.addresses.push(...spam)
+    const isSpam = (address: PublicKey) => spam.some(s => s.equals(address))
+    const recorded = counted(solToDevUsdc.calls).chain
+    const reads: number[] = []
+    const chain: SolanaSwapConnection = {
+      ...recorded,
+      // As RPC nodes do: no more than 100 accounts in one read.
+      getMultipleAccountsInfo: async addresses => {
+        reads.push(addresses.length)
+        if (addresses.length > 100) {
+          throw new Error('Too many inputs provided; max 100')
+        }
+        const real = addresses.filter(address => !isSpam(address))
+        const answers = real.length
+          ? await recorded.getMultipleAccountsInfo(real)
+          : []
+        let next = 0
+        return addresses.map(address =>
+          isSpam(address) ? spamAccount(address) : answers[next++],
+        )
+      },
+    }
+    const again = await createSolanaDex(
+      'solana-devnet',
+      DEVNET,
+      walletOver(chain),
+    ).quote(request(solToDevUsdc), cycle)
+    expect(Math.max(...reads)).toBeLessThanOrEqual(100)
+    expect(again.expectedOutputAmount).toBe(quote.expectedOutputAmount)
+    // Every account read back, in order: the airdropped ones too (untouched by the swap).
+    expect(again.check.walletAccounts.map(a => a.address.toBase58())).toEqual([
+      ...quote.check.walletAccounts.map(a => a.address.toBase58()),
+      ...spam.map(address => address.toBase58()),
+    ])
+  })
+
   it('quotes selling a token for SOL, counting what arrives after the fee', async () => {
     const quote = await orca(devUsdcToSol.calls).quote(request(devUsdcToSol))
     expect(quote.expectedOutputAmount).toBe(
@@ -2242,6 +2301,48 @@ describe("the wallet's legacy send: record, send, follow", () => {
     }
     expect(signer.sign).not.toHaveBeenCalled()
     expect(sent).toEqual([])
+  })
+
+  it('at signing, reads which accounts the transaction loads from the transaction itself', async () => {
+    const swap = await reviewed()
+    const askedAtSigning = async (transactionAccounts: PublicKey[]) => {
+      const { chain } = chainAtSigning()
+      const asked: string[][] = []
+      const simulate = chain.simulateTransaction
+      chain.simulateTransaction = async (transaction, config) => {
+        asked.push(config.accounts.addresses)
+        return simulate(transaction, config)
+      }
+      signer.sign.mockResolvedValueOnce({
+        signature: 'sig',
+        rawTransaction: Uint8Array.of(9),
+      })
+      const { connection } = sender({
+        statuses: [{ err: null, confirmationStatus: 'confirmed' }],
+      })
+      await legacy(connection, memoryJournal(), chain).sendLegacyTransaction(
+        {
+          ...swap.prepared,
+          check: { ...swap.prepared.check, transactionAccounts },
+        },
+        swap.intent,
+      )
+      return asked
+    }
+    const loaded = swap.prepared.transaction.message.staticAccountKeys
+    const genuine = await askedAtSigning(loaded)
+    expect(genuine).toHaveLength(1)
+    expect(genuine[0].length).toBeGreaterThan(1)
+    // A check that names no accounts, or every account of the wallet and more, changes
+    // nothing about what is checked.
+    expect(await askedAtSigning([])).toEqual(genuine)
+    expect(
+      await askedAtSigning([
+        ...loaded,
+        ...swap.prepared.check.walletAccounts.map(a => a.address),
+        STRANGER,
+      ]),
+    ).toEqual(genuine)
   })
 
   it('signs only the transaction that was reviewed, for the swap that was reviewed', async () => {

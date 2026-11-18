@@ -35,6 +35,10 @@ import {
   type SwapTransactionMeta,
 } from './execute'
 import {
+  BrowserSolanaLegacyJournal,
+  SOLANA_LEGACY_JOURNAL_KEY,
+} from './journal'
+import {
   decodeWhirlpool,
   swapTickArrayStartIndexes,
   whirlpoolTradeFee,
@@ -1082,18 +1086,52 @@ describe('Jupiter quote (recorded API and mainnet responses)', () => {
     }) as unknown as typeof fetch
     return { fetchImpl, requests }
   }
+  /** A token account as the chain stores it: `mint`, held by `owner`. */
+  const tokenAccount = (mint: PublicKey, owner: PublicKey) => {
+    const data = new Uint8Array(165)
+    data.set(mint.toBytes(), 0)
+    data.set(owner.toBytes(), 32)
+    data[108] = 1 // initialized
+    return { owner: TOKEN_PROGRAM_ID, lamports: 2_039_280n, data }
+  }
   const quoteWith = (
     edit?: (body: any) => any,
     entry: JupiterVenue = JUPITER,
+    /** The fee collector's accounts the chain has, by address. */
+    collector: Map<string, any> = new Map(),
   ) => {
     const { fetchImpl, requests } = replayFetch(edit)
-    const quote = createSolanaDex(
-      'solana-mainnet',
-      entry,
-      walletOver(replay(jupiterFixture.calls)),
-      { fetch: fetchImpl },
-    ).quote(request)
-    return Object.assign(quote, { requests })
+    const chain = replay(jupiterFixture.calls)
+    const reads: string[][] = []
+    const feeRecipient = entry.interfaceFee?.recipient
+    const quote = (async () => {
+      const feeAccount = feeRecipient
+        ? (
+            await findAssociatedTokenAddress(
+              new PublicKey(feeRecipient),
+              new PublicKey(USDC),
+            )
+          ).toBase58()
+        : undefined
+      return createSolanaDex(
+        'solana-mainnet',
+        entry,
+        walletOver({
+          ...chain,
+          // The recorded chain has no fee collector; its account is answered here.
+          getMultipleAccountsInfo: async (addresses: PublicKey[]) => {
+            const asked = addresses.map(address => address.toBase58())
+            if (asked.length === 1 && asked[0] === feeAccount) {
+              reads.push(asked)
+              return [collector.get(feeAccount) ?? null]
+            }
+            return chain.getMultipleAccountsInfo(addresses)
+          },
+        }),
+        { fetch: fetchImpl },
+      ).quote(request)
+    })()
+    return Object.assign(quote, { requests, reads })
   }
 
   /** Jupiter's recorded transaction with one more instruction appended. */
@@ -1175,23 +1213,64 @@ describe('Jupiter quote (recorded API and mainnet responses)', () => {
       ...JUPITER,
       interfaceFee: { bps: 30, recipient: STRANGER.toBase58() },
     }
+    const feeAccount = await findAssociatedTokenAddress(
+      STRANGER,
+      new PublicKey(USDC),
+    )
+    const open = new Map([
+      [feeAccount.toBase58(), tokenAccount(new PublicKey(USDC), STRANGER)],
+    ])
     // A different rate than configured is refused.
-    await expect(quoteWith(withFee(31), entry)).rejects.toMatchObject({
+    await expect(quoteWith(withFee(31), entry, open)).rejects.toMatchObject({
       code: 'venue-unavailable',
     })
     // The configured rate gets as far as reading Jupiter's transaction, which (recorded with
     // no fee) does not carry it: the swap instruction's own fee field must match too.
-    const pending = quoteWith(withFee(30), entry)
+    const pending = quoteWith(withFee(30), entry, open)
     await expect(pending).rejects.toMatchObject({
       code: 'unsafe-transaction',
       detail: expect.stringMatching(/quoted amounts and slippage/),
     })
     expect(pending.requests[0].url).toMatch(/platformFeeBps=30/)
-    expect(pending.requests[1].body.feeAccount).toBe(
-      (
-        await findAssociatedTokenAddress(STRANGER, new PublicKey(USDC))
-      ).toBase58(),
-    )
+    expect(pending.requests[1].body.feeAccount).toBe(feeAccount.toBase58())
+  })
+
+  it("asks Jupiter for a fee only when the collector's token account for the output is open", async () => {
+    const entry = {
+      ...JUPITER,
+      interfaceFee: { bps: 30, recipient: STRANGER.toBase58() },
+    }
+    const feeAccount = (
+      await findAssociatedTokenAddress(STRANGER, new PublicKey(USDC))
+    ).toBase58()
+    // Jupiter pays a fee only into an account that already exists; the collector has none
+    // for USDC. Jupiter is not asked at all, and the reason says why.
+    const missing = quoteWith(undefined, entry)
+    await expect(missing).rejects.toMatchObject({
+      code: 'venue-unavailable',
+      detail: expect.stringMatching(/fee collector has no token account/),
+    })
+    expect(missing.requests).toEqual([])
+    expect(missing.reads).toEqual([[feeAccount]])
+    // An account at that address that is not the collector's account of the output mint.
+    for (const wrong of [
+      tokenAccount(new PublicKey(NATIVE_SOL_MINT), STRANGER),
+      tokenAccount(new PublicKey(USDC), OWNER),
+      { owner: SystemProgram.programId, lamports: 1n, data: new Uint8Array() },
+    ]) {
+      const pending = quoteWith(
+        undefined,
+        entry,
+        new Map([[feeAccount, wrong]]),
+      )
+      await expect(pending).rejects.toMatchObject({
+        code: 'venue-unavailable',
+        detail: expect.stringMatching(
+          /is not the fee collector's token account/,
+        ),
+      })
+      expect(pending.requests).toEqual([])
+    }
   })
 
   it('refuses a minimum of zero, or looser than the chosen slippage', async () => {
@@ -1624,29 +1703,42 @@ describe("the wallet's legacy send: record, send, follow", () => {
   } = record
   void [_id, _at, _r]
 
-  function memoryJournal(initial: SolanaSwapRecord[] = []) {
-    let entries: SolanaLegacyJournalEntry[] = initial.map(entry => ({
-      record: entry,
-    }))
-    const settled: [string, string][] = []
+  /** One device's storage, as localStorage offers it; several journals may share it. */
+  function memoryStorage() {
+    const items = new Map<string, string>()
     return {
+      getItem: (key: string) => items.get(key) ?? null,
+      setItem: (key: string, value: string) => void items.set(key, value),
+    }
+  }
+  /** The wallet's real journal over storage in memory, noting what it settled. */
+  function memoryJournal(
+    initial: SolanaSwapRecord[] = [],
+    storage = memoryStorage(),
+  ) {
+    if (initial.length) {
+      storage.setItem(
+        `${SOLANA_LEGACY_JOURNAL_KEY}:${record.chainIdentifier}:${record.account}`,
+        JSON.stringify(initial.map(entry => ({ record: entry }))),
+      )
+    }
+    const journal = new BrowserSolanaLegacyJournal(storage, {
+      account: record.account,
+      chainIdentifier: record.chainIdentifier,
+    })
+    const settled: [string, string][] = []
+    return Object.assign(journal, {
       settled,
-      list: () => entries,
-      put: (entry: SolanaSwapRecord) => {
-        entries = [...entries, { record: entry }]
-      },
-      settle: (id: string, status: 'confirmed' | 'failed') => {
+      storage,
+      settle: async (id: string, status: 'confirmed' | 'failed') => {
         settled.push([id, status])
-        entries = entries.map(entry =>
-          entry.record.transactionId === id
-            ? { ...entry, settled: status }
-            : entry,
+        return BrowserSolanaLegacyJournal.prototype.settle.call(
+          journal,
+          id,
+          status,
         )
       },
-      remove: (id: string) => {
-        entries = entries.filter(entry => entry.record.transactionId !== id)
-      },
-    }
+    })
   }
 
   type Status = null | { err: unknown; confirmationStatus?: any } | Error
@@ -2101,7 +2193,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
 
   it('a settled transaction whose note is owed does not block a new swap', async () => {
     const store = memoryJournal([record])
-    store.settle('sig', 'confirmed')
+    await store.settle('sig', 'confirmed')
     const { connection } = sender({
       statuses: [{ err: null, confirmationStatus: 'confirmed' }],
     })
@@ -2156,7 +2248,7 @@ describe("the wallet's legacy send: record, send, follow", () => {
 
   it('sends nothing if the record cannot be written', async () => {
     const store = memoryJournal()
-    store.put = () => {
+    store.put = async () => {
       throw new Error('storage full')
     }
     const { connection, sent } = sender({ statuses: [null] })
@@ -2168,6 +2260,118 @@ describe("the wallet's legacy send: record, send, follow", () => {
       ),
     ).rejects.toThrow('storage full')
     expect(sent).toEqual([])
+  })
+
+  describe('two tabs of one account: two wallet instances over one journal', () => {
+    const tabSigner = (signature: string, byte: number) => ({
+      ...signer,
+      sign: jest.fn(async () => ({
+        signature,
+        rawTransaction: Uint8Array.of(byte),
+      })),
+    })
+    const tab = (
+      storage: ReturnType<typeof memoryStorage>,
+      tabSigner: ReturnType<typeof tabSigner>,
+    ) => {
+      const journal = memoryJournal([], storage)
+      const { connection, sent } = sender({
+        statuses: [{ err: null, confirmationStatus: 'confirmed' }],
+      })
+      const wallet = createSolanaLegacySender({
+        connection: { ...connection, ...chainAtSigning().chain },
+        signer: async () => tabSigner,
+        journal,
+        track,
+        now: () => 1,
+      })
+      return { wallet, sent, journal }
+    }
+
+    it('of two swaps confirmed at once, exactly one is recorded and broadcast; the other is refused unsent', async () => {
+      const storage = memoryStorage()
+      const signerA = tabSigner('sigA', 0xa)
+      const signerB = tabSigner('sigB', 0xb)
+      const a = tab(storage, signerA)
+      const b = tab(storage, signerB)
+      const swap = await reviewed()
+      const recorded: string[][] = []
+      const submitted = () =>
+        recorded.push(a.journal.list().map(entry => entry.record.transactionId))
+      // Both pass the first "nothing pending" look before either has signed.
+      const results = await Promise.allSettled([
+        a.wallet.sendLegacyTransaction(swap.prepared, swap.intent, submitted),
+        b.wallet.sendLegacyTransaction(swap.prepared, swap.intent, submitted),
+      ])
+      expect(signerA.sign).toHaveBeenCalledTimes(1)
+      expect(signerB.sign).toHaveBeenCalledTimes(1)
+      const won = results.filter(result => result.status === 'fulfilled')
+      const lost = results.filter(
+        (result): result is PromiseRejectedResult =>
+          result.status === 'rejected',
+      )
+      expect(won).toHaveLength(1)
+      expect(lost).toHaveLength(1)
+      expect(lost[0].reason).toMatchObject({ code: 'swap-pending' })
+      // Only the winner's signed bytes ever left the device, and while it was in flight the
+      // journal held it alone.
+      expect([...a.sent, ...b.sent]).toHaveLength(1)
+      expect(recorded).toHaveLength(1)
+      expect(recorded[0]).toHaveLength(1)
+      expect(recorded[0][0]).toBe(
+        (won[0] as PromiseFulfilledResult<{ signature: string }>).value
+          .signature,
+      )
+    })
+
+    it('two tabs following the same swap settle and announce it once', async () => {
+      const storage = memoryStorage()
+      const journalA = memoryJournal([record], storage)
+      const journalB = memoryJournal([], storage)
+      // The other tab is its own realm: its own followers, nothing shared but the storage.
+      let otherTab!: typeof import('./execute')
+      jest.isolateModules(() => {
+        otherTab = jest.requireActual('./execute')
+      })
+      const finalized = () =>
+        sender({ statuses: [{ err: null, confirmationStatus: 'finalized' }] })
+      const onSync = jest.fn().mockResolvedValue(undefined)
+      const outcomes = await Promise.all([
+        trackSolanaSwap(finalized().connection, journalA, record, {
+          ...track,
+          onSync,
+        }),
+        otherTab.trackSolanaSwap(finalized().connection, journalB, record, {
+          ...track,
+          onSync,
+        }),
+      ])
+      expect(outcomes.map(outcome => outcome.status)).toEqual([
+        'confirmed',
+        'confirmed',
+      ])
+      expect(onSync).toHaveBeenCalledTimes(1)
+      expect([...journalA.settled, ...journalB.settled]).toHaveLength(2)
+      expect(journalA.list()).toEqual([])
+    })
+
+    it('a settle or remove by one tab never drops an entry the other recorded meanwhile', async () => {
+      const storage = memoryStorage()
+      const journalA = memoryJournal([record], storage)
+      const journalB = memoryJournal([], storage)
+      await journalA.settle('sig', 'confirmed')
+      await Promise.all([
+        journalB.put({ ...record, transactionId: 'sig2' }),
+        journalA.remove('sig'),
+      ])
+      expect(journalA.list().map(entry => entry.record.transactionId)).toEqual([
+        'sig2',
+      ])
+      // An entry already settled, or gone, is settled by nobody a second time.
+      expect(await journalB.settle('sig', 'failed')).toBe(false)
+      expect(await journalB.settle('sig2', 'confirmed')).toBe(true)
+      expect(await journalA.settle('sig2', 'confirmed')).toBe(false)
+    })
   })
 
   /** Rewrites the simulated balance of the wallet's devUSDC account (the swap's output). */
@@ -2613,7 +2817,12 @@ describe('SolanaWallet signs a swap only through its checked send', () => {
       networkId: 'solana-devnet',
       genesisHash: GENESIS,
       legacy: {
-        journal: { list: () => [], put() {}, settle() {}, remove() {} },
+        journal: {
+          list: () => [],
+          put: async () => undefined,
+          settle: async () => true,
+          remove: async () => undefined,
+        },
       },
     })
     expect(

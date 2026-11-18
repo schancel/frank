@@ -6,8 +6,13 @@
  *
  *   SWAP_LIVECHECK_RELAY_URL=http://127.0.0.1:<port> \
  *   SWAP_LIVECHECK_WALLET_DIR=/path/outside/the/repo \
- *   TSX_TSCONFIG_PATH=packages/bot/tsconfig.json node --import tsx \
- *     packages/bot/demo/solana-swap-note.livecheck.ts [lamports]
+ *   yarn workspace @frank/bot livecheck:solana-swap-note [lamports]
+ *
+ * The script runs in packages/bot, so tsx reads packages/bot/tsconfig.json: its `paths` load
+ * the workspace packages from source. `@frank/crypto-box` and `@frank/nakamoto` (reached
+ * through @frank/cashweb) export only a built ESM entry, which Node cannot load from this
+ * CommonJS script; run from anywhere else without that tsconfig, loading fails with
+ * ERR_PACKAGE_PATH_NOT_EXPORTED. `demo/livechecks-load.jest.test.ts` keeps this loading.
  *
  * `SWAP_LIVECHECK_WALLET_DIR/roots.json` holds the account's roots (created when missing, mode
  * 600, never printed), including the Solana wallet's. With no amount it prints the Solana

@@ -60,6 +60,22 @@ import {
   solanaSwapVenuePresentations,
 } from './useSolanaSwap'
 
+// JSDOM has no Web Locks; the journal coordinates tabs through them. One queue per name.
+const lockTails = new Map<string, Promise<unknown>>()
+Object.defineProperty(navigator, 'locks', {
+  configurable: true,
+  value: {
+    request(name: string, work: () => Promise<unknown>) {
+      const run = (lockTails.get(name) ?? Promise.resolve()).then(work)
+      lockTails.set(
+        name,
+        run.catch(() => undefined),
+      )
+      return run
+    },
+  },
+})
+
 const mockHandleSwapItem = jest.fn()
 jest.mock('../stores/swaps', () => ({
   useSwapStore: () => ({ handleSwapItem: mockHandleSwapItem }),
@@ -153,6 +169,25 @@ describe("the Solana wallet's sync event", () => {
     expect(mockSend).toHaveBeenCalledTimes(1)
   })
 
+  it('two tabs of one account (two journals over this device): the second swap is refused while the first may land', async () => {
+    const tabA = solanaLegacyJournal('SoLAccount', 'solana-devnet')
+    const tabB = solanaLegacyJournal('SoLAccount', 'solana-devnet')
+    const results = await Promise.allSettled([
+      tabA.put(record('SoLAccount', 'FROM-A')),
+      tabB.put(record('SoLAccount', 'FROM-B')),
+    ])
+    expect(results.map(result => result.status)).toEqual([
+      'fulfilled',
+      'rejected',
+    ])
+    expect((results[1] as PromiseRejectedResult).reason).toMatchObject({
+      code: 'swap-pending',
+    })
+    expect(tabB.list().map(entry => entry.record.transactionId)).toEqual([
+      'FROM-A',
+    ])
+  })
+
   it('journals on this device, and an unreadable journal is an error, not an empty one', () => {
     const journal = solanaLegacyJournal('SoLAccount', 'solana-devnet')
     expect(journal.list()).toEqual([])
@@ -163,21 +198,21 @@ describe("the Solana wallet's sync event", () => {
     expect(() => journal.list()).toThrow(/could not be read/)
   })
 
-  it("keeps each account's transactions to itself", () => {
+  it("keeps each account's transactions to itself", async () => {
     const mine = solanaLegacyJournal('SoLAccount', 'solana-devnet')
     const theirs = solanaLegacyJournal('OtherAccount', 'solana-devnet')
-    mine.put(record('SoLAccount', 'MINE'))
-    theirs.put(record('OtherAccount', 'THEIRS'))
+    await mine.put(record('SoLAccount', 'MINE'))
+    await theirs.put(record('OtherAccount', 'THEIRS'))
     expect(mine.list().map(entry => entry.record.transactionId)).toEqual([
       'MINE',
     ])
     // One account cannot settle or clear another's entry, nor record under another's name.
-    mine.settle('THEIRS', 'confirmed')
-    mine.remove('THEIRS')
+    await expect(mine.settle('THEIRS', 'confirmed')).resolves.toBe(false)
+    await mine.remove('THEIRS')
     expect(theirs.list()).toEqual([
       { record: record('OtherAccount', 'THEIRS') },
     ])
-    expect(() => mine.put(record('OtherAccount', 'X'))).toThrow(
+    await expect(mine.put(record('OtherAccount', 'X'))).rejects.toThrow(
       /another account/,
     )
     // Nor does the same account's other network see it.
@@ -197,10 +232,10 @@ describe('when the account opens', () => {
 
   it("follows this account's unfinished transactions and offers its owed notes, no swap screen needed", async () => {
     const journal = solanaLegacyJournal('SoLAccount', 'solana-devnet')
-    journal.put(record('SoLAccount', 'UNFINISHED'))
-    journal.put(record('SoLAccount', 'OWED'))
-    journal.settle('OWED', 'confirmed')
-    solanaLegacyJournal('OtherAccount', 'solana-devnet').put(
+    await journal.put(record('SoLAccount', 'OWED'))
+    await journal.settle('OWED', 'confirmed')
+    await journal.put(record('SoLAccount', 'UNFINISHED'))
+    await solanaLegacyJournal('OtherAccount', 'solana-devnet').put(
       record('OtherAccount', 'THEIRS'),
     )
     await resumeSolanaSwaps()
@@ -215,12 +250,12 @@ describe('when the account opens', () => {
         .map((entry: { record: SolanaSwapRecord }) => [
           entry.record.transactionId,
         ]),
-    ).toEqual([['UNFINISHED'], ['OWED']])
+    ).toEqual([['OWED'], ['UNFINISHED']])
     expect(options.onSync).toBe(sendSolanaLegacySyncNote)
     // This device's records are in the swap history at once.
     expect(mockHandleSwapItem.mock.calls.map(([swap]) => swap.txHash)).toEqual([
-      'UNFINISHED',
       'OWED',
+      'UNFINISHED',
     ])
   })
 

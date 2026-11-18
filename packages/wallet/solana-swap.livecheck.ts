@@ -76,15 +76,32 @@ async function open(network: Network, keyfile: string, entry: SolanaSwapVenue) {
     'confirmed',
   )
   // A journal in memory is enough here: this script follows each swap to its end in one run.
+  // It keeps the journal's contract: one unsettled swap at a time, settled once.
   let entries: SolanaLegacyJournalEntry[] = []
   const journal: SolanaLegacyJournal = {
     list: () => entries,
-    put: record => {
-      entries = [...entries, { record }]
+    put: async record => {
+      if (
+        entries.some(
+          e => !e.settled && e.record.transactionId !== record.transactionId,
+        )
+      ) {
+        throw new Error('a swap is still pending')
+      }
+      entries = [
+        ...entries.filter(e => e.record.transactionId !== record.transactionId),
+        { record },
+      ]
       console.log('journaled before sending:', record.transactionId)
     },
-    settle: (id, status) => console.log('journal: settled', status, id),
-    remove: id => {
+    settle: async (id, status) => {
+      const entry = entries.find(e => e.record.transactionId === id)
+      if (!entry || entry.settled) return false
+      entries = entries.map(e => (e === entry ? { ...e, settled: status } : e))
+      console.log('journal: settled', status, id)
+      return true
+    },
+    remove: async id => {
       entries = entries.filter(e => e.record.transactionId !== id)
     },
   }

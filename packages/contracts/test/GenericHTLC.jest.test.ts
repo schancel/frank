@@ -37,12 +37,18 @@ describe('GenericHTLC v2 on a local EVM node', () => {
     anvil.provider.getBalance(typeof who === 'string' ? who : who.address)
   const as = (who: ethers.Signer) => htlc.connect(who) as ethers.Contract
   const latestTime = async () => (await anvil.provider.getBlock('latest'))!.timestamp
-  // Default terms vary per lock (amount and a few seconds of expiry), so two locks of a test
-  // never collide on an id even when blocks share a timestamp.
+  // A lock's id is its sender and terms, so two locks of the suite with equal terms collide
+  // (LockAlreadyExists). Default amounts are unique; a test that fixes the amount gets a default
+  // expiry no earlier lock with that amount used, moved back a second at a time. This does not
+  // depend on how the node's clock moves between blocks.
   let nonce = 0n
   const nextAmount = () => AMOUNT + ++nonce
-  let skew = 0
-  const nextSkew = () => ++skew % 600
+  const usedExpiries = new Set<string>()
+  const freshExpiry = (amount: bigint, expiresAt: bigint) => {
+    while (usedExpiries.has(`${amount}:${expiresAt}`)) expiresAt--
+    usedExpiries.add(`${amount}:${expiresAt}`)
+    return expiresAt
+  }
 
   interface Terms {
     recipient: string
@@ -56,15 +62,16 @@ describe('GenericHTLC v2 on a local EVM node', () => {
     [t.recipient, t.refundAddress, t.token, t.amount, t.hashLock, t.expiresAt] as const
 
   async function terms(opts: Partial<Terms> & { duration?: number } = {}): Promise<Terms> {
+    const amount = opts.amount ?? nextAmount()
     return {
       recipient: opts.recipient ?? recipient.address,
       refundAddress: opts.refundAddress ?? refundTo.address,
       token: opts.token ?? NATIVE,
-      amount: opts.amount ?? nextAmount(),
+      amount,
       hashLock: opts.hashLock ?? hashLock,
       expiresAt:
         opts.expiresAt ??
-        BigInt((await latestTime()) + (opts.duration ?? ONE_HOUR) - nextSkew()),
+        freshExpiry(amount, BigInt((await latestTime()) + (opts.duration ?? ONE_HOUR))),
     }
   }
 

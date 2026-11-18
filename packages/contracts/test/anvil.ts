@@ -3,12 +3,14 @@
  * dependency) for a test file. Contracts under test are deployed to it and executed by it.
  */
 import { spawn, type ChildProcess } from 'child_process'
+import * as fs from 'fs'
 import * as net from 'net'
 import * as path from 'path'
 import { ethers } from 'ethers'
 import { compileSolidity, type ContractArtifact } from '../scripts/compile'
 
-const ANVIL_BIN = path.resolve(__dirname, '../node_modules/.bin/anvil')
+/** `ANVIL_BIN` when set (CI passes the platform binary), else the package's launcher. */
+const ANVIL_BIN = process.env.ANVIL_BIN || path.resolve(__dirname, '../node_modules/.bin/anvil')
 const DEV_MNEMONIC = 'test test test test test test test test test test test junk'
 
 export interface Anvil {
@@ -52,6 +54,8 @@ async function waitUntilListening(url: string, child: ChildProcess) {
 }
 
 export async function startAnvil(): Promise<Anvil> {
+  // These suites have no skip: without the node they fail.
+  if (!fs.existsSync(ANVIL_BIN)) throw new Error(`no anvil binary at ${ANVIL_BIN} (set ANVIL_BIN)`)
   const port = await freePort()
   const child = spawn(
     ANVIL_BIN,

@@ -6,6 +6,7 @@ on:
     paths:
       - "app/**"
       - "packages/wallet/**"
+      - "packages/contracts/**"
       - "packages/cashweb/**"
       - "packages/bot/**"
       - "packages/bot-framework/**"
@@ -17,6 +18,7 @@ on:
     paths:
       - "app/**"
       - "packages/wallet/**"
+      - "packages/contracts/**"
       - "packages/cashweb/**"
       - "packages/bot/**"
       - "packages/bot-framework/**"
@@ -88,6 +90,25 @@ jobs:
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand evm-deposit-scan.anvil.jest.test.ts
+
+  # GenericHTLC and StateChannel on a real EVM node (anvil), and the wallet's HTLC encoders,
+  # reader and game escrow against the compiled artifact. The step fails if the binary is
+  # missing, so no anvil suite can be silently skipped here.
+  contracts-and-htlc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install
+      - name: Contracts and wallet HTLC suites on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          export ANVIL_BIN="$PWD/$ANVIL_BIN"
+          yarn workspace @frank/contracts test --ci --runInBand
+          yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts
 
   # Its own job, so it runs beside wallet-monad-chain instead of lengthening it, and so the
   # latency budgets are measured without other jest workers competing for the CPU.

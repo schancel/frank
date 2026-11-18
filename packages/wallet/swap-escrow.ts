@@ -1,19 +1,21 @@
 /**
  * Cross-Chain Atomic Swap Escrow Services & Calldata Builders.
  *
- * Provides typed transaction builders, PDA resolvers, deterministic preimage derivation,
- * and lock state evaluators for GenericHTLC on EVM (Monad/Ethereum) and generic-htlc on Solana.
+ * EVM: strict calldata encoders, the lock id and a lock reader for GenericHTLC v2
+ * (`htlcLockId`, `encodeHtlcLock`/`Withdraw`/`Refund`, `readHtlcLock`). Solana: instruction
+ * builders and the state decoder for generic-htlc.
  */
 import {
   AbiCoder,
-  concat,
-  getBytes,
+  getAddress,
   hexlify,
   Interface,
+  isAddress,
   keccak256,
-  toUtf8Bytes,
+  sha256,
+  ZeroAddress,
 } from "ethers";
-import { sha256 } from "@noble/hashes/sha256";
+import type { BlockTag, Provider } from "ethers";
 import { PublicKey, TransactionInstruction } from "@solana/web3.js";
 import { fromHex, toHex } from "@frank/codec";
 import {
@@ -34,23 +36,250 @@ import type {
 } from "./solana-game-escrow";
 
 /**
- * The GenericHTLC functions Frank calls, with the parameter and return types of the compiled
- * contract (`packages/contracts/artifacts/GenericHTLC.json`, rebuilt from
+ * GenericHTLC v2, as Frank calls it: the parameter and return types of the compiled contract
+ * (`packages/contracts/artifacts/GenericHTLC.json`, rebuilt from
  * `packages/contracts/contracts/GenericHTLC.sol` by `yarn --cwd packages/contracts build`).
- * `swap-escrow.jest.test.ts` checks every entry against that artifact.
+ * `swap-escrow.jest.test.ts` checks this list against that artifact in both directions.
  */
 export const EVM_GENERIC_HTLC_ABI = [
-  "function lock(bytes32 lockId, address recipient, address refundAddress, bytes32 hashLock, uint256 duration) external payable",
-  "function lock(bytes32 lockId, address recipient, bytes32 hashLock, uint256 duration) external payable",
-  "function withdraw(bytes32 lockId, bytes calldata preimage) external",
+  "function MAX_LOCK_DURATION() external view returns (uint256)",
+  "function PAYMENT_GAS() external view returns (uint256)",
+  "function lockIdOf(address sender, address recipient, address refundAddress, address token, uint256 amount, bytes32 hashLock, uint64 expiresAt) external pure returns (bytes32)",
+  "function lock(address recipient, address refundAddress, address token, uint256 amount, bytes32 hashLock, uint64 expiresAt) external payable returns (bytes32 lockId)",
+  "function withdraw(bytes32 lockId, bytes32 preimage) external",
   "function refund(bytes32 lockId) external",
-  "function batchDistribute(bytes32[] calldata lockIds, tuple(address recipient, uint256 amount)[] calldata payouts, bytes calldata preimage) external",
-  "function batchWithdraw(bytes32[] calldata lockIds, bytes calldata preimage) external",
-  "function locks(bytes32 lockId) external view returns (address sender, address recipient, address refundAddress, address token, bytes32 hashLock, uint256 amount, uint256 expiresAt, bool withdrawn, bool refunded)",
-];
+  "function batchWithdraw(bytes32[] lockIds, bytes32 preimage) external",
+  "function batchDistribute(bytes32[] lockIds, tuple(address recipient, uint256 amount)[] payouts, bytes32 preimage) external",
+  "function claimOwed(address token, address to) external",
+  "function locks(bytes32 lockId) external view returns (address sender, address recipient, address refundAddress, address token, bytes32 hashLock, uint256 amount, uint64 expiresAt, uint8 state, bytes32 preimage)",
+  "function owed(address to, address token) external view returns (uint256)",
+  "event Locked(bytes32 indexed lockId, address indexed sender, address indexed token, address recipient, address refundAddress, bytes32 hashLock, uint256 amount, uint64 expiresAt)",
+  "event Withdrawn(bytes32 indexed lockId, address indexed recipient, bytes32 preimage)",
+  "event BatchDistributed(bytes32[] lockIds, tuple(address recipient, uint256 amount)[] payouts, bytes32 preimage)",
+  "event Refunded(bytes32 indexed lockId, address indexed refundAddress, uint256 amount)",
+  "event PaymentDeferred(address indexed to, address indexed token, uint256 amount)",
+  "event OwedClaimed(address indexed creditor, address indexed token, address to, uint256 amount)",
+] as const;
 
 export const evmHtlcInterface = new Interface(EVM_GENERIC_HTLC_ABI);
 
+/** The native coin, as GenericHTLC's `token`. */
+export const HTLC_NATIVE_TOKEN = ZeroAddress;
+
+const UINT64_MAX = (1n << 64n) - 1n;
+
+/** The terms of one GenericHTLC lock. With the sender, they determine its id. */
+export interface EvmHtlcTerms {
+  recipient: string;
+  /** Where the funds return from `expiresAt` on. Explicit; Frank's own locks never use the recipient. */
+  refundAddress: string;
+  /** An ERC-20 address, or `HTLC_NATIVE_TOKEN` for the native coin. */
+  token: string;
+  /** In the token's (or the native coin's) smallest unit. Positive. */
+  amount: bigint;
+  /** sha256 of the 32-byte preimage, as 0x-prefixed 32-byte hex. */
+  hashLock: string;
+  /** Absolute deadline in seconds since the epoch, by the chain's block timestamp. */
+  expiresAt: bigint;
+}
+
+/** A GenericHTLC lock as `locks(lockId)` reports it. */
+export interface EvmHtlcLock extends EvmHtlcTerms {
+  lockId: string;
+  sender: string;
+  state: "open" | "withdrawn" | "refunded";
+  /** The preimage the lock was withdrawn with; null until it is withdrawn. */
+  preimage: string | null;
+}
+
+const LOCK_STATES = [null, "open", "withdrawn", "refunded"] as const;
+
+function requireAddress(value: unknown, what: string, allowZero = false): string {
+  if (typeof value !== "string" || !isAddress(value)) {
+    throw new Error(`GenericHTLC ${what} must be a 20-byte address`);
+  }
+  const address = getAddress(value);
+  if (!allowZero && address === ZeroAddress) {
+    throw new Error(`GenericHTLC ${what} must not be the zero address`);
+  }
+  return address;
+}
+
+function requireBytes32(value: unknown, what: string): string {
+  if (value instanceof Uint8Array) {
+    if (value.length !== 32) throw new Error(`GenericHTLC ${what} must be exactly 32 bytes`);
+    return hexlify(value);
+  }
+  if (typeof value !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(value)) {
+    throw new Error(`GenericHTLC ${what} must be exactly 32 bytes of 0x-prefixed hex`);
+  }
+  return value.toLowerCase();
+}
+
+/** Terms the contract can hold: what `lockIdOf` and `locks` accept. */
+function requireTerms(terms: EvmHtlcTerms): EvmHtlcTerms {
+  const recipient = requireAddress(terms.recipient, "recipient");
+  const refundAddress = requireAddress(terms.refundAddress, "refund address");
+  const token = requireAddress(terms.token, "token", true);
+  if (typeof terms.amount !== "bigint" || terms.amount <= 0n) {
+    throw new Error("GenericHTLC amount must be a positive bigint");
+  }
+  if (
+    typeof terms.expiresAt !== "bigint" ||
+    terms.expiresAt <= 0n ||
+    terms.expiresAt > UINT64_MAX
+  ) {
+    throw new Error("GenericHTLC expiresAt must be a positive uint64 bigint of seconds");
+  }
+  return {
+    recipient,
+    refundAddress,
+    token,
+    amount: terms.amount,
+    hashLock: requireBytes32(terms.hashLock, "hash lock"),
+    expiresAt: terms.expiresAt,
+  };
+}
+
+/**
+ * The id GenericHTLC gives the lock `sender` opens with `terms`: `lockIdOf`, computed here.
+ * Both parties of a swap compute it from the signed terms and find the lock on chain by it.
+ */
+export function htlcLockId(sender: string, terms: EvmHtlcTerms): string {
+  const t = requireTerms(terms);
+  return keccak256(
+    AbiCoder.defaultAbiCoder().encode(
+      ["address", "address", "address", "address", "uint256", "bytes32", "uint64"],
+      [
+        requireAddress(sender, "sender"),
+        t.recipient,
+        t.refundAddress,
+        t.token,
+        t.amount,
+        t.hashLock,
+        t.expiresAt,
+      ]
+    )
+  );
+}
+
+/**
+ * The transaction that opens a lock with `terms` on the GenericHTLC at `contractAddress`.
+ * A native lock carries exactly `amount` as value; a token lock carries none (the sender
+ * approves the contract for `amount` first). Refuses a refund address equal to the recipient.
+ */
+export function encodeHtlcLock(
+  contractAddress: string,
+  terms: EvmHtlcTerms
+): { to: string; data: string; value: bigint } {
+  const t = requireTerms(terms);
+  // The contract allows it, but such a lock pays the recipient on either branch.
+  if (t.refundAddress === t.recipient) {
+    throw new Error("The refund address of a lock must not be its recipient");
+  }
+  return {
+    to: requireAddress(contractAddress, "contract"),
+    data: evmHtlcInterface.encodeFunctionData("lock", [
+      t.recipient,
+      t.refundAddress,
+      t.token,
+      t.amount,
+      t.hashLock,
+      t.expiresAt,
+    ]),
+    value: t.token === HTLC_NATIVE_TOKEN ? t.amount : 0n,
+  };
+}
+
+/** The transaction that pays lock `lockId` to its recipient for the 32-byte `preimage`. */
+export function encodeHtlcWithdraw(
+  contractAddress: string,
+  lockId: string | Uint8Array,
+  preimage: string | Uint8Array
+): { to: string; data: string; value: bigint } {
+  return {
+    to: requireAddress(contractAddress, "contract"),
+    data: evmHtlcInterface.encodeFunctionData("withdraw", [
+      requireBytes32(lockId, "lock id"),
+      requireBytes32(preimage, "preimage"),
+    ]),
+    value: 0n,
+  };
+}
+
+/** The transaction that pays lock `lockId` back to its refund address, from its deadline on. */
+export function encodeHtlcRefund(
+  contractAddress: string,
+  lockId: string | Uint8Array
+): { to: string; data: string; value: bigint } {
+  return {
+    to: requireAddress(contractAddress, "contract"),
+    data: evmHtlcInterface.encodeFunctionData("refund", [
+      requireBytes32(lockId, "lock id"),
+    ]),
+    value: 0n,
+  };
+}
+
+/**
+ * Decodes what `locks(lockId)` returned. Null when there is no such lock. Throws for an
+ * unknown state, for a lock whose recorded terms do not give `lockId`, and for a withdrawn
+ * lock whose preimage does not hash to its hash lock (either way, not GenericHTLC v2).
+ */
+export function decodeHtlcLock(
+  lockId: string | Uint8Array,
+  returnData: string
+): EvmHtlcLock | null {
+  const id = requireBytes32(lockId, "lock id");
+  const r = evmHtlcInterface.decodeFunctionResult("locks", returnData);
+  const stateIndex = Number(r.state);
+  if (!Number.isInteger(stateIndex) || stateIndex < 0 || stateIndex >= LOCK_STATES.length) {
+    throw new Error(`GenericHTLC lock ${id} has unknown state ${String(r.state)}`);
+  }
+  const state = LOCK_STATES[stateIndex];
+  if (state === null) return null;
+  const terms: EvmHtlcTerms = {
+    recipient: r.recipient,
+    refundAddress: r.refundAddress,
+    token: r.token,
+    amount: r.amount,
+    hashLock: r.hashLock,
+    expiresAt: r.expiresAt,
+  };
+  const sender = getAddress(r.sender);
+  if (htlcLockId(sender, terms).toLowerCase() !== id) {
+    throw new Error(`GenericHTLC lock ${id} does not match its recorded terms`);
+  }
+  let preimage: string | null = null;
+  if (state === "withdrawn") {
+    preimage = requireBytes32(r.preimage, "preimage");
+    if (sha256(preimage).toLowerCase() !== String(r.hashLock).toLowerCase()) {
+      throw new Error(`GenericHTLC lock ${id} was withdrawn with a preimage that does not match it`);
+    }
+  }
+  return { lockId: id, sender, ...requireTerms(terms), state, preimage };
+}
+
+/**
+ * Reads lock `lockId` from the GenericHTLC at `contractAddress`. Null when there is no such
+ * lock. `blockTag` reads it as of a given block (for example one known to be final).
+ */
+export async function readHtlcLock(
+  provider: Pick<Provider, "call">,
+  contractAddress: string,
+  lockId: string | Uint8Array,
+  options: { blockTag?: BlockTag } = {}
+): Promise<EvmHtlcLock | null> {
+  const id = requireBytes32(lockId, "lock id");
+  const returnData = await provider.call({
+    to: requireAddress(contractAddress, "contract"),
+    data: evmHtlcInterface.encodeFunctionData("locks", [id]),
+    ...(options.blockTag === undefined ? {} : { blockTag: options.blockTag }),
+  });
+  return decodeHtlcLock(id, returnData);
+}
+
+/** The lock state the Solana generic-htlc decoder reports. */
 export type SwapLockStatus =
   | "unfunded"
   | "locked"
@@ -63,11 +292,6 @@ export interface SwapLockRecord {
   sender: string;
   recipient: string;
   refundAddress: string;
-  /**
-   * EVM only: the ERC-20 the lock holds, or the zero address for the native coin. `amount`
-   * is in that asset's units.
-   */
-  token?: string;
   hashLock: string;
   amount: bigint;
   expiresAt: number;
@@ -77,100 +301,15 @@ export interface SwapLockRecord {
   status: SwapLockStatus;
 }
 
-export type SwapStepPhase =
-  | "offer_pending"
-  | "maker_lock_needed"
-  | "taker_lock_needed"
-  | "ready_to_claim"
-  | "preimage_revealed"
-  | "settled"
-  | "expired_refundable"
-  | "refunded"
-  | "cancelled";
-
-export interface EvmHtlcLockTxParams {
-  lockId: string | Uint8Array;
-  recipient: string;
-  /** Where the funds return after the timelock: the sender's own address. Never the recipient. */
-  refundAddress: string;
-  hashLock: string | Uint8Array;
-  durationSeconds: bigint | number;
-  amountWei: bigint;
-  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
-  contractAddress: string;
-}
-
-export interface EvmHtlcWithdrawTxParams {
-  lockId: string | Uint8Array;
-  preimage: string | Uint8Array;
-  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
-  contractAddress: string;
-}
-
-export interface EvmHtlcRefundTxParams {
-  lockId: string | Uint8Array;
-  /** The GenericHTLC address on the lock's network; see `resolveHtlcContract`. */
-  contractAddress: string;
-}
-
-/**
- * Normalizes an identifier or hash to a 32-byte Uint8Array.
- */
-export function to32ByteHash(input: string | Uint8Array): Uint8Array {
-  if (typeof input === "string") {
+/** A 32-byte value given as bytes or as 64 hex digits (0x optional). Nothing is hashed. */
+function bytes32Of(input: string | Uint8Array, what: string): Uint8Array {
+  if (input instanceof Uint8Array) {
+    if (input.length === 32) return input;
+  } else if (typeof input === "string") {
     const clean = input.startsWith("0x") ? input.slice(2) : input;
-    if (clean.length === 64) {
-      return fromHex(clean);
-    }
-    // If not a 64-char hex string, hash the UTF-8 bytes to ensure exactly 32 bytes
-    return sha256(toUtf8Bytes(input));
+    if (/^[0-9a-fA-F]{64}$/.test(clean)) return fromHex(clean);
   }
-  if (input.length === 32) return input;
-  return sha256(input);
-}
-
-/**
- * Normalizes input to 0x-prefixed 32-byte hex string.
- */
-export function toBytes32Hex(input: string | Uint8Array): string {
-  const bytes = to32ByteHash(input);
-  return "0x" + toHex(bytes);
-}
-
-/**
- * Derives a preimage and SHA256 hashlock from a swapId and a secret seed.
- *
- * The seed is what makes the preimage secret: the swapId is in the offer and on chain. It
- * must be 32 bytes that only the party creating the hash lock knows. There is no default.
- */
-export function deriveSwapSecret(params: {
-  swapId: string | Uint8Array;
-  seed: Uint8Array;
-}): {
-  preimage: Uint8Array;
-  hashLock: Uint8Array;
-  preimageHex: string;
-  hashLockHex: string;
-} {
-  const swapIdBytes = to32ByteHash(params.swapId);
-  const tag = toUtf8Bytes("frank:swap-secret:v1:");
-  const entropy = params.seed;
-  if (!(entropy instanceof Uint8Array) || entropy.length !== 32) {
-    throw new Error("deriveSwapSecret needs a 32-byte secret seed");
-  }
-  if (entropy.every((byte) => byte === 0)) {
-    throw new Error("deriveSwapSecret refuses an all-zero seed");
-  }
-
-  const preimage = sha256(concat([tag, swapIdBytes, entropy]));
-  const hashLock = sha256(preimage);
-
-  return {
-    preimage,
-    hashLock,
-    preimageHex: "0x" + toHex(preimage),
-    hashLockHex: "0x" + toHex(hashLock),
-  };
+  throw new Error(`generic-htlc ${what} must be exactly 32 bytes`);
 }
 
 /**
@@ -192,151 +331,6 @@ export function resolveHtlcContract(chainIdentifier: string): {
   return {
     family: entry.family,
     contractAddress: requireChainContract(chainIdentifier, "htlc"),
-  };
-}
-
-/**
- * Encodes calldata and payload to call GenericHTLC.lock on EVM chains.
- */
-export function encodeEvmHtlcLock(params: EvmHtlcLockTxParams): {
-  to: string;
-  data: string;
-  value: bigint;
-} {
-  const htlc = params.contractAddress;
-  const lockId = toBytes32Hex(params.lockId);
-  const hashLock = toBytes32Hex(params.hashLock);
-  const refund = params.refundAddress;
-  if (!refund) {
-    throw new Error("encodeEvmHtlcLock needs the sender's refund address");
-  }
-  if (refund.toLowerCase() === params.recipient.toLowerCase()) {
-    throw new Error("The refund address of a lock must not be its recipient");
-  }
-
-  const data = evmHtlcInterface.encodeFunctionData(
-    "lock(bytes32,address,address,bytes32,uint256)",
-    [lockId, params.recipient, refund, hashLock, BigInt(params.durationSeconds)]
-  );
-
-  return {
-    to: htlc,
-    data,
-    value: params.amountWei,
-  };
-}
-
-/**
- * Encodes calldata to call GenericHTLC.withdraw on EVM chains.
- */
-export function encodeEvmHtlcWithdraw(params: EvmHtlcWithdrawTxParams): {
-  to: string;
-  data: string;
-} {
-  const htlc = params.contractAddress;
-  const lockId = toBytes32Hex(params.lockId);
-  const preimageBytes =
-    typeof params.preimage === "string"
-      ? fromHex(
-          params.preimage.startsWith("0x")
-            ? params.preimage.slice(2)
-            : params.preimage
-        )
-      : params.preimage;
-
-  const data = evmHtlcInterface.encodeFunctionData("withdraw", [
-    lockId,
-    preimageBytes,
-  ]);
-
-  return {
-    to: htlc,
-    data,
-  };
-}
-
-/**
- * Encodes calldata to call GenericHTLC.refund on EVM chains.
- */
-export function encodeEvmHtlcRefund(params: EvmHtlcRefundTxParams): {
-  to: string;
-  data: string;
-} {
-  const htlc = params.contractAddress;
-  const lockId = toBytes32Hex(params.lockId);
-
-  const data = evmHtlcInterface.encodeFunctionData("refund", [lockId]);
-
-  return {
-    to: htlc,
-    data,
-  };
-}
-
-/** What GenericHTLC.locks(lockId) returns, in the order of the contract's `Lock` struct. */
-export type EvmHtlcLockTuple = readonly [
-  sender: string,
-  recipient: string,
-  refundAddress: string,
-  token: string,
-  hashLock: string,
-  amount: bigint,
-  expiresAt: bigint,
-  withdrawn: boolean,
-  refunded: boolean
-];
-
-/**
- * Decodes the raw lock tuple returned from GenericHTLC.locks(lockId).
- */
-export function decodeEvmHtlcLockState(params: {
-  lockId: string | Uint8Array;
-  result: EvmHtlcLockTuple;
-  currentTimestampSec?: number;
-}): SwapLockRecord {
-  const [
-    sender,
-    recipient,
-    refundAddress,
-    token,
-    hashLock,
-    amount,
-    expiresAt,
-    withdrawn,
-    refunded,
-  ] = params.result;
-
-  const lockIdHex = toBytes32Hex(params.lockId);
-  const now = params.currentTimestampSec ?? Math.floor(Date.now() / 1000);
-  const exp = Number(expiresAt);
-  const isExpired = exp > 0 && now >= exp;
-
-  let status: SwapLockStatus = "unfunded";
-  if (sender !== "0x0000000000000000000000000000000000000000") {
-    if (withdrawn) {
-      status = "withdrawn";
-    } else if (refunded) {
-      status = "refunded";
-    } else if (isExpired) {
-      status = "expired";
-    } else {
-      status = "locked";
-    }
-  }
-
-  return {
-    lockId: lockIdHex,
-    sender,
-    recipient,
-    refundAddress,
-    token,
-    hashLock,
-    amount,
-    expiresAt: exp,
-    withdrawn,
-    refunded,
-    isExpired,
-    status,
   };
 }
 
@@ -381,7 +375,7 @@ export function decodeSolanaHtlcLockState(params: {
   const isInit = data[0] === 1;
   if (!isInit) return null;
 
-  const lockIdHex = toBytes32Hex(data.slice(1, 33));
+  const lockIdHex = "0x" + toHex(data.slice(1, 33));
   const senderPubkey = new PublicKey(data.slice(33, 65)).toBase58();
   const recipientPubkey = new PublicKey(data.slice(65, 97)).toBase58();
   const refundPubkey = new PublicKey(data.slice(97, 129)).toBase58();
@@ -437,8 +431,8 @@ export async function buildSolanaSwapLockInstruction(params: {
     sender: params.sender,
     recipient: params.recipient,
     refundAddress: params.refundAddress,
-    lockId: to32ByteHash(params.lockId),
-    hashLock: to32ByteHash(params.hashLock),
+    lockId: bytes32Of(params.lockId, "lock id"),
+    hashLock: bytes32Of(params.hashLock, "hash lock"),
     amountLamports: params.amountLamports,
     durationSeconds: params.durationSeconds,
     programId: params.programId,
@@ -458,7 +452,7 @@ export async function buildSolanaSwapWithdrawInstruction(params: {
   return buildSolanaHtlcWithdrawInstruction({
     caller: params.caller,
     recipient: params.recipient,
-    lockId: to32ByteHash(params.lockId),
+    lockId: bytes32Of(params.lockId, "lock id"),
     preimage: params.preimage,
     programId: params.programId,
   });
@@ -475,138 +469,8 @@ export async function buildSolanaSwapRefundInstruction(params: {
 }): Promise<TransactionInstruction> {
   return buildSolanaHtlcRefundInstruction({
     caller: params.caller,
-    lockId: to32ByteHash(params.lockId),
+    lockId: bytes32Of(params.lockId, "lock id"),
     refundAddress: params.refundAddress ?? params.caller,
     programId: params.programId,
   });
-}
-
-/**
- * What one party of a two-leg HTLC swap can do now, from the state of both locks.
- *
- * The maker locks leg A (to the taker) and holds the preimage; the taker locks leg B (to the
- * maker). Each party's own leg is its deposit: A for the maker, B for the taker.
- *
- * - Refund is the party's unilateral recovery. It is offered whenever the party's own lock has
- *   expired unclaimed (`status === "expired"`, the only state `GenericHTLC.refund` accepts),
- *   whatever the other leg or the offer says.
- * - Claim is offered whenever the counter-leg is still claimable (`locked`, before expiry, the
- *   only state `GenericHTLC.withdraw` accepts) and the party may take it: the maker once its
- *   own leg A was locked for the taker and has not been refunded (locked, or already claimed by
- *   the taker); the taker once the preimage is known (revealed, or leg B was withdrawn).
- *
- * Both can hold at once (the taker knows the preimage while its own B has expired); `phase`
- * then names the claim.
- */
-export function evaluateSwapStepPhase(params: {
-  isMaker: boolean;
-  offerStatus: "pending" | "accepted" | "settled" | "cancelled" | "expired";
-  legALock?: SwapLockRecord | null;
-  legBLock?: SwapLockRecord | null;
-  preimageRevealed?: boolean;
-}): {
-  phase: SwapStepPhase;
-  canLock: boolean;
-  canClaim: boolean;
-  canRefund: boolean;
-  claimPreimageRequired: boolean;
-  summary: string;
-} {
-  const { isMaker, offerStatus, preimageRevealed } = params;
-  const legA: SwapLockStatus = params.legALock?.status ?? "unfunded";
-  const legB: SwapLockStatus = params.legBLock?.status ?? "unfunded";
-  const own = isMaker ? legA : legB;
-  const counter = isMaker ? legB : legA;
-  const offerOpen = offerStatus === "pending" || offerStatus === "accepted";
-
-  const canRefund = own === "expired";
-  const canClaim =
-    counter === "locked" &&
-    (isMaker
-      ? legA === "locked" || legA === "withdrawn"
-      : !!preimageRevealed || legB === "withdrawn");
-  const canLock = isMaker
-    ? offerOpen && legA === "unfunded"
-    : offerOpen && legA === "locked" && legB === "unfunded";
-
-  const result = (
-    phase: SwapStepPhase,
-    summary: string
-  ): ReturnType<typeof evaluateSwapStepPhase> => ({
-    phase,
-    canLock,
-    canClaim,
-    canRefund,
-    claimPreimageRequired: canClaim && !isMaker,
-    summary,
-  });
-
-  if (legA === "withdrawn" && legB === "withdrawn") {
-    return result("settled", "Swap completed and settled on both chains");
-  }
-  if (canClaim) {
-    return isMaker
-      ? result(
-          "ready_to_claim",
-          "Counter-leg locked. Claim it, which reveals the preimage"
-        )
-      : result(
-          "preimage_revealed",
-          "Preimage revealed. Claim the offered leg with it"
-        );
-  }
-  if (canRefund) {
-    return result(
-      "expired_refundable",
-      "Your lock expired unclaimed; refund available"
-    );
-  }
-  if (own === "refunded") {
-    return result("refunded", "Your deposit was refunded");
-  }
-  if (counter === "withdrawn") {
-    return result(
-      "preimage_revealed",
-      "You claimed the counter-leg. Waiting for the counterparty to claim theirs"
-    );
-  }
-  if (own === "locked") {
-    if (counter === "locked") {
-      return result(
-        "ready_to_claim",
-        "Both legs locked. Waiting for the maker to claim and reveal the preimage"
-      );
-    }
-    if (isMaker && counter === "unfunded" && offerOpen) {
-      return result(
-        "taker_lock_needed",
-        "Leg A locked. Waiting for counterparty to lock counter-leg"
-      );
-    }
-    return result(
-      "offer_pending",
-      "Your lock is open; refund becomes available when it expires"
-    );
-  }
-  if (!offerOpen) {
-    return result(
-      offerStatus === "settled" ? "settled" : "cancelled",
-      offerStatus === "settled" ? "Swap settled" : "Swap cancelled"
-    );
-  }
-  if (canLock) {
-    return isMaker
-      ? result(
-          "maker_lock_needed",
-          "Offer created. Lock offered funds into HTLC contract"
-        )
-      : result(
-          "taker_lock_needed",
-          "Maker locked Leg A. Counterparty ready to lock counter-leg"
-        );
-  }
-  return result(
-    "offer_pending",
-    isMaker ? "Swap pending" : "Offer received. Waiting for the maker's lock"
-  );
 }

@@ -27,6 +27,13 @@ function createHarness() {
   const xecBroadcasts: string[] = []
   const evmBroadcasts: string[] = []
 
+  // The eCash node does not answer: every XEC call fails.
+  let xecDown = false
+  const xecNode = () => {
+    if (xecDown) throw new Error('chronik unreachable')
+  }
+  const evmFundingPrevious: (LegFundingObservation | undefined)[] = []
+
   let xecFundingObs: LegFundingObservation = {
     status: 'unseen',
     confirmations: 0,
@@ -103,13 +110,16 @@ function createHarness() {
       }
     },
     async broadcastTransaction(txHex) {
+      xecNode()
       xecBroadcasts.push(txHex)
       return { txid: 'aa'.repeat(32) }
     },
     async observeFunding() {
+      xecNode()
       return xecFundingObs
     },
     async observeSettlement() {
+      xecNode()
       return xecSettlementObs
     },
     async releaseInputs(swapId) {
@@ -138,7 +148,8 @@ function createHarness() {
       evmBroadcasts.push(txHex)
       return { txHash: '0x' + 'dd'.repeat(32) }
     },
-    async observeFunding() {
+    async observeFunding(_txHash, previous) {
+      evmFundingPrevious.push(previous)
       return evmFundingObs
     },
     async observeSettlement() {
@@ -168,6 +179,10 @@ function createHarness() {
     evmReserved,
     xecBroadcasts,
     evmBroadcasts,
+    evmFundingPrevious,
+    setXecDown: (down: boolean) => {
+      xecDown = down
+    },
     setXecFunding: (obs: LegFundingObservation) => {
       xecFundingObs = obs
     },
@@ -410,5 +425,129 @@ describe('SwapExecutionCoordinator (S3, S4, S6)', () => {
     expect(refunded.phase).toBe('refunded')
     expect(refunded.retentionReleased).toBe(true)
     expect(h.activeHolds.has(prepared.retentionOperationId)).toBe(false)
+  })
+})
+
+describe('SwapExecutionCoordinator when one chain does not answer', () => {
+  const responder = {
+    ...baseInput,
+    role: 'responder' as const,
+  }
+  const funded = async () => {
+    const h = createHarness()
+    h.setXecFunding({ status: 'final', confirmations: 10 })
+    h.setEvmFunding({ status: 'final', confirmations: 10, blockHeight: 500 })
+    const prepared = await h.coordinator.prepare(responder)
+    const record = await h.coordinator.fund(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+    )
+    expect(record.phase).toBe('funded')
+    return { h, prepared }
+  }
+
+  it("refunds the responder's own EVM leg while the eCash node is down, and says which chain was not seen", async () => {
+    const { h, prepared } = await funded()
+    h.setXecDown(true)
+    h.evmBroadcasts.length = 0
+    h.setEvmSettlement({
+      effect: 'refund',
+      status: 'included',
+      confirmations: 1,
+    })
+
+    const record = await h.coordinator.refund(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+      prepared.evmOpeningTimestamp + prepared.evmChallengeDuration,
+    )
+
+    expect(h.evmBroadcasts).toContain('0x02evmrefund')
+    expect(record.phase).toBe('refund-pending')
+    expect(record.unobservedChains).toEqual(['xec-testnet'])
+    // The eCash leg keeps what was last seen; an outage is not "unseen".
+    expect(record.xecFunding).toEqual({ status: 'final', confirmations: 10 })
+    // No custody is released while a chain is unobserved.
+    expect(record.retentionReleased).toBe(false)
+
+    h.setXecDown(false)
+    const again = await h.coordinator.reconcile(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+    )
+    expect(again.unobservedChains).toBeUndefined()
+  })
+
+  it("waits only on the party's own leg timelock", async () => {
+    const { h, prepared } = await funded()
+    // The responder's own leg is EVM: the XEC refund time does not open its refund.
+    expect(prepared.xecRefundTimestamp).toBeLessThan(
+      prepared.evmOpeningTimestamp + prepared.evmChallengeDuration,
+    )
+    await expect(
+      h.coordinator.refund(
+        responder.accountIncarnation,
+        responder.localPublicKey,
+        responder.swapId,
+        prepared.xecRefundTimestamp,
+      ),
+    ).rejects.toThrow('Refund timelock has not matured yet')
+  })
+
+  it('still sends the other leg of a claim when one send fails, and reports the failure', async () => {
+    const { h } = await funded()
+    h.evmBroadcasts.length = 0
+    // The eCash node answers observations but refuses the send.
+    const send = jest.fn()
+    const xec = (
+      h.coordinator as unknown as {
+        options: { xec: { broadcastTransaction: (tx: string) => unknown } }
+      }
+    ).options.xec
+    xec.broadcastTransaction = async (tx: string) => {
+      send(tx)
+      throw new Error('chronik refused')
+    }
+
+    await expect(
+      h.coordinator.claim(
+        responder.accountIncarnation,
+        responder.localPublicKey,
+        responder.swapId,
+      ),
+    ).rejects.toThrow('chronik refused')
+    expect(send).toHaveBeenCalledWith('02000000xecclaim')
+    expect(h.evmBroadcasts).toContain('0x02evmclaim')
+  })
+
+  it('refunds only the own leg', async () => {
+    const { h, prepared } = await funded()
+    h.xecBroadcasts.length = 0
+    h.evmBroadcasts.length = 0
+    await h.coordinator.refund(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+      prepared.evmOpeningTimestamp + prepared.evmChallengeDuration,
+    )
+    // Sent, and rebroadcast by the reconcile that follows while it is unseen.
+    expect(new Set(h.evmBroadcasts)).toEqual(new Set(['0x02evmrefund']))
+    expect(h.xecBroadcasts).not.toContain('02000000xecrefund')
+  })
+
+  it('gives each capability the funding observation it stored before', async () => {
+    const { h } = await funded()
+    h.evmFundingPrevious.length = 0
+    await h.coordinator.reconcile(
+      responder.accountIncarnation,
+      responder.localPublicKey,
+      responder.swapId,
+    )
+    expect(h.evmFundingPrevious).toEqual([
+      { status: 'final', confirmations: 10, blockHeight: 500 },
+    ])
   })
 })

@@ -38,6 +38,14 @@ export type SwapExecutionRestoreFailure =
   | 'storage-unavailable'
   | 'account-unavailable'
   | 'records-unreadable'
+  /**
+   * The wallet's record store holds records written under another owner key: by an older
+   * build (which keyed them `${accountId}:${revision}`). They are not migrated (development
+   * baseline). Reset path: delete the IndexedDB database
+   * `frank-swap-execution-v1-<namespace>` (`swapExecutionStoreNamespace`) in the browser's
+   * developer tools; the escrow keys of those swaps derive from public swap data.
+   */
+  | 'records-from-older-version'
 
 export const swapExecutionState = shallowReactive({
   busy: false,
@@ -115,10 +123,23 @@ export async function refreshSwapExecutionRecords(): Promise<void> {
   swapExecutionState.restore = 'loading'
   swapExecutionState.restoreFailure = null
   try {
-    const list = await coordinator.listOperations(owner)
+    // The store is this wallet's own (`swapExecutionStoreNamespace`), so every row in it
+    // belongs to this owner. A row that does not is a record this build cannot address: it
+    // is reported, never silently left out.
+    const all = await coordinator.listOperations()
     if (swapExecutionState.coordinator !== coordinator) return
-    syncRecords(list)
-    swapExecutionState.restore = 'ready'
+    const mine = all.filter(
+      r =>
+        r.accountIncarnation === owner.accountIncarnation &&
+        r.localPublicKey.toLowerCase() === owner.localPublicKey.toLowerCase(),
+    )
+    syncRecords(mine)
+    if (mine.length === all.length) {
+      swapExecutionState.restore = 'ready'
+    } else {
+      swapExecutionState.restore = 'failed'
+      swapExecutionState.restoreFailure = 'records-from-older-version'
+    }
   } catch (error) {
     if (swapExecutionState.coordinator === coordinator) {
       swapExecutionState.restore = 'failed'

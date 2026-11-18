@@ -280,9 +280,13 @@ export function xecEscrowFundingObservation(input: {
 
 /**
  * The funding of a swap's EVM escrow account. Funded means the account held the principal,
- * or has sent a transaction (it was swept, which only a funded escrow can be). The depth is
- * how many of the latest blocks it has been funded in, found from the account's state at
- * those blocks; a node that no longer has that state gives the one block it is sure of.
+ * or has sent a transaction (it was swept, which only a funded escrow can be).
+ *
+ * The depth counts from the earliest block the escrow is known funded at (`blockHeight`):
+ * found from the account's state over the latest blocks where the node serves it, and in any
+ * case no later than the block of an earlier observation (`previous`, as stored in the swap
+ * record). A node without historical state therefore still lets a funded leg grow deep and
+ * become final across observations.
  */
 export async function observeEvmEscrowFunding(
   provider: Pick<
@@ -291,6 +295,7 @@ export async function observeEvmEscrowFunding(
   >,
   escrowAddress: string,
   principalWei: bigint,
+  previous?: LegFundingObservation,
 ): Promise<LegFundingObservation> {
   const stateAt = async (block: number) => {
     const [balance, nonce] = await Promise.all([
@@ -306,26 +311,41 @@ export async function observeEvmEscrowFunding(
   }
   const spent = latest.balance < principalWei
 
-  let confirmations = 1
+  let fundedAt = tip
+  if (
+    previous &&
+    previous.status !== 'unseen' &&
+    previous.blockHeight !== undefined &&
+    previous.blockHeight <= tip
+  ) {
+    fundedAt = previous.blockHeight
+  }
   try {
-    const deepest = tip - (SWAP_FINALITY_CONFIRMATIONS - 1)
-    if (deepest >= 0 && (await stateAt(deepest)).funded) {
-      confirmations = SWAP_FINALITY_CONFIRMATIONS
-    } else {
-      // The earliest block of the window in which the escrow is funded.
-      let low = Math.max(0, deepest + 1)
-      let high = tip
-      while (low < high) {
-        const mid = Math.floor((low + high) / 2)
-        if ((await stateAt(mid)).funded) high = mid
-        else low = mid + 1
+    const deepest = Math.max(0, tip - (SWAP_FINALITY_CONFIRMATIONS - 1))
+    if (fundedAt > deepest) {
+      if ((await stateAt(deepest)).funded) {
+        fundedAt = deepest
+      } else {
+        // The earliest block of the window in which the escrow is funded.
+        let low = deepest + 1
+        let high = fundedAt
+        while (low < high) {
+          const mid = Math.floor((low + high) / 2)
+          if ((await stateAt(mid)).funded) high = mid
+          else low = mid + 1
+        }
+        fundedAt = low
       }
-      confirmations = tip - low + 1
     }
   } catch {
-    // The node has no state for those blocks; only the latest one is certain.
+    // The node serves no state for those blocks: the earliest block seen funded stands.
   }
-  return { ...depthObservation(confirmations), txId: escrowAddress, spent }
+  return {
+    ...depthObservation(tip - fundedAt + 1),
+    txId: escrowAddress,
+    blockHeight: fundedAt,
+    spent,
+  }
 }
 
 export function createLiveXecSwapCapability(): XecSwapCapability {
@@ -590,7 +610,10 @@ export function createLiveEvmSwapCapability(
       return { txHash }
     },
 
-    async observeFunding(txHash: string): Promise<LegFundingObservation> {
+    async observeFunding(
+      txHash: string,
+      previous?: LegFundingObservation,
+    ): Promise<LegFundingObservation> {
       const evmWallet = getEvmWallet()
       const desc = parseActionDescriptor(txHash)
       if (desc && desc.kind === 'swap-evm-watch-id') {
@@ -604,6 +627,7 @@ export function createLiveEvmSwapCapability(
           evmWallet.provider,
           new ethers.Wallet(escrowPrivKey).address,
           principalWei,
+          previous,
         )
       }
 

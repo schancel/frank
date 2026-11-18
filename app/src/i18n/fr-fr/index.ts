@@ -1278,6 +1278,10 @@ export const rawFrFR = {
     executionRestoring: 'Ouverture des enregistrements d’échange…',
     executionRestoreFailed:
       'Les enregistrements d’échange de cet appareil n’ont pas pu être ouverts : la réclamation ou le remboursement d’un échange financé auparavant ne peut pas être affiché. Rechargez pour réessayer.',
+    executionRecordsFromOlderVersion:
+      'Certains enregistrements d’échange de cet appareil ont été enregistrés par une ancienne version de Frank et ne peuvent pas être ouverts : leurs réclamations et remboursements ne sont pas affichés.',
+    executionObservationFailed:
+      'Impossible de vérifier {chains} pour le moment. Affichage du dernier état observé.',
     activeOnOtherDevice: 'Actif sur {device}',
     takeOverActive: 'Activer ici',
     viewTx: 'Voir Tx {chain}',

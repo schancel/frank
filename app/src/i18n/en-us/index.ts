@@ -1250,6 +1250,10 @@ export const rawEnUS = {
     executionRestoring: 'Opening swap records…',
     executionRestoreFailed:
       'Swap records on this device could not be opened, so a claim or refund for a swap funded earlier cannot be shown. Reload to try again.',
+    executionRecordsFromOlderVersion:
+      'Some swap records on this device were saved by an older version of Frank and cannot be opened, so their claims and refunds are not shown.',
+    executionObservationFailed:
+      'Could not check {chains} just now. Showing what was last seen there.',
     activeOnOtherDevice: 'Active on {device}',
     takeOverActive: 'Use here',
     viewTx: 'View {chain} Tx',

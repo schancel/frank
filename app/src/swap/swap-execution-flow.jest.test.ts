@@ -753,4 +753,104 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
       await runtime.stop()
     }
   })
+
+  test('records saved under an older owner key are reported, not left out', async () => {
+    const { swapExecutionState } = require('./swap-execution-commands')
+    globalThis.indexedDB = new IDBFactory()
+
+    // An older build keyed this wallet's records `${accountId}:${revision}`.
+    const before = new BrowserSwapExecutionStore(
+      swapExecutionStoreNamespace(aliceStart),
+    )
+    createSwapExecutionCoordinator({
+      owner: {
+        accountIncarnation: 'alice-acc:1',
+        localPublicKey: toHex(alicePub),
+      },
+      store: before,
+      ...earlierSwapCapabilities(),
+    })
+    await prepareSwapExecution({
+      swapId: toHex(swapId),
+      conversationId,
+      peerPublicKey: toHex(bobPub),
+      role: 'initiator',
+      xecChainIdentifier: TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
+      evmChainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
+      xecPrincipal: 25_000n,
+      evmPrincipal: 1_000_000_000_000_000n,
+      expiry: 3_000_000_000,
+    })
+    await fundSwapExecution(toHex(swapId))
+    installSwapExecutionCoordinator(null)
+    before.close()
+
+    const runtime = startAppSwapExecution(aliceStart)
+    try {
+      for (let i = 0; i < 100 && swapExecutionState.restore === 'loading'; i++)
+        await new Promise(resolve => setTimeout(resolve, 10))
+      expect(swapExecutionState.restore).toBe('failed')
+      expect(swapExecutionState.restoreFailure).toBe(
+        'records-from-older-version',
+      )
+      // The records this build can address still work; the coordinator stays.
+      expect(swapExecutionState.coordinator).not.toBeNull()
+
+      const card = mountCard()
+      await flushPromises()
+      expect(
+        card.find('[data-testid="swap-execution-restore-failed"]').text(),
+      ).toBe(en.chatMessageSwap.executionRecordsFromOlderVersion)
+      expect(
+        card.find('[data-testid="swap-execution-turned-off"]').exists(),
+      ).toBe(false)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  test('says which chain could not be checked, and keeps the refund', async () => {
+    let xecDown = false
+    const capabilities = earlierSwapCapabilities()
+    const xec = {
+      ...capabilities.xec,
+      async observeFunding() {
+        if (xecDown) throw new Error('chronik unreachable')
+        return { status: 'final', confirmations: 10 }
+      },
+    }
+    createSwapExecutionCoordinator({
+      owner: aliceOwner,
+      ...capabilities,
+      xec,
+    })
+    await prepareSwapExecution({
+      swapId: toHex(swapId),
+      conversationId,
+      peerPublicKey: toHex(bobPub),
+      role: 'initiator',
+      xecChainIdentifier: TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
+      evmChainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
+      xecPrincipal: 25_000n,
+      evmPrincipal: 1_000_000_000_000_000n,
+      expiry: 3_000_000_000,
+      nowSec: Math.floor(Date.now() / 1000) - 10_000,
+    })
+    await fundSwapExecution(toHex(swapId))
+    const card = mountCard()
+    xecDown = true
+    await reconcileSwapExecution(toHex(swapId))
+    await flushPromises()
+
+    expect(card.find('[data-testid="swap-unobserved-chains"]').text()).toBe(
+      en.chatMessageSwap.executionObservationFailed.replace(
+        '{chains}',
+        TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
+      ),
+    )
+    expect(card.find('[data-testid="swap-execution-status"]').text()).toBe(
+      en.chatMessageSwap.statusLocked,
+    )
+    expect(card.find('[data-testid="swap-refund-btn"]').exists()).toBe(true)
+  })
 })

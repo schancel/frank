@@ -105,6 +105,11 @@ export interface SwapExecutionRecord {
   readonly evmSettlement: LegSettlementObservation
   readonly maxObservedReorgDepth: number
   readonly reorgWarning?: string
+  /**
+   * The chains the last reconcile could not observe (their node did not answer). Their
+   * stored observations were kept, not taken as unseen. Cleared once they answer again.
+   */
+  readonly unobservedChains?: readonly string[]
 }
 
 export interface SwapExecutionStore {
@@ -194,7 +199,11 @@ export interface XecSwapCapability {
     refundTxid: string
   }>
   broadcastTransaction(txHex: string): Promise<{ txid: string }>
-  observeFunding(txid: string): Promise<LegFundingObservation>
+  /** `previous` is the observation stored for this leg, so a capability can build on it. */
+  observeFunding(
+    txid: string,
+    previous?: LegFundingObservation,
+  ): Promise<LegFundingObservation>
   observeSettlement(input: {
     fundingTxid: string
     claimTxid: string
@@ -220,7 +229,11 @@ export interface EvmSwapCapability {
     refundTxHash: string
   }>
   broadcastTransaction(txHex: string): Promise<{ txHash: string }>
-  observeFunding(txHash: string): Promise<LegFundingObservation>
+  /** `previous` is the observation stored for this leg, so a capability can build on it. */
+  observeFunding(
+    txHash: string,
+    previous?: LegFundingObservation,
+  ): Promise<LegFundingObservation>
   observeSettlement(input: {
     fundingTxHash: string
     claimTxHash: string
@@ -658,11 +671,13 @@ export class SwapExecutionCoordinator {
         phase: 'claiming',
       })
     }
-    await Promise.all([
-      this.options.xec.broadcastTransaction(record.xecClaimTxHex),
-      this.options.evm.broadcastTransaction(record.evmClaimTxHex),
-    ])
-    return await this.reconcile(accountIncarnation, localPublicKey, swapId)
+    return await this.broadcastEachThenReconcile(
+      accountIncarnation,
+      localPublicKey,
+      swapId,
+      () => this.options.xec.broadcastTransaction(record.xecClaimTxHex),
+      () => this.options.evm.broadcastTransaction(record.evmClaimTxHex),
+    )
   }
 
   /**
@@ -680,12 +695,14 @@ export class SwapExecutionCoordinator {
       localPublicKey,
       swapId,
     )
-    const evmRefundReady =
-      nowSec >= record.evmOpeningTimestamp + record.evmChallengeDuration
-    const xecRefundReady = nowSec >= record.xecRefundTimestamp
+    // The party's own deposit: the initiator funds the XEC leg, the responder the EVM leg.
+    // Its refund waits only on that leg's own timelock.
+    const ownRefundReady =
+      record.role === 'initiator'
+        ? nowSec >= record.xecRefundTimestamp
+        : nowSec >= record.evmOpeningTimestamp + record.evmChallengeDuration
     if (
-      !xecRefundReady &&
-      !evmRefundReady &&
+      !ownRefundReady &&
       record.phase !== 'recovery-required' &&
       record.phase !== 'refund-pending'
     ) {
@@ -697,11 +714,40 @@ export class SwapExecutionCoordinator {
         phase: 'refund-pending',
       })
     }
-    await Promise.all([
-      this.options.xec.broadcastTransaction(record.xecRefundTxHex),
-      this.options.evm.broadcastTransaction(record.evmRefundTxHex),
-    ])
-    return await this.reconcile(accountIncarnation, localPublicKey, swapId)
+    // Only the own deposit can be refunded by this party, so only its chain is involved.
+    const refundOwnLeg = () =>
+      record.role === 'initiator'
+        ? this.options.xec.broadcastTransaction(record.xecRefundTxHex)
+        : this.options.evm.broadcastTransaction(record.evmRefundTxHex)
+    return await this.broadcastEachThenReconcile(
+      accountIncarnation,
+      localPublicKey,
+      swapId,
+      refundOwnLeg,
+    )
+  }
+
+  /**
+   * Sends one transaction per chain, each whatever happens to the other, then reconciles.
+   * A send that failed is thrown afterwards, so it stays visible.
+   */
+  private async broadcastEachThenReconcile(
+    accountIncarnation: string,
+    localPublicKey: string,
+    swapId: string,
+    ...sends: readonly (() => Promise<unknown>)[]
+  ): Promise<SwapExecutionRecord> {
+    const sent = await Promise.allSettled(sends.map(send => send()))
+    const record = await this.reconcile(
+      accountIncarnation,
+      localPublicKey,
+      swapId,
+    )
+    const failed = sent.find(
+      (r): r is PromiseRejectedResult => r.status === 'rejected',
+    )
+    if (failed) throw failed.reason
+    return record
   }
 
   /**
@@ -724,50 +770,87 @@ export class SwapExecutionCoordinator {
     }
     if (record.phase === 'cancelled') return record
 
-    const [rawXecFunding, rawEvmFunding, rawXecSettlement, rawEvmSettlement] =
-      await Promise.all([
-        this.options.xec.observeFunding(record.xecFundingTxid),
-        this.options.evm.observeFunding(record.evmFundingTxHash),
+    // Each chain is observed on its own. A chain whose node does not answer keeps its stored
+    // observations (never taken as unseen) and is listed in `unobservedChains`, so the other
+    // chain's claim or refund never waits on it.
+    const [xecObserved, evmObserved] = await Promise.all([
+      Promise.all([
+        this.options.xec.observeFunding(
+          record.xecFundingTxid,
+          record.xecFunding,
+        ),
         this.options.xec.observeSettlement({
           fundingTxid: record.xecFundingTxid,
           claimTxid: record.xecClaimTxid,
           refundTxid: record.xecRefundTxid,
         }),
+      ]).then(
+        ([funding, settlement]) => ({ funding, settlement }),
+        () => undefined,
+      ),
+      Promise.all([
+        this.options.evm.observeFunding(
+          record.evmFundingTxHash,
+          record.evmFunding,
+        ),
         this.options.evm.observeSettlement({
           fundingTxHash: record.evmFundingTxHash,
           claimTxHash: record.evmClaimTxHash,
           refundTxHash: record.evmRefundTxHash,
         }),
-      ])
+      ]).then(
+        ([funding, settlement]) => ({ funding, settlement }),
+        () => undefined,
+      ),
+    ])
+    const unobservedChains = [
+      ...(xecObserved ? [] : [record.xecChainIdentifier]),
+      ...(evmObserved ? [] : [record.evmChainIdentifier]),
+    ]
 
-    const xecFunding = normalizeConfirmations(rawXecFunding)
-    const evmFunding = normalizeConfirmations(rawEvmFunding)
-    const xecSettlement = normalizeSettlement(rawXecSettlement)
-    const evmSettlement = normalizeSettlement(rawEvmSettlement)
+    const xecFunding = xecObserved
+      ? normalizeConfirmations(xecObserved.funding)
+      : record.xecFunding
+    const evmFunding = evmObserved
+      ? normalizeConfirmations(evmObserved.funding)
+      : record.evmFunding
+    const xecSettlement = xecObserved
+      ? normalizeSettlement(xecObserved.settlement)
+      : record.xecSettlement
+    const evmSettlement = evmObserved
+      ? normalizeSettlement(evmObserved.settlement)
+      : record.evmSettlement
 
-    // Replay original signed transactions if funding was authorized but displaced on-chain
+    // Replay original signed transactions displaced on a chain that was observed.
+    const replayXec = async (txHex: string) => {
+      if (xecObserved) await this.options.xec.broadcastTransaction(txHex)
+    }
+    const replayEvm = async (txHex: string) => {
+      if (evmObserved) await this.options.evm.broadcastTransaction(txHex)
+    }
     if (record.fundingAuthorized) {
       if (xecFunding.status === 'unseen') {
-        await this.options.xec.broadcastTransaction(record.xecFundingTxHex)
+        await replayXec(record.xecFundingTxHex)
       }
       if (evmFunding.status === 'unseen') {
-        await this.options.evm.broadcastTransaction(record.evmFundingTxHex)
+        await replayEvm(record.evmFundingTxHex)
       }
     }
     if (record.phase === 'claiming') {
       if (xecSettlement.status === 'unseen') {
-        await this.options.xec.broadcastTransaction(record.xecClaimTxHex)
+        await replayXec(record.xecClaimTxHex)
       }
       if (evmSettlement.status === 'unseen') {
-        await this.options.evm.broadcastTransaction(record.evmClaimTxHex)
+        await replayEvm(record.evmClaimTxHex)
       }
     }
     if (record.phase === 'refund-pending') {
-      if (xecSettlement.status === 'unseen') {
-        await this.options.xec.broadcastTransaction(record.xecRefundTxHex)
+      // Only the own deposit's refund is this party's to send.
+      if (record.role === 'initiator' && xecSettlement.status === 'unseen') {
+        await replayXec(record.xecRefundTxHex)
       }
-      if (evmSettlement.status === 'unseen') {
-        await this.options.evm.broadcastTransaction(record.evmRefundTxHex)
+      if (record.role === 'responder' && evmSettlement.status === 'unseen') {
+        await replayEvm(record.evmRefundTxHex)
       }
     }
 
@@ -844,7 +927,8 @@ export class SwapExecutionCoordinator {
     if (
       (phase === 'complete' || phase === 'refunded') &&
       !retentionReleased &&
-      !reorgWarning
+      !reorgWarning &&
+      unobservedChains.length === 0
     ) {
       if (record.secretReceiptId && this.options.secretVault?.retireSecret) {
         await this.options.secretVault.retireSecret(record.secretReceiptId)
@@ -866,6 +950,7 @@ export class SwapExecutionCoordinator {
       reorgWarning,
       phase,
       retentionReleased,
+      unobservedChains: unobservedChains.length ? unobservedChains : undefined,
     })
   }
 }

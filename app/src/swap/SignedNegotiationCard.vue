@@ -97,7 +97,13 @@
       data-testid="swap-execution-restore-failed"
       role="alert"
     >
-      {{ $t('chatMessageSwap.executionRestoreFailed') }}
+      {{
+        $t(
+          execState.restoreFailure === 'records-from-older-version'
+            ? 'chatMessageSwap.executionRecordsFromOlderVersion'
+            : 'chatMessageSwap.executionRestoreFailed',
+        )
+      }}
     </p>
     <div
       v-if="showExecutionPanel"
@@ -143,6 +149,18 @@
         role="alert"
       >
         {{ $t('signedSwap.error') }}: {{ executionRecord.reorgWarning }}
+      </p>
+      <p
+        v-if="executionRecord && executionRecord.unobservedChains"
+        class="snc-error-banner"
+        data-testid="swap-unobserved-chains"
+        role="alert"
+      >
+        {{
+          $t('chatMessageSwap.executionObservationFailed', {
+            chains: executionRecord.unobservedChains.join(', '),
+          })
+        }}
       </p>
       <div class="snc-action-row">
         <q-btn
@@ -383,8 +401,11 @@ export default defineComponent({
       return (
         r.phase === 'recovery-required' ||
         r.phase === 'refund-pending' ||
-        Number(this.now) >= r.xecRefundTimestamp ||
-        Number(this.now) >= r.evmOpeningTimestamp + r.evmChallengeDuration
+        // The own deposit's timelock: XEC for the initiator, EVM for the responder.
+        Number(this.now) >=
+          (r.role === 'initiator'
+            ? r.xecRefundTimestamp
+            : r.evmOpeningTimestamp + r.evmChallengeDuration)
       )
     },
     state(): string {

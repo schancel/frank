@@ -21,6 +21,7 @@ import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 import type { EvmChainWalletHandle } from '@frank/wallet/chain'
 import {
   createLiveEvmSwapCapability,
+  observeEvmEscrowFunding,
   SwapExecutionDisabledError,
 } from './live-swap-execution'
 
@@ -255,6 +256,46 @@ suite('the live EVM swap leg (anvil)', () => {
         status: 'final',
         confirmations: 10,
         spent: true,
+      })
+    })
+
+    it('grows deep and final across observations on a node that serves only the latest state', async () => {
+      const escrow = escrowAddress('c4'.repeat(32))
+      // The node refuses every account query at an older block, as a pruned node does.
+      const latestOnly = {
+        getBlockNumber: () => chain.getBlockNumber(),
+        async getBalance(address: string, block?: number) {
+          if (block !== undefined && block !== (await chain.getBlockNumber()))
+            throw new Error('missing trie node')
+          return chain.getBalance(address, block)
+        },
+        async getTransactionCount(address: string, block?: number) {
+          if (block !== undefined && block !== (await chain.getBlockNumber()))
+            throw new Error('missing trie node')
+          return chain.getTransactionCount(address, block)
+        },
+      }
+      const observe = (previous?: Awaited<ReturnType<typeof watch>>) =>
+        observeEvmEscrowFunding(
+          latestOnly as never,
+          escrow,
+          PRINCIPAL,
+          previous,
+        )
+
+      await (await dev.sendTransaction({ to: escrow, value: PRINCIPAL })).wait()
+      await mine(3)
+      const first = await observe()
+      // Only the latest block is certain on such a node.
+      expect(first).toMatchObject({ status: 'included', confirmations: 1 })
+
+      await mine(9)
+      // Without the stored observation the depth would stay at 1 forever.
+      expect(await observe()).toMatchObject({ confirmations: 1 })
+      expect(await observe(first)).toMatchObject({
+        status: 'final',
+        confirmations: 10,
+        blockHeight: first.blockHeight,
       })
     })
   })

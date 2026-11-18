@@ -603,8 +603,7 @@ export interface LiarsDiceItem {
   winnerAddress?: string
   /** Total pot in wei awarded to winner. */
   potWei?: string
-  /** Optional transaction hash or stealth payout details for settlement. */
-  txHash?: string
+  /** Optional stealth payout address for settlement. */
   stealthAddress?: string
 }
 
@@ -664,7 +663,6 @@ export interface PokerItem {
     best5Cards?: number[]
   }>
   winnerAddress?: string
-  txHash?: string
   stealthAddress?: string
 }
 

@@ -137,7 +137,6 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(textReply).toContain('HAND SETTLED')
     expect(textReply).not.toContain('On-Chain Settlement')
     expect(textReply).toContain('Not settled on chain')
-    expect(replyFold.mock.calls[0][0][1].txHash).toBeUndefined()
   })
 
   it('durably records pending payouts before sending settlement announcement and verifies multi-party commitments', async () => {

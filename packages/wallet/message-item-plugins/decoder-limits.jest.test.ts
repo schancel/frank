@@ -248,7 +248,6 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
         { address: B, amount: 60, handDescription: 'Pair', best5Cards: [1, 2] },
       ],
       winnerAddress: B,
-      txHash: TX,
       stealthAddress: B,
     },
     cases: [
@@ -291,7 +290,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ['winners[0].best5Cards: 6 cards', [15, 0, 3], [0, 1, 2, 3, 4, 5]],
       ...each('winners[0].best5Cards[0]', [15, 0, 3, 0], [52, -1]),
       ...each('winnerAddress', [16], BAD_ADDRESSES),
-      ...each('txHash', [17], BAD_HASHES),
+      ['retired key 17 (settlement tx hash)', [17], new Uint8Array(32).fill(0xcd)],
       ...each('stealthAddress', [18], BAD_ADDRESSES),
     ],
   },
@@ -327,7 +326,6 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       },
       winnerAddress: B,
       potWei: '100',
-      txHash: TX,
       stealthAddress: B,
     },
     cases: [
@@ -366,7 +364,7 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ...each('challengeResult.loserAddress', [18, 5], BAD_ADDRESSES),
       ...each('winnerAddress', [19], BAD_ADDRESSES),
       ...each('potWei', [20], BAD_AMOUNTS),
-      ...each('txHash', [21], BAD_HASHES),
+      ['retired key 21 (settlement tx hash)', [21], new Uint8Array(32).fill(0xcd)],
       ...each('stealthAddress', [22], BAD_ADDRESSES),
     ],
   },

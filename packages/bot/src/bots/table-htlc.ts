@@ -8,7 +8,8 @@
  * and the arbiter (the bot) as recipient, because only the recipient of every lock in a batch may
  * call `batchDistribute`, which splits the pot with the preimage.
  *
- * Not decided yet, and not wired (the bots never call `lock` or `batchDistribute`):
+ * Not decided yet, and not wired: the bots never call `lock` or `batchDistribute`, and settling
+ * a table returns `TABLE_SETTLEMENT_UNSUPPORTED`. Open:
  * - where the preimage comes from. The bots draw it at random per table and hold it in memory;
  *   AGENTS.md §5 would have the arbiter derive it from its account material and the table facts,
  *   which needs a custody derivation and a bot-context capability that do not exist;
@@ -27,8 +28,20 @@ export interface TableHtlcEscrow {
   preimage: string;
   /** `sha256(preimage)`: the hash lock of every buy-in lock at the table. */
   hashLock: string;
-  settlementTxHash?: string;
 }
+
+/** What settling a table gives until its escrow is wired to GenericHTLC (the open decisions
+ * above): an explicit unsupported result. No transaction is sent and no payout is paid. */
+export interface TableSettlementUnsupported {
+  readonly status: "unsupported";
+  readonly reason: string;
+}
+
+export const TABLE_SETTLEMENT_UNSUPPORTED: TableSettlementUnsupported = Object.freeze({
+  status: "unsupported",
+  reason:
+    "table escrow is not supported yet. No buy-in was locked, so no pot moves on chain and no payout is marked paid.",
+});
 
 export function tableHtlcEscrow(preimage: Uint8Array): TableHtlcEscrow {
   const hashLock = htlcHashLock(preimage);

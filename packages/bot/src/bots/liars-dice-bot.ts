@@ -37,11 +37,15 @@ import {
   DEFAULT_BUY_IN_WEI,
   type LiarsDiceGameState,
 } from "@frank/wallet/message-item-plugins/liars-dice";
-import { DEPLOYMENTS } from "../../../contracts/deployments";
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import { Outbox } from "./money";
-import { tableHtlcEscrow, type TableHtlcEscrow } from "./table-htlc";
+import {
+  tableHtlcEscrow,
+  TABLE_SETTLEMENT_UNSUPPORTED,
+  type TableHtlcEscrow,
+  type TableSettlementUnsupported,
+} from "./table-htlc";
 import {
   announceTableToTopic,
   type GameTableDetails,
@@ -107,34 +111,6 @@ export async function recordPendingPayout(
   return record;
 }
 
-export async function markPayoutPaid(
-  ctx: BotContext | undefined,
-  record: PendingPayoutRecord,
-  txHash: string,
-): Promise<PendingPayoutRecord> {
-  const updated: PendingPayoutRecord = {
-    ...record,
-    status: "paid",
-    txHash,
-  };
-  const key = `payout:pending:${record.payoutId}`;
-  await writeBotState(ctx, key, JSON.stringify(updated));
-  await writeBotState(ctx, `payout:paid:${record.payoutId}`, JSON.stringify(updated));
-  return updated;
-}
-
-function resolveHtlcAddress(networkTag?: string): string | undefined {
-  if (!networkTag || !DEPLOYMENTS) return undefined;
-  const chainMap: Record<string, string> = {
-    MONT: "monad-testnet",
-    MON1: "monad-mainnet",
-    MONR: "monad-regtest",
-  };
-  const chainKey = chainMap[networkTag] ?? networkTag;
-  const deployment = (DEPLOYMENTS as Record<string, any>)[chainKey];
-  return deployment?.contracts?.GenericHTLC?.address;
-}
-
 export class LiarsDiceBot implements FrankBotDefinition {
   readonly id = "liars-dice";
   /** A game is many replies to one player: see `GAME_MAX_REPLIES_PER_PEER`. */
@@ -167,7 +143,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
   private async settleGameEscrow(
     game: LiarsDiceGameState,
     ctx?: BotContext
-  ): Promise<string | undefined> {
+  ): Promise<TableSettlementUnsupported | undefined> {
     if (!game.winnerAddress) return undefined;
 
     // 1. Durably record the winner's pending payout BEFORE any send or announcement
@@ -184,36 +160,9 @@ export class LiarsDiceBot implements FrankBotDefinition {
     this.pendingPayouts.set(payoutId, record);
     await recordPendingPayout(ctx, record, this.outbox);
 
-    // 2. Only send on-chain settlement if GenericHTLC is deployed and sendTransaction is available
-    const htlcAddress = resolveHtlcAddress(ctx?.networkTag);
-    const sendTx = (ctx as unknown as {
-      sendTransaction?: (tx: { to: string; data: string; value?: bigint }) => Promise<{ txHash: string }>;
-    })?.sendTransaction;
-
-    if (!htlcAddress || typeof sendTx !== "function") {
-      return undefined;
-    }
-
-    try {
-      const res = await sendTx({
-        to: htlcAddress,
-        data: "0x",
-        value: 0n,
-      });
-      if (!res?.txHash) {
-        return undefined;
-      }
-      const paid = await markPayoutPaid(ctx, record, res.txHash);
-      this.pendingPayouts.set(payoutId, paid);
-      const escrow = this.tableEscrows.get(game.tableId);
-      if (escrow) {
-        escrow.settlementTxHash = res.txHash;
-      }
-      return res.txHash;
-    } catch (err) {
-      console.warn(`[liars-dice] Settlement tx failed for table ${game.tableId}:`, err);
-      return undefined;
-    }
+    // 2. Table escrow is not wired to GenericHTLC (./table-htlc): nothing is sent and no
+    //    payout is marked paid. The pending records above stay pending.
+    return TABLE_SETTLEMENT_UNSUPPORTED;
   }
 
   getProfile(): BotProfile {
@@ -350,7 +299,6 @@ export class LiarsDiceBot implements FrankBotDefinition {
         : undefined,
       winnerAddress: game.winnerAddress,
       potWei: game.potWei.toString(),
-      txHash: this.tableEscrows.get(game.tableId)?.settlementTxHash,
     };
   }
 
@@ -624,9 +572,9 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
       if (game.status === "resolved") {
         msg += `\n\n🏆 **GAME OVER!** Winner: ${game.winnerAddress?.slice(0, 8)}! Pot: ${ctx.formatAmount(game.potWei)}.`;
-        const txHash = await this.settleGameEscrow(game, ctx);
-        if (txHash) {
-          msg += `\n⛓️ **On-Chain Settlement:** \`${txHash}\` (GenericHTLC.batchDistribute)`;
+        const settlement = await this.settleGameEscrow(game, ctx);
+        if (settlement) {
+          msg += `\n⚠️ **Not settled on chain:** ${settlement.reason}`;
         }
       }
 

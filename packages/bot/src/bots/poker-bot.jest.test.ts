@@ -2,8 +2,6 @@ import { PokerBot } from './poker-bot'
 import { commitSeed, foldPokerState } from '@frank/wallet/message-item-plugins/poker'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 
-// No deployment record: the registry has no GenericHTLC address for any network.
-jest.mock('../../../contracts/deployments', () => ({ DEPLOYMENTS: {} }))
 
 describe("Texas Hold'em Poker Bot Coordinator", () => {
   let bot: PokerBot
@@ -86,10 +84,9 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(replyFold.mock.calls[0][0][0].text).toContain(otherAddress.slice(0, 8))
   })
 
-  it('sends no settlement transaction while GenericHTLC is not deployed on the bot\'s network', async () => {
+  it('settling is explicitly unsupported: no transaction is sent and no payout is marked paid', async () => {
     const mockSendTx = jest.fn(async () => ({ txHash: '0xsettletx999' }))
     mockBotCtx.sendTransaction = mockSendTx
-    ;(mockBotCtx as { networkTag: string }).networkTag = 'MONT'
 
     // 1. Create table
     await bot.onMessage({
@@ -123,13 +120,21 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       reply: replyFold,
     } as unknown as BotMessageContext, mockBotCtx)
 
-    // The registry has no GenericHTLC address for this network, so nothing is sent: a call
-    // to an address without code would be mined and shown as a settlement that moved nothing.
+    // Table escrow is not wired to GenericHTLC: nothing is sent, whatever the network.
     expect(mockSendTx).not.toHaveBeenCalled()
+    const payouts = [...bot.getPendingPayouts().values()]
+    expect(payouts.length).toBeGreaterThan(0)
+    for (const payout of payouts) {
+      expect(payout.status).toBe('pending')
+      expect(payout.txHash).toBeUndefined()
+    }
+    const putKeys = ((mockBotCtx.state as any).put as jest.Mock).mock.calls.map(c => c[0] as string)
+    expect(putKeys.some(k => k.startsWith('payout:paid:'))).toBe(false)
 
     const textReply = replyFold.mock.calls[0][0][0].text
     expect(textReply).toContain('HAND SETTLED')
     expect(textReply).not.toContain('On-Chain Settlement')
+    expect(textReply).toContain('Not settled on chain')
     expect(replyFold.mock.calls[0][0][1].txHash).toBeUndefined()
   })
 

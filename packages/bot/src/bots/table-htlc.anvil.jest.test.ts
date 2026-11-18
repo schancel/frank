@@ -26,9 +26,6 @@ import { LiarsDiceBot } from "./liars-dice-bot";
 import { tableBuyInLockId, type TableHtlcEscrow } from "./table-htlc";
 import { amountsOf } from "./chain-amounts.testutil";
 
-// No deployment record: the bots send no settlement of their own here.
-jest.mock("../../../contracts/deployments", () => ({ DEPLOYMENTS: {} }));
-
 function findAnvil(): string | undefined {
   if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN;
   try {

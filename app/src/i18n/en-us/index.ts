@@ -2393,6 +2393,12 @@ export const rawEnUS = {
         'The exchange did not answer. Try again in a few seconds.',
       unsafeTransaction:
         'The transaction for this swap would do something other than the swap that was quoted, so it was not signed.',
+      swapPending:
+        'An earlier swap from this wallet has not settled yet. Another can be sent once it has.',
+      walletMismatch:
+        'This swap was prepared for a different wallet or network, so it was not signed. Get a new quote.',
+      recordMismatch:
+        'The record of this swap does not match what was reviewed, so it was not signed. Get a new quote.',
       unexpected: 'Something went wrong and the swap was not sent.',
     },
   },

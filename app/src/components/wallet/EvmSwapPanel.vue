@@ -506,7 +506,7 @@ import {
   readableTokenAmount,
 } from 'src/swap/amounts'
 import { useSwapHistory } from 'src/composables/useSwapHistory'
-import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
+import { swapRecordId } from '@frank/wallet/swap-record-id'
 import { transactionExplorerUrl } from 'src/utils/explorer'
 
 interface Problem {

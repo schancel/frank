@@ -7,12 +7,11 @@ import {
 } from '../evm-input-admission'
 import {
   getAddress,
-  keccak256,
-  toUtf8Bytes,
   Transaction,
   type Provider,
 } from 'ethers'
 import type { ChainAddress, ChainTransaction } from './chain-wallet'
+import { swapRecordId } from '../swap-record-id'
 import {
   NativeTransactionSubmissionError,
   runNativeTransactionExclusive,
@@ -131,20 +130,6 @@ export interface EvmLegacyConsolidatorConfig {
    * finalized one). Absent: the newest block. */
   spendRuleHead?: 'latest' | 'finalized'
 }
-/**
- * The id every frontend of the account derives for a swap: from its chain and the transaction
- * id, hashed exactly as given. A Solana signature is case-sensitive; a caller with an EVM hash
- * passes it in lower case.
- */
-export function swapRecordId(
-  chainIdentifier: string,
-  transactionId: string,
-): string {
-  return keccak256(
-    toUtf8Bytes(`frank-swap:${chainIdentifier}:${transactionId}`),
-  ).slice(2)
-}
-
 /** The swap-record item of an included contract call that carried a record, else undefined. */
 export function swapRecordItemOf(
   row: EvmNativeOperation,

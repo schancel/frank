@@ -30,7 +30,7 @@ import { formatUnits, parseUnits } from 'ethers'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import { getEvmDexDeployment } from '@frank/wallet/chain/dex-deployments'
-import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
+import { swapRecordId } from '@frank/wallet/swap-record-id'
 import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import {
   createRelayPricedEvmChain,

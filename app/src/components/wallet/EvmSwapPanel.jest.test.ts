@@ -17,7 +17,7 @@ import vectors from '@frank/wallet/swap/monad-testnet-swap-vectors.json'
 import en from '../../i18n/en-us'
 import fr from '../../i18n/fr-fr'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
-import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
+import { swapRecordId } from '@frank/wallet/swap-record-id'
 import { Transaction } from 'ethers'
 
 enableAutoUnmount(afterEach)

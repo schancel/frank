@@ -41,7 +41,7 @@ import { Connection, Keypair, PublicKey } from '@solana/web3.js'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
 import { formatBaseUnit } from '@frank/wallet/chain/base-unit'
-import { swapRecordId } from '@frank/wallet/chain/evm-legacy-consolidator'
+import { swapRecordId } from '@frank/wallet/swap-record-id'
 import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import {
   createRelayPricedEvmChain,

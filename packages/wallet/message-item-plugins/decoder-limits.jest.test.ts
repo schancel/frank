@@ -454,6 +454,25 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
   },
   {
     item: {
+      type: 'htlc-record',
+      chainIdentifier: 'monad-testnet',
+      action: 'lock',
+      swapId: H,
+      lockId: TX,
+      txHash: TX,
+      timestamp: 1760000000000,
+    },
+    cases: [
+      ...each('chainIdentifier', [0], BAD_CHAINS),
+      ...each('action', [1], ['', 'Lock', 'claim', 'cancel', 1]),
+      ...each('swapId', [2], [...BAD_HASHES, '0x' + H, 'AB'.repeat(32)]),
+      ...each('lockId', [3], [...BAD_HASHES, H, '0x' + 'AB'.repeat(32)]),
+      ...each('txHash', [4], BAD_TX_IDS),
+      ...each('timestamp', [5], BAD_TIMESTAMPS),
+    ],
+  },
+  {
+    item: {
       type: 'received-coin',
       chainIdentifier: 'monad-testnet',
       address: A,
@@ -900,6 +919,7 @@ describe('the CBOR item decoders refuse out-of-range, misformatted and oversize 
         'digital-goods',
         'group-control',
         'group-welcome',
+        'htlc-record',
         'journal-checkpoint',
         'liars-dice',
         'message-tombstone',

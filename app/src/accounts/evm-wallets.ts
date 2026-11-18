@@ -15,6 +15,7 @@ import {
   type NativeWalletHandle,
 } from '@frank/wallet/chain'
 import type {
+  HtlcRecordItem,
   SwapRecordItem,
   WalletSyncItem,
 } from '@frank/cashweb/types/messages'
@@ -199,7 +200,7 @@ function openEvmWalletAt(
   const baseConfig = configured(chainIdentifier, homeWallet)
   const emitWalletSync = async (
     item: WalletSyncItem,
-    swapRecord: SwapRecordItem | undefined,
+    swapRecord: SwapRecordItem | HtlcRecordItem | undefined,
     messageId: Uint8Array,
   ): Promise<void> => {
     const requireBoundOwner = () => {

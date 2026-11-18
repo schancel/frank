@@ -30,6 +30,7 @@ const EVERY_ITEM_TYPE: Record<MessageItem['type'], true> = {
   'raffle': true,
   'swap-offer': true,
   'swap-record': true,
+  'htlc-record': true,
   'received-coin': true,
   'conversation-state': true,
   'contact-state': true,

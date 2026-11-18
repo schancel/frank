@@ -125,6 +125,7 @@ describe('the dispatch rule', () => {
       'wallet-sync': 'no',
       'payment-transfer': 'no',
       'swap-record': 'no',
+      'htlc-record': 'no',
       'received-coin': 'no',
       'conversation-state': 'no',
       'contact-state': 'no',
@@ -147,6 +148,7 @@ describe('the dispatch rule', () => {
     expect([...SELF_ONLY_ITEM_TYPES]).toEqual([
       'wallet-sync',
       'swap-record',
+      'htlc-record',
       'received-coin',
       'conversation-state',
       'contact-state',

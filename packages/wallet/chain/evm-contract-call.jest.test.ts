@@ -813,7 +813,7 @@ describe('contract calls through the native operation journal', () => {
     })
     expect(sign).toHaveBeenCalledTimes(1)
     expect(state.raws).toHaveLength(1)
-    expect(journal.list()[0]!.record?.assetOut.symbol).toBe('CHOMP')
+    expect(journal.list()[0]!.record).toMatchObject({ assetOut: { symbol: 'CHOMP' } })
   })
 
   it('a swap whose first approval was lost in broadcast: the approval is re-sent, lands, the swap goes on, and the account can send afterwards', async () => {

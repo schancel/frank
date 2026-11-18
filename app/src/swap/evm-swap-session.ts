@@ -15,7 +15,7 @@ import {
 import type { EvmDex, EvmDexWallet } from '@frank/wallet/swap/evm-dex'
 import type { SwapExecutionReader } from '@frank/wallet/swap/swap-execution'
 import { UniswapV4Dex } from '@frank/wallet/swap/uniswap-v4-dex'
-import type { EvmContractCallRecord } from '@frank/wallet/storage/evm-native-operation-journal'
+import type { EvmSwapCallRecord } from '@frank/wallet/storage/evm-native-operation-journal'
 import { swapRecordItemOf } from '@frank/wallet/chain/evm-legacy-consolidator'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import { Transaction } from 'ethers'
@@ -57,7 +57,7 @@ export interface EvmSwapSession {
 export interface PendingSwap {
   readonly operationId: string
   readonly transactionId: string
-  readonly record: EvmContractCallRecord
+  readonly record: EvmSwapCallRecord
   readonly call: { to: string; data: string; value: string }
 }
 
@@ -128,7 +128,7 @@ export async function openEvmSwapSession(
         if (
           row.kind !== 'contract' ||
           row.cancelled ||
-          !row.record ||
+          row.record?.kind !== 'swap' ||
           !member?.signed ||
           !member.exposed ||
           'transactionHash' in member.observation ||

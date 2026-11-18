@@ -222,6 +222,47 @@ export function encodeHtlcRefund(
 }
 
 /**
+ * Which GenericHTLC step `data` is and the lock it acts on, for a call sent by `sender`:
+ * `withdraw` and `refund` name their lock; a `lock` call's lock is the id the contract gives
+ * it (`htlcLockId(sender, terms)`). Throws for calldata that is none of the three.
+ */
+export function htlcCallOf(
+  sender: string,
+  data: string
+): { action: "lock" | "withdraw" | "refund"; lockId: string } {
+  const call = evmHtlcInterface.parseTransaction({ data });
+  if (!call) throw new Error("Not a GenericHTLC call");
+  // Re-encoding must give the same bytes: no trailing data, no non-canonical words.
+  if (
+    evmHtlcInterface.encodeFunctionData(call.fragment, call.args).toLowerCase() !==
+    data.toLowerCase()
+  )
+    throw new Error("Not a canonical GenericHTLC call");
+  switch (call.name) {
+    case "lock": {
+      const [recipient, refundAddress, token, amount, hashLock, expiresAt] = call.args;
+      return {
+        action: "lock",
+        lockId: htlcLockId(sender, {
+          recipient,
+          refundAddress,
+          token,
+          amount,
+          hashLock,
+          expiresAt,
+        }).toLowerCase(),
+      };
+    }
+    case "withdraw":
+      return { action: "withdraw", lockId: String(call.args[0]).toLowerCase() };
+    case "refund":
+      return { action: "refund", lockId: String(call.args[0]).toLowerCase() };
+    default:
+      throw new Error(`GenericHTLC ${call.name} is not a swap step`);
+  }
+}
+
+/**
  * Decodes what `locks(lockId)` returned. Null when there is no such lock. Throws for an
  * unknown state, for a lock whose recorded terms do not give `lockId`, and for a withdrawn
  * lock whose preimage does not hash to its hash lock (either way, not GenericHTLC v2).

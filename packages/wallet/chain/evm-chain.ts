@@ -163,6 +163,7 @@ import {
   WalletSyncItem,
 } from "@frank/cashweb/types/messages";
 import { applyWalletSyncItem } from "../sync-dispatcher";
+import type { SwapSecretCapability } from "../swap-preimage";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import {
@@ -701,6 +702,27 @@ export function conversationIdSaltOf(
     return undefined;
   return material.canonicalRoles.conversationIdSalt();
 }
+/**
+ * The live typed wallet's swap-secret capability: the HTLC preimage of a swap this account
+ * offers (`frank/swap-htlc-preimage/v1`, `../swap-preimage`), derived on each call and never
+ * stored. It hands out preimages only, never the root; it refuses once the wallet is closed.
+ * `undefined` for a wallet with no typed messaging root.
+ */
+export function swapSecretCapabilityOf(
+  wallet: NativeWalletHandle | WalletHandle
+): SwapSecretCapability | undefined {
+  const internals = evmWalletInternals(wallet);
+  if (!internals.material?.canonicalRoles || !internals.typed || internals.closed)
+    return undefined;
+  return Object.freeze({
+    swapPreimage(input: { policyName: string; swapId: Uint8Array }) {
+      const live = evmWalletInternals(wallet);
+      if (live.closed || !live.material?.canonicalRoles)
+        throw new Error("Swap secrets require live typed wallet custody");
+      return live.material.canonicalRoles.swapPreimage(input);
+    },
+  });
+}
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: EvmChainWalletHandle) {
   requireOpenWallet(wallet);
@@ -900,6 +922,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     config.networkTag
       ? resolveChainIdentifier(config.networkTag)?.id ?? config.networkTag
       : chainIdentifier;
+  // The GenericHTLC of this network: a regtest run's own (`config.contracts`), else the
+  // registry's deployment. Throws where none is deployed.
+  const htlcAddress = (): string =>
+    config.contracts?.htlc ??
+    requireChainContract(contractChainIdentifier(), "htlc");
   const transactionBuilder =
     config.transactionBuilder ?? defaultNativeEvmTransactionBuilder;
   const walletsByIdentity = new Map<
@@ -3510,6 +3537,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               fundsSettleBlocks: fundsSettleBlocks(config.spendSpacingBlocks),
               spendRuleHead: config.spendRuleHead,
               transactionBuilder,
+              // An `htlc` record's call must go to this network's GenericHTLC.
+              htlcContract: htlcAddress,
               mainSource: { kind: "main", address: mainAccount.address.toLowerCase() },
               ownedSource: (address) => {
                 const key = address.toLowerCase();
@@ -3772,10 +3801,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
 
     getHtlcAddress(): string {
-      return (
-        config.contracts?.htlc ??
-        requireChainContract(contractChainIdentifier(), "htlc")
-      );
+      return htlcAddress();
     },
   };
 }

@@ -84,10 +84,16 @@ export function useSwapEscrow() {
           provider,
         )
         const lockIdHex = toBytes32Hex(lockId)
-        const raw = await contract.locks(lockIdHex)
+        // Expiry is the contract's: `block.timestamp >= expiresAt`, so it is judged by the
+        // chain's latest block, not this device's clock.
+        const [raw, latest] = await Promise.all([
+          contract.locks(lockIdHex),
+          provider.getBlock('latest'),
+        ])
         return decodeEvmHtlcLockState({
           lockId: lockIdHex,
           result: raw,
+          currentTimestampSec: latest?.timestamp,
         })
       }
 

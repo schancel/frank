@@ -16,7 +16,12 @@ import {
   toBytes32Hex,
   EVM_GENERIC_HTLC_ABI,
 } from "./swap-escrow";
-import type { SwapLockRecord } from "./swap-escrow";
+import type {
+  EvmHtlcLockTuple,
+  SwapLockRecord,
+  SwapLockStatus,
+} from "./swap-escrow";
+import GenericHTLCArtifact from "@frank/contracts/artifacts/GenericHTLC.json";
 import { SOLANA_GENERIC_HTLC_PROGRAM_ID } from "./solana-game-escrow";
 import { PROTOCOL_CHAINS } from "./chain/chains-registry";
 
@@ -171,84 +176,157 @@ describe("swap-escrow service & calldata builders", () => {
     expect(parsedRefund?.args[0]).toBe(lockId);
   });
 
-  it("decodes EVM lock state tuples into SwapLockRecord", () => {
+  it("declares every GenericHTLC function exactly as the compiled contract does", () => {
+    const compiled = new ethers.Interface(GenericHTLCArtifact.abi);
+    // Input names are documentation; the selector fixes the input types. What the call
+    // returns, field by field, must match.
+    const shape = (fragment: ethers.FunctionFragment | null) =>
+      fragment && {
+        signature: fragment.format("sighash"),
+        stateMutability: fragment.stateMutability,
+        outputs: fragment.outputs.map((output) => output.format("full")),
+      };
+    let checked = 0;
+    iface.forEachFunction((fragment) => {
+      expect(shape(compiled.getFunction(fragment.selector))).toEqual(
+        shape(fragment)
+      );
+      checked++;
+    });
+    expect(checked).toBe(EVM_GENERIC_HTLC_ABI.length);
+  });
+
+  it("decodes what GenericHTLC.locks(lockId) returns into SwapLockRecord", () => {
+    // The return data is encoded with the compiled contract's own ABI, as a node returns it.
+    const compiled = new ethers.Interface(GenericHTLCArtifact.abi);
     const lockId = "0x" + "55".repeat(32);
     const sender = "0x3333333333333333333333333333333333333333";
     const recipient = "0x4444444444444444444444444444444444444444";
     const refund = "0x5555555555555555555555555555555555555555";
+    const token = ethers.ZeroAddress;
     const hashLock = "0x" + "66".repeat(32);
     const amount = 5_000_000_000_000_000_000n;
     const expiresAt = 1_800_000_000n;
+    const decode = (
+      fields: unknown[],
+      currentTimestampSec?: number
+    ): SwapLockRecord => {
+      const returnData = compiled.encodeFunctionResult("locks", fields);
+      const result = iface.decodeFunctionResult("locks", returnData);
+      return decodeEvmHtlcLockState({
+        lockId,
+        result: result as unknown as EvmHtlcLockTuple,
+        currentTimestampSec,
+      });
+    };
 
-    // Active locked
-    const active = decodeEvmHtlcLockState({
-      lockId,
-      result: [
+    const active = decode(
+      [
         sender,
         recipient,
         refund,
+        token,
         hashLock,
         amount,
         expiresAt,
         false,
         false,
       ],
-      currentTimestampSec: 1_700_000_000,
-    });
-    expect(active.status).toBe("locked");
-    expect(active.isExpired).toBe(false);
-    expect(active.amount).toBe(amount);
-
-    // Withdrawn
-    const withdrawn = decodeEvmHtlcLockState({
+      1_700_000_000
+    );
+    expect(active).toEqual({
       lockId,
-      result: [
+      sender,
+      recipient,
+      refundAddress: refund,
+      token,
+      hashLock,
+      amount,
+      expiresAt: Number(expiresAt),
+      withdrawn: false,
+      refunded: false,
+      isExpired: false,
+      status: "locked",
+    });
+
+    const withdrawn = decode(
+      [
         sender,
         recipient,
         refund,
+        token,
         hashLock,
         amount,
         expiresAt,
         true,
         false,
       ],
-      currentTimestampSec: 1_700_000_000,
-    });
+      1_700_000_000
+    );
     expect(withdrawn.status).toBe("withdrawn");
 
-    // Expired
-    const expired = decodeEvmHtlcLockState({
-      lockId,
-      result: [
+    const refunded = decode(
+      [
         sender,
         recipient,
         refund,
+        token,
+        hashLock,
+        amount,
+        expiresAt,
+        false,
+        true,
+      ],
+      1_900_000_000
+    );
+    expect(refunded.status).toBe("refunded");
+
+    const expired = decode(
+      [
+        sender,
+        recipient,
+        refund,
+        token,
         hashLock,
         amount,
         expiresAt,
         false,
         false,
       ],
-      currentTimestampSec: 1_900_000_000,
-    });
+      1_900_000_000
+    );
     expect(expired.status).toBe("expired");
     expect(expired.isExpired).toBe(true);
 
-    // Unfunded
-    const zeroAddr = "0x0000000000000000000000000000000000000000";
-    const unfunded = decodeEvmHtlcLockState({
-      lockId,
-      result: [
-        zeroAddr,
-        zeroAddr,
-        zeroAddr,
-        "0x" + "00".repeat(32),
-        0n,
-        0n,
-        false,
-        false,
-      ],
-    });
+    const erc20 = "0x7777777777777777777777777777777777777777";
+    expect(
+      decode(
+        [
+          sender,
+          recipient,
+          refund,
+          erc20,
+          hashLock,
+          amount,
+          expiresAt,
+          false,
+          false,
+        ],
+        1_700_000_000
+      )
+    ).toMatchObject({ token: erc20, amount, status: "locked" });
+
+    const unfunded = decode([
+      ethers.ZeroAddress,
+      ethers.ZeroAddress,
+      ethers.ZeroAddress,
+      ethers.ZeroAddress,
+      ethers.ZeroHash,
+      0n,
+      0n,
+      false,
+      false,
+    ]);
     expect(unfunded.status).toBe("unfunded");
   });
 
@@ -410,5 +488,370 @@ describe("swap-escrow service & calldata builders", () => {
     });
     expect(p6.phase).toBe("expired_refundable");
     expect(p6.canRefund).toBe(true);
+  });
+});
+
+describe("evaluateSwapStepPhase: each party's claim and refund", () => {
+  const lock = (status: SwapLockStatus | null): SwapLockRecord | null =>
+    status === null
+      ? null
+      : {
+          lockId: "0x1",
+          sender: "0xSender",
+          recipient: "0xRecipient",
+          refundAddress: "0xSender",
+          hashLock: "0xHash",
+          amount: 1n,
+          expiresAt: 2_000_000_000,
+          withdrawn: status === "withdrawn",
+          refunded: status === "refunded",
+          isExpired: status === "expired",
+          status,
+        };
+  type Row = [
+    who: "maker" | "taker",
+    legA: SwapLockStatus | null,
+    legB: SwapLockStatus | null,
+    offer: "pending" | "accepted" | "settled" | "cancelled" | "expired",
+    preimageRevealed: boolean,
+    expected: { canClaim: boolean; canRefund: boolean; phase: string }
+  ];
+  const yes = (phase: string, canClaim: boolean, canRefund: boolean) => ({
+    phase,
+    canClaim,
+    canRefund,
+  });
+
+  // Each party's own leg: A for the maker, B for the taker. GenericHTLC lets a lock be
+  // withdrawn only while `locked` and refunded only once `expired`.
+  const rows: Row[] = [
+    // The maker's refund of A, whatever happened to B or the offer.
+    [
+      "maker",
+      "expired",
+      null,
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "maker",
+      "expired",
+      "unfunded",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "maker",
+      "expired",
+      "refunded",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "maker",
+      "expired",
+      "expired",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "maker",
+      "expired",
+      "withdrawn",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "maker",
+      "expired",
+      null,
+      "cancelled",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "maker",
+      "expired",
+      "refunded",
+      "cancelled",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "maker",
+      "expired",
+      null,
+      "expired",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    // The maker's claim of B while it is open.
+    [
+      "maker",
+      "locked",
+      "locked",
+      "accepted",
+      false,
+      yes("ready_to_claim", true, false),
+    ],
+    [
+      "maker",
+      "locked",
+      "locked",
+      "cancelled",
+      false,
+      yes("ready_to_claim", true, false),
+    ],
+    [
+      "maker",
+      "withdrawn",
+      "locked",
+      "accepted",
+      false,
+      yes("ready_to_claim", true, false),
+    ],
+    // A expired with B still open: the taker can no longer claim A, so taking B as well would
+    // take both legs. The maker refunds A.
+    [
+      "maker",
+      "expired",
+      "locked",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    // No claim for the maker of a B it cannot take, or once it took it.
+    [
+      "maker",
+      "locked",
+      "expired",
+      "accepted",
+      false,
+      yes("offer_pending", false, false),
+    ],
+    [
+      "maker",
+      "locked",
+      "withdrawn",
+      "accepted",
+      false,
+      yes("preimage_revealed", false, false),
+    ],
+    [
+      "maker",
+      "refunded",
+      "locked",
+      "accepted",
+      false,
+      yes("refunded", false, false),
+    ],
+    [
+      "maker",
+      null,
+      "locked",
+      "accepted",
+      false,
+      yes("maker_lock_needed", false, false),
+    ],
+    [
+      "maker",
+      "withdrawn",
+      "withdrawn",
+      "settled",
+      false,
+      yes("settled", false, false),
+    ],
+    [
+      "maker",
+      "locked",
+      null,
+      "accepted",
+      false,
+      yes("taker_lock_needed", false, false),
+    ],
+    // The taker's refund of B, whatever happened to A or the offer.
+    [
+      "taker",
+      null,
+      "expired",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "taker",
+      "locked",
+      "expired",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "taker",
+      "expired",
+      "expired",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "taker",
+      "refunded",
+      "expired",
+      "accepted",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    [
+      "taker",
+      "locked",
+      "expired",
+      "cancelled",
+      false,
+      yes("expired_refundable", false, true),
+    ],
+    // The taker's claim of A once the preimage is known.
+    [
+      "taker",
+      "locked",
+      "withdrawn",
+      "accepted",
+      false,
+      yes("preimage_revealed", true, false),
+    ],
+    [
+      "taker",
+      "locked",
+      "locked",
+      "accepted",
+      true,
+      yes("preimage_revealed", true, false),
+    ],
+    [
+      "taker",
+      "locked",
+      "withdrawn",
+      "cancelled",
+      false,
+      yes("preimage_revealed", true, false),
+    ],
+    // Both at once: the preimage is known while B expired.
+    [
+      "taker",
+      "locked",
+      "expired",
+      "accepted",
+      true,
+      yes("preimage_revealed", true, true),
+    ],
+    // No claim without the preimage, or of an A that can no longer be withdrawn.
+    [
+      "taker",
+      "locked",
+      "locked",
+      "accepted",
+      false,
+      yes("ready_to_claim", false, false),
+    ],
+    [
+      "taker",
+      "expired",
+      "withdrawn",
+      "accepted",
+      false,
+      yes("offer_pending", false, false),
+    ],
+    [
+      "taker",
+      "refunded",
+      "refunded",
+      "accepted",
+      false,
+      yes("refunded", false, false),
+    ],
+    [
+      "taker",
+      "locked",
+      null,
+      "accepted",
+      false,
+      yes("taker_lock_needed", false, false),
+    ],
+    [
+      "taker",
+      "withdrawn",
+      "withdrawn",
+      "settled",
+      false,
+      yes("settled", false, false),
+    ],
+  ];
+
+  it.each(rows)(
+    "%s with A %s, B %s, offer %s, preimage revealed %s",
+    (who, legA, legB, offerStatus, preimageRevealed, expected) => {
+      const result = evaluateSwapStepPhase({
+        isMaker: who === "maker",
+        offerStatus,
+        legALock: lock(legA),
+        legBLock: lock(legB),
+        preimageRevealed,
+      });
+      expect({
+        phase: result.phase,
+        canClaim: result.canClaim,
+        canRefund: result.canRefund,
+      }).toEqual(expected);
+      // The taker claims with the revealed preimage; the maker already holds it.
+      expect(result.claimPreimageRequired).toBe(
+        result.canClaim && who === "taker"
+      );
+    }
+  );
+
+  it("offers a refund in every state where the party's own lock has expired", () => {
+    const statuses: (SwapLockStatus | null)[] = [
+      null,
+      "unfunded",
+      "locked",
+      "withdrawn",
+      "refunded",
+      "expired",
+    ];
+    const offers = [
+      "pending",
+      "accepted",
+      "settled",
+      "cancelled",
+      "expired",
+    ] as const;
+    for (const isMaker of [true, false])
+      for (const other of statuses)
+        for (const offerStatus of offers)
+          for (const preimageRevealed of [false, true]) {
+            const result = evaluateSwapStepPhase({
+              isMaker,
+              offerStatus,
+              legALock: lock(isMaker ? "expired" : other),
+              legBLock: lock(isMaker ? other : "expired"),
+              preimageRevealed,
+            });
+            expect({
+              isMaker,
+              other,
+              offerStatus,
+              canRefund: result.canRefund,
+            }).toEqual({
+              isMaker,
+              other,
+              offerStatus,
+              canRefund: true,
+            });
+          }
   });
 });

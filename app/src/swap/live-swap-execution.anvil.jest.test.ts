@@ -60,10 +60,10 @@ const INITIATOR = '02' + '11'.repeat(32)
 const RESPONDER = '03' + '22'.repeat(32)
 
 /** The escrow key the live swap derives (`deriveEvmEscrowPrivateKeyHex`). */
-function escrowAddress(): string {
+function escrowAddress(swapId = SWAP_ID): string {
   const digest = sha256(
     utf8ToBytes(
-      ['frank/swap-testnet-evm-escrow/v1', SWAP_ID, INITIATOR, RESPONDER].join(
+      ['frank/swap-testnet-evm-escrow/v1', swapId, INITIATOR, RESPONDER].join(
         '|',
       ),
     ),
@@ -164,5 +164,98 @@ suite('the live EVM swap leg (anvil)', () => {
     await expect(capability.reserveInput({} as never)).rejects.toBeInstanceOf(
       SwapExecutionDisabledError,
     )
+  })
+
+  describe("observing an escrow's funding", () => {
+    const PRINCIPAL = 10n ** 17n
+    const mine = (blocks: number) =>
+      chain.send('anvil_mine', [`0x${blocks.toString(16)}`])
+    const watch = (swapId: string, principal = PRINCIPAL) =>
+      createLiveEvmSwapCapability(() =>
+        evmWallet(Wallet.createRandom() as unknown as Wallet),
+      ).observeFunding(
+        `swap-evm-watch-id:${swapId}:${INITIATOR}:${RESPONDER}:${principal}`,
+      )
+
+    it('reports the real depth of the funding, final only at 10 blocks', async () => {
+      const swapId = 'c1'.repeat(32)
+      expect(await watch(swapId)).toEqual({
+        status: 'unseen',
+        confirmations: 0,
+      })
+
+      await (
+        await dev.sendTransaction({
+          to: escrowAddress(swapId),
+          value: PRINCIPAL,
+        })
+      ).wait()
+      expect(await watch(swapId)).toMatchObject({
+        status: 'included',
+        confirmations: 1,
+        spent: false,
+      })
+
+      await mine(4)
+      expect(await watch(swapId)).toMatchObject({
+        status: 'included',
+        confirmations: 5,
+      })
+
+      await mine(5)
+      expect(await watch(swapId)).toMatchObject({
+        status: 'final',
+        confirmations: 10,
+        spent: false,
+      })
+    })
+
+    it('does not count a deposit short of the principal as funding', async () => {
+      const swapId = 'c2'.repeat(32)
+      await (
+        await dev.sendTransaction({
+          to: escrowAddress(swapId),
+          value: (PRINCIPAL * 95n) / 100n,
+        })
+      ).wait()
+      await mine(12)
+      expect(await watch(swapId)).toEqual({
+        status: 'unseen',
+        confirmations: 0,
+      })
+    })
+
+    it('reports a swept escrow as spent, with the depth it is funded at', async () => {
+      const swapId = 'c3'.repeat(32)
+      await (
+        await dev.sendTransaction({
+          to: escrowAddress(swapId),
+          value: PRINCIPAL,
+        })
+      ).wait()
+      await mine(2)
+      const capability = createLiveEvmSwapCapability(() =>
+        evmWallet(Wallet.createRandom() as unknown as Wallet),
+      )
+      await capability.broadcastTransaction(
+        `swap-evm-refund:${swapId}:${INITIATOR}:${RESPONDER}:responder`,
+      )
+      // The sweep leaves at most dust from its gas estimate.
+      expect(await chain.getBalance(escrowAddress(swapId))).toBeLessThan(
+        PRINCIPAL / 1000n,
+      )
+
+      expect(await watch(swapId)).toMatchObject({
+        status: 'included',
+        confirmations: 4,
+        spent: true,
+      })
+      await mine(6)
+      expect(await watch(swapId)).toMatchObject({
+        status: 'final',
+        confirmations: 10,
+        spent: true,
+      })
+    })
   })
 })

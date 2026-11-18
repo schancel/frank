@@ -1247,6 +1247,9 @@ export const rawEnUS = {
     refundDeposit: 'Refund Deposit',
     executionTurnedOff:
       'Swap deposits are turned off until swaps are rebuilt on safer escrow. A swap funded earlier can still be claimed or refunded.',
+    executionRestoring: 'Opening swap records…',
+    executionRestoreFailed:
+      'Swap records on this device could not be opened, so a claim or refund for a swap funded earlier cannot be shown. Reload to try again.',
     activeOnOtherDevice: 'Active on {device}',
     takeOverActive: 'Use here',
     viewTx: 'View {chain} Tx',

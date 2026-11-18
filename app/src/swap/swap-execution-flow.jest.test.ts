@@ -78,6 +78,10 @@ const globalOptions = {
 }
 
 const { MonadIdentity: EvmIdentity } = require('@frank/wallet/evm-identity')
+const { IDBFactory } = require('fake-indexeddb')
+const {
+  BrowserSwapExecutionStore,
+} = require('@frank/swap-protocol/src/storage/execution-browser')
 
 describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', () => {
   const previousChain = { ...activeChain }
@@ -90,6 +94,44 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
   const conversationId = '11111111-1111-4111-8111-111111111111'
   const swapId = new Uint8Array(32).fill(0x42)
   const mounted: any[] = []
+  // An admitted custody receipt, as `accountSession.state.account.receipt` holds it.
+  const aliceReceipt = {
+    schema: 1,
+    policy: 'browser-preview-aes-gcm-v1',
+    context: {
+      accountId: 'alice-acc',
+      creationId: 'alice-creation',
+      recoveryFormat: 'bip39',
+      registry: 'frank',
+      purposes: ['identity'],
+      custodyEpoch: 1,
+      recoveryFingerprint: 'alice-fingerprint',
+      retirementContext: 'alice-retirement',
+    },
+    previousRevision: 0,
+    revision: 1,
+    operationId: 'alice-op',
+  }
+  const aliceWallet = {
+    chainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
+    identity: {
+      compressedPubKey: alicePub,
+      address: { raw: aliceAddress },
+      displayAddress: aliceAddress,
+    },
+  }
+  const aliceStart = {
+    wallet: aliceWallet,
+    revision: 1,
+    account: { receipt: aliceReceipt },
+  }
+  const {
+    appSwapExecutionOwner,
+    startAppSwapExecution,
+    swapExecutionStoreNamespace,
+    SwapExecutionDisabledError,
+  } = require('./live-swap-execution')
+  const aliceOwner = appSwapExecutionOwner(aliceStart)
 
   let offerHex = ''
   let journalInspection: any
@@ -192,6 +234,7 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
   afterEach(() => {
     mounted.splice(0).forEach(w => w.unmount())
     installSwapExecutionCoordinator(null)
+    delete (globalThis as { indexedDB?: unknown }).indexedDB
     mockSnapshot = null
     setActiveChain(previousChain)
   })
@@ -230,6 +273,7 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     }
 
     createSwapExecutionCoordinator({
+      owner: aliceOwner,
       custody: {
         async acquireHold(opId: string) {
           activeHolds.add(opId)
@@ -373,21 +417,9 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
   })
 
   test('the live app runtime refuses to start a new swap execution (A3)', async () => {
-    const {
-      startAppSwapExecution,
-      SwapExecutionDisabledError,
-    } = require('./live-swap-execution')
     const { swapExecutionState } = require('./swap-execution-commands')
-    const runtime = startAppSwapExecution({
-      wallet: {
-        chainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
-        identity: { compressedPubKey: alicePub },
-      },
-      revision: 1,
-      account: {
-        receipt: { context: { accountId: 'alice-acc' }, revision: 1 },
-      },
-    })
+    globalThis.indexedDB = new IDBFactory()
+    const runtime = startAppSwapExecution(aliceStart)
     try {
       // The coordinator stays installed so swaps funded earlier can still be refunded.
       expect(swapExecutionState.coordinator).not.toBeNull()
@@ -414,6 +446,7 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     }
 
     createSwapExecutionCoordinator({
+      owner: aliceOwner,
       custody: {
         async acquireHold(opId: string) {
           return { operationId: opId }
@@ -525,5 +558,199 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     expect(card.find('[data-testid="swap-execution-status"]').text()).toBe(
       en.chatMessageSwap.statusRefunded,
     )
+  })
+
+  const mountCard = () => {
+    const card = mount(Card, {
+      props: {
+        item: {
+          type: 'application',
+          itemType: 'swap-negotiation-v1',
+          value: { eventHex: offerHex },
+        },
+        address: bobAddress,
+        senderAddress: aliceAddress,
+        outbound: true,
+        conversationId,
+        deliveryStatus: 'confirmed',
+      },
+      global: globalOptions,
+    })
+    mounted.push(card)
+    return card
+  }
+
+  // Capabilities of a swap that was prepared and funded before swaps were turned off.
+  const earlierSwapCapabilities = () => ({
+    custody: {
+      async acquireHold(opId: string) {
+        return { operationId: opId }
+      },
+      async releaseHold() {},
+    },
+    xec: {
+      async reserveInputs({ principalSats }: { principalSats: bigint }) {
+        return {
+          inputs: [
+            {
+              txid: 'cafebabe1234'.padEnd(64, '0'),
+              vout: 1,
+              valueSats: principalSats.toString(),
+            },
+          ],
+          feeSats: 400n,
+          fundingTxHex: '0200xecfund',
+          fundingTxid: 'aa'.repeat(32),
+          claimTxHex: '0200xecclaim',
+          claimTxid: 'bb'.repeat(32),
+          refundTxHex: '0200xecrefund',
+          refundTxid: 'cc'.repeat(32),
+        }
+      },
+      async broadcastTransaction() {
+        return { txid: 'aa'.repeat(32) }
+      },
+      async observeFunding() {
+        return { status: 'final', confirmations: 10 }
+      },
+      async observeSettlement() {
+        return { effect: 'none', status: 'unseen', confirmations: 0 }
+      },
+      async releaseInputs() {},
+    },
+    evm: {
+      async reserveInput() {
+        return {
+          input: {
+            address: '0x1234567890123456789012345678901234567890',
+            nonce: 12,
+            feeBudgetWei: '42000000000000',
+          },
+          fundingTxHex: '0x02evmfund',
+          fundingTxHash: '0x' + 'dd'.repeat(32),
+          claimTxHex: '0x02evmclaim',
+          claimTxHash: '0x' + 'ee'.repeat(32),
+          refundTxHex: '0x02evmrefund',
+          refundTxHash: '0x' + 'ff'.repeat(32),
+        }
+      },
+      async broadcastTransaction() {
+        return { txHash: '0x' + 'dd'.repeat(32) }
+      },
+      async observeFunding() {
+        return { status: 'final', confirmations: 10 }
+      },
+      async observeSettlement() {
+        return { effect: 'none', status: 'unseen', confirmations: 0 }
+      },
+      async releaseInput() {},
+    },
+  })
+
+  test('after a reload, a swap funded earlier is found again with Claim and Refund', async () => {
+    const { swapExecutionState } = require('./swap-execution-commands')
+    globalThis.indexedDB = new IDBFactory()
+
+    // Before the reload: the swap is prepared and funded, its record written to IndexedDB
+    // under the owner the runtime derives.
+    const before = new BrowserSwapExecutionStore(
+      swapExecutionStoreNamespace(aliceStart),
+    )
+    createSwapExecutionCoordinator({
+      owner: aliceOwner,
+      store: before,
+      ...earlierSwapCapabilities(),
+    })
+    await prepareSwapExecution({
+      swapId: toHex(swapId),
+      conversationId,
+      peerPublicKey: toHex(bobPub),
+      role: 'initiator',
+      xecChainIdentifier: TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
+      evmChainIdentifier: TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
+      xecPrincipal: 25_000n,
+      evmPrincipal: 1_000_000_000_000_000n,
+      expiry: 3_000_000_000,
+      // Prepared long enough ago that both refund times have passed.
+      nowSec: Math.floor(Date.now() / 1000) - 10_000,
+    })
+    expect((await fundSwapExecution(toHex(swapId))).phase).toBe('funded')
+
+    // The reload: everything in memory goes, and the app runtime starts again from the same
+    // account and wallet.
+    installSwapExecutionCoordinator(null)
+    before.close()
+    expect(swapExecutionState.records).toEqual({})
+
+    const runtime = startAppSwapExecution(aliceStart)
+    try {
+      expect(swapExecutionState.restore).toBe('loading')
+      for (let i = 0; i < 100 && swapExecutionState.restore === 'loading'; i++)
+        await new Promise(resolve => setTimeout(resolve, 10))
+      expect(swapExecutionState.restore).toBe('ready')
+      expect(swapExecutionState.records[toHex(swapId)]?.phase).toBe('funded')
+
+      const card = mountCard()
+      await flushPromises()
+      expect(
+        card.find('[data-testid="swap-execution-turned-off"]').exists(),
+      ).toBe(false)
+      expect(card.find('[data-testid="swap-execution-status"]').text()).toBe(
+        en.chatMessageSwap.statusLocked,
+      )
+      expect(card.find('[data-testid="swap-claim-btn"]').exists()).toBe(true)
+      expect(card.find('[data-testid="swap-refund-btn"]').exists()).toBe(true)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  test('without IndexedDB the card says the swap records could not be opened', async () => {
+    const { swapExecutionState } = require('./swap-execution-commands')
+    const runtime = startAppSwapExecution(aliceStart)
+    try {
+      expect(swapExecutionState.coordinator).toBeNull()
+      expect(swapExecutionState.restore).toBe('failed')
+      expect(swapExecutionState.restoreFailure).toBe('storage-unavailable')
+
+      const card = mountCard()
+      await flushPromises()
+      expect(
+        card.find('[data-testid="swap-execution-restore-failed"]').text(),
+      ).toBe(en.chatMessageSwap.executionRestoreFailed)
+      // Never shown as if there were no swap to claim or refund.
+      expect(
+        card.find('[data-testid="swap-execution-turned-off"]').exists(),
+      ).toBe(false)
+    } finally {
+      await runtime.stop()
+    }
+  })
+
+  test('swap records that cannot be read are shown as a failure, not as no swap', async () => {
+    const { swapExecutionState } = require('./swap-execution-commands')
+    globalThis.indexedDB = {
+      open() {
+        throw new Error('IndexedDB refused')
+      },
+    }
+    const runtime = startAppSwapExecution(aliceStart)
+    try {
+      for (let i = 0; i < 100 && swapExecutionState.restore === 'loading'; i++)
+        await new Promise(resolve => setTimeout(resolve, 10))
+      expect(swapExecutionState.restore).toBe('failed')
+      expect(swapExecutionState.restoreFailure).toBe('records-unreadable')
+
+      const card = mountCard()
+      await flushPromises()
+      expect(
+        card.find('[data-testid="swap-execution-restore-failed"]').exists(),
+      ).toBe(true)
+      expect(
+        card.find('[data-testid="swap-execution-turned-off"]').exists(),
+      ).toBe(false)
+    } finally {
+      await runtime.stop()
+    }
   })
 })

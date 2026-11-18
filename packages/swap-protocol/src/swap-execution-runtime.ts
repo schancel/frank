@@ -41,6 +41,11 @@ export interface LegFundingObservation {
   readonly blockHeight?: number
   readonly blockHash?: string
   readonly revertedDepth?: number
+  /**
+   * The funded escrow no longer holds the principal: it was swept (claimed or refunded, by
+   * whoever holds its key) after the funding this observation describes.
+   */
+  readonly spent?: boolean
 }
 
 export interface LegSettlementObservation {

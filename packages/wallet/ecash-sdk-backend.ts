@@ -14,7 +14,11 @@
  */
 import type { ChronikClient, ScriptUtxo } from "chronik-client";
 import { Address, Ecc, Script, shaRmd160, Tx, sha256d } from "ecash-lib";
+import { secp256k1 } from "@noble/curves/secp256k1";
 import type { EcashNativeOperation } from "./ecash-operation-store";
+import { buildXecHtlcSpend, xecAddressPrefix } from "./ecash-htlc";
+import type { XecHtlcBranch, XecHtlcSpend } from "./ecash-htlc";
+import { deriveXecHtlcSecretKey } from "./ecash-htlc-keys";
 import type { ChainTransaction } from "./chain/chain-wallet";
 import type { EcashAddressPrefix, EcashWalletBackend } from "./ecash-wallet";
 import { ecashStealthPoint, assertEcashStealthChain } from "./ecash-stealth";
@@ -102,8 +106,65 @@ export class EcashSdkBackend implements EcashWalletBackend {
     private readonly sdk: EcashSdkWallet,
     private readonly chronik: ChronikClient,
     private readonly prefix: EcashAddressPrefix,
-    private readonly stealthCustody?: EcashStealthCustody
+    private readonly stealthCustody?: EcashStealthCustody,
+    /** HKDF root of frank/xec-htlc-key/v1; absent for legacy imports, which cannot swap. */
+    private readonly htlcKeyRoot?: Uint8Array
   ) {}
+
+  /** Runs `use` with the per-swap key, then wipes it. The key never leaves this method. */
+  private withHtlcKey<T>(
+    chainIdentifier: string,
+    swapId: string,
+    role: XecHtlcBranch,
+    use: (secretKey: Uint8Array) => T
+  ): T {
+    this.assertCustodyActive();
+    if (this.htlcKeyRoot === undefined)
+      throw new Error("eCash HTLC keys are unavailable for this wallet");
+    if (xecAddressPrefix(chainIdentifier) !== this.prefix)
+      throw new Error("eCash HTLC key requested for another network");
+    const key = deriveXecHtlcSecretKey(
+      this.htlcKeyRoot,
+      chainIdentifier,
+      swapId,
+      role
+    );
+    try {
+      return use(key);
+    } finally {
+      key.fill(0);
+    }
+  }
+
+  htlcPublicKey(
+    chainIdentifier: string,
+    swapId: string,
+    role: XecHtlcBranch
+  ): Uint8Array {
+    return this.withHtlcKey(chainIdentifier, swapId, role, (key) =>
+      secp256k1.getPublicKey(key, true)
+    );
+  }
+
+  /** Signs (RFC 6979, low-S) the one spend the branch's key may authorize. */
+  signHtlcSpend(
+    params: Omit<Parameters<typeof buildXecHtlcSpend>[0], "sign"> & {
+      swapId: string;
+    }
+  ): XecHtlcSpend {
+    const { swapId, ...spend } = params;
+    return this.withHtlcKey(
+      spend.chainIdentifier,
+      swapId,
+      spend.branch,
+      (key) =>
+        buildXecHtlcSpend({
+          ...spend,
+          sign: (digest) =>
+            secp256k1.sign(digest, key, { lowS: true }).toDERRawBytes(),
+        })
+    );
+  }
 
   getStealthIdentityPublicKey(): string {
     if (this.stealthCustody === undefined)

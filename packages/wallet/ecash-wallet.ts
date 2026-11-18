@@ -14,6 +14,12 @@ import type {
   EcashBalanceObservation,
 } from "./ecash-sdk-backend";
 import type { ReceivedCoinItem } from "@frank/cashweb/types/messages";
+import type {
+  XecHtlcBranch,
+  XecHtlcFundingOutput,
+  XecHtlcSpend,
+  XecHtlcTerms,
+} from "./ecash-htlc";
 import { validateEcashStealthReceipt } from "./ecash-stealth";
 import type {
   EcashStealthDerivation,
@@ -236,6 +242,22 @@ export interface EcashWalletBackend {
     derivation: EcashStealthDerivation,
     expected: { address: string; publicKey: string }
   ): Promise<{ address: string; publicKey: string }>;
+  /** Custody-internal per-swap keys (frank/xec-htlc-key/v1); see ecash-htlc-keys.ts. */
+  htlcPublicKey?(
+    chainIdentifier: string,
+    swapId: string,
+    role: XecHtlcBranch
+  ): Uint8Array;
+  signHtlcSpend?(params: {
+    chainIdentifier: string;
+    swapId: string;
+    terms: XecHtlcTerms;
+    funding: XecHtlcFundingOutput;
+    principalSats: bigint;
+    branch: XecHtlcBranch;
+    preimage?: Uint8Array;
+    destination: string;
+  }): XecHtlcSpend;
   buildNativeConstruction?: EcashPreparationBackend["buildNativeConstruction"];
   restoreChangeIndex?: EcashPreparationBackend["restoreChangeIndex"];
   getAvailableBalance?: EcashPreparationBackend["getAvailableBalance"];
@@ -798,6 +820,56 @@ export class EcashWallet implements NativeWalletHandle {
           ),
         });
       return updated;
+    });
+  }
+
+  /**
+   * This account's compressed public key for one swap and role ("claim" for party B, "refund"
+   * for party A), on this wallet's chain. Same value on every device of the account.
+   */
+  htlcPublicKey(swapId: string, role: XecHtlcBranch): Uint8Array {
+    if (this.backend.htlcPublicKey === undefined)
+      throw new Error("eCash HTLC keys are unavailable for this wallet");
+    return this.backend.htlcPublicKey(this.chainIdentifier, swapId, role);
+  }
+
+  /**
+   * Signs the claim (with `preimage`) or refund spend of an HTLC funding output: one input, one
+   * output of exactly `principalSats` to this wallet's primary address, fee exactly
+   * XEC_HTLC_SPEND_FEE_SATS. Deterministic bytes; nothing is broadcast or recorded here. The
+   * caller persists the raw transaction before handing it to any broadcaster.
+   */
+  signHtlcSpend(params: {
+    swapId: string;
+    terms: XecHtlcTerms;
+    funding: XecHtlcFundingOutput;
+    principalSats: bigint;
+    branch: XecHtlcBranch;
+    preimage?: Uint8Array;
+  }): XecHtlcSpend {
+    if (this.backend.signHtlcSpend === undefined)
+      throw new Error("eCash HTLC keys are unavailable for this wallet");
+    const own = this.htlcPublicKey(params.swapId, params.branch);
+    const expected =
+      params.branch === "claim"
+        ? params.terms.claimPublicKey
+        : params.terms.refundPublicKey;
+    if (
+      !(expected instanceof Uint8Array) ||
+      Buffer.compare(Buffer.from(own), Buffer.from(expected)) !== 0
+    )
+      throw new Error(
+        `This wallet does not hold the ${params.branch} key of this HTLC`
+      );
+    return this.backend.signHtlcSpend({
+      chainIdentifier: this.chainIdentifier,
+      swapId: params.swapId,
+      terms: params.terms,
+      funding: params.funding,
+      principalSats: params.principalSats,
+      branch: params.branch,
+      ...(params.preimage === undefined ? {} : { preimage: params.preimage }),
+      destination: this.primaryAddress,
     });
   }
 

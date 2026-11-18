@@ -1,5 +1,7 @@
 import * as upstreamCooldown from "@frank/wallet/relay-upstream-cooldown";
 import {
+  BANK_RESERVE_WEI,
+  bankAvailableWei,
   confirmReceived,
   Outbox,
   PROOF_ERROR_BACKOFF_CAP_MS,
@@ -776,3 +778,30 @@ describe('Outbox native binary payload ownership', () => {
     expect(h.paidOut()).toBe(0n)
   })
 })
+
+describe("bankAvailableWei: a balance that cannot be read", () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  test("offers nothing and logs the failure once per distinct error, again after a success", async () => {
+    const h = harness();
+    const outbox = new Outbox("test");
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    let failure: Error | undefined = new Error("observation unavailable");
+    h.ctx.getBalance = async () => {
+      if (failure) throw failure;
+      return BANK_RESERVE_WEI + 5n;
+    };
+    expect(await bankAvailableWei(h.ctx, outbox)).toBe(0n);
+    expect(await bankAvailableWei(h.ctx, outbox)).toBe(0n);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![1]).toBe(failure);
+    failure = new Error("another failure");
+    expect(await bankAvailableWei(h.ctx, outbox)).toBe(0n);
+    expect(warn).toHaveBeenCalledTimes(2);
+    failure = undefined;
+    expect(await bankAvailableWei(h.ctx, outbox)).toBe(5n);
+    failure = new Error("another failure");
+    expect(await bankAvailableWei(h.ctx, outbox)).toBe(0n);
+    expect(warn).toHaveBeenCalledTimes(3);
+  });
+});

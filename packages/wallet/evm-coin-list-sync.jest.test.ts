@@ -1,7 +1,12 @@
 /** Scheduling tests: scripted provider responses exercise the real sync/list, not chain conformance. */
 import { Wallet, type Provider } from 'ethers'
 import { EvmCoinList } from './evm-coin-list'
-import { EvmCoinListSync, SEED_REWALK_MS, type CoinListSource } from './evm-coin-list-sync'
+import {
+  EvmCoinListSync,
+  SEED_REWALK_MS,
+  SEED_REWALK_RETRY_INITIAL_MS,
+  type CoinListSource,
+} from './evm-coin-list-sync'
 import { EvmBlockWatcher } from './evm-block-watcher'
 import { MemoryRecordStore } from './storage/evm-coin-store'
 
@@ -400,6 +405,108 @@ describe('the seed walk', () => {
     expect(f.sync.seedDiscovered()).toBeUndefined()
     await f.sync.refresh({ all: true })
     expect(f.walks).toEqual([])
+  })
+
+  it('a failed background re-walk leaves the listed coins spendable and is retried with backoff until it succeeds', async () => {
+    let now = 1_000_000
+    jest.spyOn(Date, 'now').mockImplementation(() => now)
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const rateLimited = Object.assign(new Error('429 Too Many Requests'), { code: 429 })
+    let failing = true
+    const f = await walking({
+      walkedAtMs: now - SEED_REWALK_MS,
+      active: () => true,
+      walk: async scope => {
+        if (scope === 'change' && failing) throw rateLimited
+      },
+    })
+    const settle = () => new Promise(resolve => setImmediate(resolve))
+    // The session's first full pass: the stored walk is old, so the change branch is walked
+    // again in the background, and that walk fails.
+    await f.sync.refresh({ all: true })
+    await settle()
+    expect(f.walks).toEqual(['change'])
+    expect(f.list.all()).toHaveLength(20)
+    // The coins it read stand: the balance is not blocked by the walk.
+    expect(() => f.sync.assertFundingObserved()).not.toThrow()
+    expect(f.sync.seedRewalkFailure()).toMatchObject({
+      error: rateLimited,
+      retryAtMs: now + SEED_REWALK_RETRY_INITIAL_MS,
+    })
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('background seed re-walk failed'), rateLimited)
+    // Ordinary (not full) passes retry it, but not before the backoff.
+    await f.sync.refresh()
+    await settle()
+    expect(f.walks).toEqual(['change'])
+    now += SEED_REWALK_RETRY_INITIAL_MS
+    await f.sync.refresh()
+    await settle()
+    expect(f.walks).toEqual(['change', 'change'])
+    // Failed again: the wait doubles.
+    expect(f.sync.seedRewalkFailure()?.retryAtMs).toBe(now + 2 * SEED_REWALK_RETRY_INITIAL_MS)
+    now += SEED_REWALK_RETRY_INITIAL_MS
+    await f.sync.refresh()
+    await settle()
+    expect(f.walks).toEqual(['change', 'change'])
+    now += SEED_REWALK_RETRY_INITIAL_MS
+    failing = false
+    await f.sync.refresh()
+    await settle()
+    expect(f.walks).toEqual(['change', 'change', 'change'])
+    expect(f.sync.seedRewalkFailure()).toBeUndefined()
+    expect(f.recorded).toEqual([now])
+    // Succeeded: no further walk until the ordinary period has passed.
+    now += SEED_REWALK_RETRY_INITIAL_MS * 4
+    await f.sync.refresh({ all: true })
+    await settle()
+    expect(f.walks).toHaveLength(3)
+    expect(() => f.sync.assertFundingObserved()).not.toThrow()
+  })
+
+  it('while a re-walk is failing, a listed coin that could not be observed still blocks', async () => {
+    let now = 1_000_000
+    jest.spyOn(Date, 'now').mockImplementation(() => now)
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const f = await walking({
+      walkedAtMs: now - SEED_REWALK_MS,
+      active: () => true,
+      walk: async () => {
+        throw new Error('walk failed')
+      },
+    })
+    await f.sync.refresh({ all: true })
+    await new Promise(resolve => setImmediate(resolve))
+    expect(() => f.sync.assertFundingObserved()).not.toThrow()
+    const account = f.sources[0]!.account
+    const unread = new Error('node unreachable')
+    f.sync.markDirty(account)
+    f.provider.getBalance.mockRejectedValue(unread)
+    await f.sync.refresh()
+    await f.sync.refresh()
+    expect(() => f.sync.assertFundingObserved()).toThrow(unread)
+    // The same read failure on every pass is logged once.
+    expect(warn.mock.calls.filter(([text]) => String(text).includes(`could not read ${account}`))).toHaveLength(1)
+    f.provider.getBalance.mockResolvedValue(100n)
+    await f.sync.refresh()
+    expect(() => f.sync.assertFundingObserved()).not.toThrow()
+    expect(f.sync.seedRewalkFailure()).toBeDefined()
+  })
+
+  it('a store never walked whose first walk fails stays incomplete until a walk succeeds', async () => {
+    jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    const error = new Error('walk failed')
+    let failing = true
+    const f = await walking({
+      walk: async () => {
+        if (failing) throw error
+      },
+    })
+    await f.sync.refresh({ all: true })
+    expect(() => f.sync.assertFundingObserved()).toThrow(error)
+    failing = false
+    await f.sync.refresh({ all: true })
+    expect(() => f.sync.assertFundingObserved()).not.toThrow()
+    expect(f.walks).toEqual(['all', 'all'])
   })
 
   it('records the walk only once the accounts it found are coins of the list', async () => {

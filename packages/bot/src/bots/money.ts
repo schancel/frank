@@ -734,17 +734,46 @@ export async function feeFloorWei(ctx: BotContext): Promise<bigint> {
 /** Kept back from a bank's balance when it works out what it can pay: its own fees. */
 export const BANK_RESERVE_WEI = 20_000_000_000_000_000n; // 0.02 MON
 
+/** The last balance-read failure logged for each bot: a failure repeated on every read is
+ * logged once, and again only when it changes or after a read succeeds. */
+const balanceReadFailures = new Map<string, string>();
+
+/**
+ * What the bot's wallet can spend now (`ctx.getBalance`), or undefined when it cannot be read.
+ * A failure is never hidden: it is logged (once per distinct error), since a bot that cannot read
+ * its balance offers nothing and its operator must be able to see why.
+ */
+export async function readSpendableWei(
+  ctx: BotContext
+): Promise<bigint | undefined> {
+  try {
+    const held = await ctx.getBalance();
+    balanceReadFailures.delete(ctx.botId);
+    return held;
+  } catch (error) {
+    const text = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    if (balanceReadFailures.get(ctx.botId) !== text) {
+      balanceReadFailures.set(ctx.botId, text);
+      console.warn(
+        `[${ctx.botId}] cannot read the wallet's spendable balance; offering nothing until it can:`,
+        error
+      );
+    }
+    return undefined;
+  }
+}
+
 /**
  * What a bank can pay out right now: what it can spend, less what it has already written down
  * as owed, less the reserve for its own fees. A table's largest stake or payout is worked out
  * from this each time the table is stated and again when a bet is accepted: a table never offers
- * what its bank could not pay. Zero when the balance cannot be read.
+ * what its bank could not pay. Zero when the balance cannot be read (the failure is logged).
  */
 export async function bankAvailableWei(
   ctx: BotContext,
   outbox: Outbox
 ): Promise<bigint> {
-  const held = await ctx.getBalance().catch(() => 0n);
+  const held = (await readSpendableWei(ctx)) ?? 0n;
   const spoken = (await outbox.owedWei(ctx)) + BANK_RESERVE_WEI;
   return held > spoken ? held - spoken : 0n;
 }

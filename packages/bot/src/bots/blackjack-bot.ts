@@ -31,6 +31,7 @@ import {
   refuse,
   tableMinimumWei,
   type Received,
+  readSpendableWei,
 } from "./money";
 
 /** Kept back from the dealer's balance when it works out the largest bet it can cover. */
@@ -134,7 +135,7 @@ export class BlackjackDealerBot implements FrankBotDefinition {
   > {
     const minBet = await tableMinimumWei(ctx, this.minWagerWei);
     // What the dealer holds, less what it has already written down as owed.
-    const held = await ctx.getBalance().catch(() => undefined);
+    const held = await readSpendableWei(ctx);
     if (held === undefined) return { balance: undefined, maxBet: undefined, minBet };
     const owed = await this.outbox.owedWei(ctx);
     const balance = held > owed ? held - owed : 0n;

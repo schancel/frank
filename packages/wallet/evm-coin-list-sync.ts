@@ -55,6 +55,10 @@ export const SEED_REWALK_MS = 10 * 60_000
  * and is far shorter than restoring the seed elsewhere and putting funds on chain. */
 export const NEW_SEED_NO_WALK_MS = 10 * 60_000
 
+/** A background re-walk of the seed that failed is tried again on a later pass after this long,
+ * doubling up to `SEED_REWALK_MS` until one succeeds. */
+export const SEED_REWALK_RETRY_INITIAL_MS = 15_000
+
 export class EvmCoinListSync {
   /** Accounts to read again before the list trusts what it has of them. */
   private readonly dirty = new Set<string>()
@@ -66,6 +70,15 @@ export class EvmCoinListSync {
   private discovering: Promise<void> | undefined
   private discoveredOnce = false
   private discoveredAt = 0
+  /** The last background re-walk failed: kept for the log and the retry, never as an observation
+   * failure (owner ruling, 2026-11-17). The listed coins were read on their own; accounts the
+   * walk did not reach can only add funds, so what is known stays a safe lower bound. */
+  private rewalkFailure:
+    | { error: unknown; retryAtMs: number; backoffMs: number }
+    | undefined
+  /** The last failure logged for each account's read, so a failure repeated on every pass is
+   * logged once (a new failure, or the same one after a successful read, is logged again). */
+  private readonly readWarnings = new Map<string, string>()
   private activityRecorded = false
   private readonly writes = new Set<Promise<unknown>>()
   private running: Promise<void> | undefined
@@ -212,20 +225,49 @@ export class EvmCoinListSync {
     return this.dueSources().length === 0
   }
 
-  /** One walk of the seed at a time; concurrent callers share it. */
-  private discover(scope: 'all' | 'change' = 'all'): Promise<void> {
+  /** The last background re-walk of the seed failed and has not yet succeeded: the error, and
+   * when it is tried again. The spendable balance does not wait on it. */
+  seedRewalkFailure(): { error: unknown; retryAtMs: number } | undefined {
+    const failure = this.rewalkFailure
+    return failure && { error: failure.error, retryAtMs: failure.retryAtMs }
+  }
+
+  /** One walk of the seed at a time; concurrent callers share it. A `background` walk is a
+   * re-walk of a seed walked before: its failure is logged and retried with backoff, and does not
+   * make observations incomplete. Any other walk's failure does, until a walk succeeds. */
+  private discover(
+    scope: 'all' | 'change' = 'all',
+    background = false,
+  ): Promise<void> {
     const walk = this.config.discover
     if (!walk) return Promise.resolve()
     return (this.discovering ??= (async () => {
       try {
         const found = await walk(() => this.stopped, scope)
         this.failedObservations.delete(SEED_DISCOVERY)
+        this.rewalkFailure = undefined
         this.discoveredOnce = true
         this.discoveredAt = Date.now()
         await this.recordWalk(found, this.discoveredAt)
       } catch (error) {
-        // Accounts the walk did not reach may hold funds: never report the list as complete.
-        if (!this.stopped) this.failedObservations.set(SEED_DISCOVERY, error)
+        if (this.stopped) throw error
+        if (background) {
+          const backoffMs = this.rewalkFailure
+            ? Math.min(this.rewalkFailure.backoffMs * 2, SEED_REWALK_MS)
+            : SEED_REWALK_RETRY_INITIAL_MS
+          this.rewalkFailure = {
+            error,
+            retryAtMs: Date.now() + backoffMs,
+            backoffMs,
+          }
+          console.warn(
+            `[evm-coin-list] background seed re-walk failed; listed coins stay spendable, retrying in ${Math.round(backoffMs / 1000)} s:`,
+            error,
+          )
+        }
+        // Accounts a first or requested walk did not reach may hold funds: never report the
+        // list as complete.
+        else this.failedObservations.set(SEED_DISCOVERY, error)
         throw error
       } finally {
         this.discovering = undefined
@@ -304,7 +346,8 @@ export class EvmCoinListSync {
 
   /** Another device of the account allocates change accounts this one hears of only from the
    * chain: when the last walk is older than `maxAgeMs`, walk the change branch again in the
-   * background. A failure is kept as an observation failure, like any other read. */
+   * background. A failure is logged and the walk is tried again after a backoff; it does not
+   * block the spendable balance (owner ruling, 2026-11-17). */
   rediscoverIfOlderThan(maxAgeMs: number): void {
     const walkedAt = this.walkedAt()
     if (
@@ -313,10 +356,12 @@ export class EvmCoinListSync {
       this.discovering ||
       walkedAt === undefined ||
       Date.now() - walkedAt < maxAgeMs ||
+      (this.rewalkFailure !== undefined &&
+        Date.now() < this.rewalkFailure.retryAtMs) ||
       (this.config.hasActivity !== undefined && !this.config.hasActivity())
     )
       return
-    this.discover('change').catch(() => undefined)
+    this.discover('change', true).catch(() => undefined)
   }
 
   /** Observe only these already-owned accounts, sharing the existing refresh queue. */
@@ -416,7 +461,12 @@ export class EvmCoinListSync {
         if (isRateLimited(error)) throw error
         console.warn('[evm-coin-list] seed discovery failed:', error)
       }
-    } else if (all && accounts === undefined)
+    } else if (
+      accounts === undefined &&
+      (all || this.rewalkFailure !== undefined)
+    )
+      // A failed re-walk is retried on any later pass of due accounts, not only a full one:
+      // a session may make no other full pass.
       this.rediscoverIfOlderThan(SEED_REWALK_MS)
     const due =
       accounts === undefined
@@ -440,6 +490,7 @@ export class EvmCoinListSync {
             await this.readOne(source, head, error => {
               limited ??= { error }
             })
+            this.readWarnings.delete(account)
           } catch (error) {
             // A newer dirty mark invalidates values from this read, but cannot turn its
             // failure into evidence of no funds. Only an accepted observation clears it.
@@ -448,12 +499,19 @@ export class EvmCoinListSync {
               limited ??= { error }
               continue
             }
-            // Nothing is known of it: it stays due, and is read on the next pass.
-            if (!(error instanceof EvmCoinListError))
+            // Nothing is known of it: it stays due, and is read on the next pass. A failure that
+            // repeats on every pass is logged once.
+            const text = String(error)
+            if (
+              !(error instanceof EvmCoinListError) &&
+              this.readWarnings.get(account) !== text
+            ) {
+              this.readWarnings.set(account, text)
               console.warn(
                 `[evm-coin-list] could not read ${source.account}:`,
                 error,
               )
+            }
           }
         }
       }),

@@ -38,6 +38,15 @@ import {
 } from '../chain/evm-legacy-consolidator'
 import type { EvmContractCallRecord } from '../storage/evm-native-operation-journal'
 import { encodeSwap, findToken, routesFor } from './uniswap-v4'
+import { createEvmChain } from '../chain/evm-chain'
+import { withDefaultMessageItems } from '../chain/message-items.testutil'
+import type { DirectMessageReceived } from '../chain/active-chain'
+import { consumeEvmSelfNotes } from '../evm-received-coin-manager'
+import {
+  EVM_CANCELLATION_STAGE,
+  summarizeEvmNativeOperation,
+} from '../chain/evm-native-operation-status'
+import type { WalletSyncItem } from '@frank/cashweb/types/messages'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -274,6 +283,243 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     expect(rowOf(swap.handle.operationId).members[0]!.cancellation?.transactionHash).toBe(
       cancellation!.transactionHash,
     )
+  })
+
+  it('a cancellation that lands is told to the account’s other device with its fee: both devices then show the same balance and the same fee', async () => {
+    // Device A's notes to itself, as its composition hands them to the relay.
+    const notes: WalletSyncItem[] = []
+    f.config.emitWalletSync = async item => {
+      notes.push(item)
+    }
+    // Device B: the same account with its own storage. One process holds one open handle of an
+    // account, so the two devices take turns, as two machines would each run one.
+    const deviceBChain = withDefaultMessageItems(
+      createEvmChain({
+        ...f.config,
+        walletStorageLocation: join(f.root, 'device-b'),
+        emitWalletSync: async () => undefined,
+      }),
+    )
+    const openB = async () =>
+      (await deviceBChain.createWallet(roots(0))) as EvmChainWalletHandle
+    // Device B first sees the main account holding what it was funded with.
+    await alice.close()
+    let deviceB = await openB()
+    expect((await deviceB.getReceiveAddress()).raw.toLowerCase()).toBe(main)
+    const fundedB = await deviceB.getSpendableBalance!()
+    await deviceB.close()
+    alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+
+    const swap = await submitLostSwap()
+    await passDeadline(swap.deadline)
+    await alice.reobserveNativeOperations!()
+    const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+    await chain.send('evm_mine', [])
+    await chain.send('evm_setAutomine', [true])
+    const receipt = (await chain.getTransactionReceipt(cancellation.transactionHash))!
+    expect(receipt.status).toBe(1)
+    const fee = receipt.gasUsed * receipt.gasPrice
+    expect(fee).toBeGreaterThan(0n)
+
+    // Device A sees its cancellation in a block and records the fee it charged.
+    await expectFreed(swap.nonce)
+    expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included?.feeWei).toBe(
+      fee.toString(),
+    )
+    // What History reads of it on device A: a fee-only cancellation, the cancellation's hash
+    // and fee on its member.
+    const statusA = summarizeEvmNativeOperation(rowOf(swap.handle.operationId))
+    expect(statusA.purpose).toBe('cancellation')
+    expect(statusA.members[0]).toMatchObject({
+      transactionHash: cancellation.transactionHash,
+      feeWei: fee.toString(),
+    })
+    expect(statusA.feeCoverage).toBe('complete')
+    expect(await alice.flushNativeSync!()).toEqual([])
+    // A note for the cancellation: its signed bytes, and the fee in its debit, as an ordinary
+    // send's note carries its fee.
+    const note = notes.find(item => item.txHash === cancellation.transactionHash)
+    expect(note).toMatchObject({
+      type: 'wallet-sync',
+      direction: 'out',
+      rawTx: cancellation.rawTransaction,
+      spentInputs: [{ address: main, nonce: swap.nonce, valueWei: fee.toString() }],
+      createdOutputs: [{ valueWei: '0' }],
+      operation: { id: `tx-${swap.handle.txHash.toLowerCase()}`, stage: EVM_CANCELLATION_STAGE },
+    })
+    expect(note!.createdOutputs![0]!.address.toLowerCase()).toBe(main)
+    expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.syncApplied).toBe(true)
+    // Delivered once: a later flush sends nothing again.
+    const sent = notes.length
+    await alice.flushNativeSync!()
+    expect(notes).toHaveLength(sent)
+    // Durable: after a restart the journal still holds the fee and the delivery, and nothing is
+    // sent again.
+    await reopen()
+    expect(rowOf(swap.handle.operationId).members[0]!.cancellation).toMatchObject({
+      included: { feeWei: fee.toString(), blockHash: receipt.blockHash.toLowerCase() },
+      syncApplied: true,
+    })
+    expect(await alice.flushNativeSync!()).toEqual([])
+    expect(notes).toHaveLength(sent)
+    // The host's poll, as after any contract call: the main account's next coin is listed.
+    await alice.reobserveNativeOperations!()
+    const spendableA = await alice.getSpendableBalance!()
+    const balanceA = await alice.getBalance()
+    // The account was funded with 10^18 wei and paid nothing but the cancellation's fee.
+    expect(balanceA).toBe(10n ** 18n - fee)
+    expect(balanceA).toBe(await chain.getBalance(main))
+    await alice.close()
+
+    // Device B reads the note to itself, as its inbox does.
+    deviceB = await openB()
+    try {
+      const own = deviceB.identity.address.raw
+      const message = {
+        senderAddress: { raw: own },
+        recipientAddress: { raw: own },
+        items: [note!],
+        payloadDigest: 'ab'.repeat(32),
+        stampValueWei: 0n,
+        receivedTime: Date.now(),
+      } as unknown as DirectMessageReceived
+      expect(await consumeEvmSelfNotes(deviceB, message)).toMatchObject({ kind: 'consumed' })
+
+      // The same fee recorded on both devices...
+      const notedB = (await deviceB.getNotedSends!()).find(
+        send => send.txHash === cancellation.transactionHash.toLowerCase(),
+      )
+      expect(notedB?.inclusion?.feeWei).toBe(fee.toString())
+      expect(notedB?.state).toBe('included')
+      // Named as device A names it, and History keeps it although it went to an own account.
+      expect(notedB?.purpose).toBe('cancellation')
+      expect(notedB?.toOwnAccount).toBe(true)
+      // ...and the same balance: what the account holds after the fee.
+      expect(await deviceB.getSpendableBalance!()).toBe(spendableA)
+      expect(spendableA).toBeGreaterThan(0n)
+      expect(spendableA).toBeLessThan(fundedB)
+      expect(await deviceB.getBalance()).toBe(balanceA)
+    } finally {
+      await deviceB.close()
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    }
+  })
+
+  it('a cancellation whose receipt could not be read at first has its fee recorded by a later background pass', async () => {
+    const notes: WalletSyncItem[] = []
+    f.config.emitWalletSync = async item => {
+      notes.push(item)
+    }
+    const swap = await submitLostSwap()
+    await passDeadline(swap.deadline)
+    await alice.reobserveNativeOperations!()
+    const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+    await chain.send('evm_mine', [])
+    await chain.send('evm_setAutomine', [true])
+    // The node fails every read of the cancellation's receipt while the wallet first sees the
+    // call's nonce taken.
+    const send = JsonRpcProvider.prototype.send
+    const failing = jest
+      .spyOn(JsonRpcProvider.prototype, 'send')
+      .mockImplementation(async function (this: JsonRpcProvider, method, params) {
+        if (
+          method === 'eth_getTransactionReceipt' &&
+          ((params as string[])[0] ?? '').toLowerCase() === cancellation.transactionHash
+        )
+          throw new Error('node unavailable')
+        return send.call(this, method, params)
+      })
+    try {
+      await alice.getContractCallFunds!()
+    } finally {
+      failing.mockRestore()
+    }
+    const member = rowOf(swap.handle.operationId).members[0]!
+    expect(member.observation.state).toBe('missing')
+    expect(member.cancellation!.included).toBeUndefined()
+
+    // The host's next poll, with no contract call made: the receipt is read again.
+    await alice.reobserveNativeOperations!()
+    const receipt = (await chain.getTransactionReceipt(cancellation.transactionHash))!
+    const fee = receipt.gasUsed * receipt.gasPrice
+    expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included?.feeWei).toBe(
+      fee.toString(),
+    )
+    expect(await alice.flushNativeSync!()).toEqual([])
+    expect(notes.find(item => item.txHash === cancellation.transactionHash)).toMatchObject({
+      spentInputs: [{ address: main, nonce: swap.nonce, valueWei: fee.toString() }],
+    })
+  })
+
+  it('a cancellation that never took the nonce (another transaction did) is read again only at a slowing pace, and never again once the chain is final past it', async () => {
+    const notes: WalletSyncItem[] = []
+    f.config.emitWalletSync = async item => {
+      notes.push(item)
+    }
+    const swap = await submitLostSwap()
+    await passDeadline(swap.deadline)
+    await alice.reobserveNativeOperations!()
+    const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+    // The cancellation is lost, and another transaction of the account (another device's)
+    // takes the nonce.
+    await chain.send('anvil_dropTransaction', [cancellation.transactionHash])
+    await chain.send('anvil_impersonateAccount', [main])
+    await chain.send('eth_sendTransaction', [
+      {
+        from: main,
+        to: dev.address,
+        value: '0x1',
+        nonce: '0x' + swap.nonce.toString(16),
+        gas: '0x5208',
+        gasPrice: '0x' + (2n * GAS_PRICE).toString(16),
+      },
+    ])
+    await chain.send('evm_mine', [])
+    await chain.send('evm_setAutomine', [true])
+    await alice.getContractCallFunds!()
+    expect(rowOf(swap.handle.operationId).members[0]!.observation.state).toBe('missing')
+
+    // Every read of the cancellation's receipt from here on is counted.
+    let reads = 0
+    const send = JsonRpcProvider.prototype.send
+    const counting = jest
+      .spyOn(JsonRpcProvider.prototype, 'send')
+      .mockImplementation(async function (this: JsonRpcProvider, method, params) {
+        if (
+          method === 'eth_getTransactionReceipt' &&
+          ((params as string[])[0] ?? '').toLowerCase() === cancellation.transactionHash
+        )
+          reads++
+        return send.call(this, method, params)
+      })
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    try {
+      // The first background pass looks; one right after it waits its turn.
+      await alice.reobserveNativeOperations!()
+      expect(reads).toBe(1)
+      await alice.reobserveNativeOperations!()
+      expect(reads).toBe(1)
+      // Blocks pass and so does the wait: it looks once more, with the head final past the
+      // block that showed the nonce taken, and ends.
+      for (let i = 0; i < 3; i++) await chain.send('evm_mine', [])
+      offset += 60 * 60_000
+      await alice.reobserveNativeOperations!()
+      expect(reads).toBe(2)
+      // Never again: no further read, however long it waits, so it holds no probe of a pass.
+      for (const hours of [2, 4, 8]) {
+        offset += hours * 60 * 60_000
+        await alice.reobserveNativeOperations!()
+      }
+      expect(reads).toBe(2)
+    } finally {
+      clock.mockRestore()
+      counting.mockRestore()
+    }
+    expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included).toBeUndefined()
+    expect(await alice.flushNativeSync!()).toEqual([])
+    expect(notes.find(item => item.txHash === cancellation.transactionHash)).toBeUndefined()
   })
 
   it('a resume of an exposed swap past its deadline gives it up instead of re-sending it', async () => {

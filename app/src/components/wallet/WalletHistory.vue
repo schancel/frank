@@ -68,6 +68,11 @@
                   {{ depositUnit(entry.deposit) }}</span
                 >
                 <span
+                  v-else-if="feeOnly(entry)"
+                  data-testid="wallet-activity-cancelled"
+                  >{{ $t('walletHistory.purpose.cancellation') }}</span
+                >
+                <span
                   v-else-if="mergedCoins(entry) !== undefined"
                   data-testid="wallet-activity-merged"
                   >{{
@@ -244,7 +249,13 @@
             </template>
             <template v-else-if="entry.kind === 'noted'">
               <q-item-label caption class="q-mt-xs">
-                {{ $t(`walletHistory.purpose.${entry.purpose}`) }}
+                {{
+                  $t(
+                    feeOnly(entry)
+                      ? 'walletHistory.feeOnly'
+                      : `walletHistory.purpose.${entry.purpose}`,
+                  )
+                }}
                 ·
                 <time
                   :datetime="new Date(entry.timeMs).toISOString()"
@@ -333,7 +344,9 @@
               <q-item-label caption class="q-mt-xs">
                 {{
                   $t(
-                    entry.operation.kind === 'contract'
+                    feeOnly(entry)
+                      ? 'walletHistory.feeOnly'
+                      : entry.operation.kind === 'contract'
                       ? 'walletHistory.contract'
                       : `walletHistory.purpose.${entry.operation.purpose}`,
                   )
@@ -348,7 +361,7 @@
                 </template>
               </q-item-label>
               <div class="wallet-history-address">
-                <address-text :address="entry.operation.recipient" copyable />
+                <address-text :address="nativeAddress(entry)" copyable />
               </div>
               <p
                 v-if="entry.stampWei !== '0'"
@@ -392,14 +405,15 @@
                 <p class="wallet-history-outcome">
                   {{
                     $t(
-                      outcomeLine(entry.operation).key,
-                      outcomeLine(entry.operation).params,
+                      outcomeLine(entry, entry.operation).key,
+                      outcomeLine(entry, entry.operation).params,
                     )
                   }}
                 </p>
                 <p
                   v-if="
                     entry.kind === 'native' &&
+                    !feeOnly(entry) &&
                     entry.operation.payment !== 'included' &&
                     entry.operation.payment !== 'cancelled'
                   "
@@ -436,10 +450,16 @@
                 >
                   <div class="wallet-history-heading">
                     <span class="text-weight-medium">{{
-                      $t('walletHistory.transaction', { number: index + 1 })
+                      feeOnly(entry)
+                        ? $t('walletHistory.cancellationTransaction')
+                        : $t('walletHistory.transaction', { number: index + 1 })
                     }}</span>
                     <span class="text-caption">{{
-                      $t(`walletHistory.memberStatus.${member.state}`)
+                      $t(
+                        feeOnly(entry)
+                          ? 'walletHistory.memberStatus.included-success'
+                          : `walletHistory.memberStatus.${member.state}`,
+                      )
                     }}</span>
                   </div>
                   <div
@@ -614,6 +634,7 @@ import {
   changeMembers,
   observedFees,
   mergedCoins,
+  feeOnly,
   paymentMembers,
   type WalletHistoryGroup,
   type WalletHistoryLoad,
@@ -642,12 +663,26 @@ const props = defineProps<{
   formatSwapTime: (timestamp: number) => string
 }>()
 
-/** The outcome line: a send still under way reads as such, not as unresolved. */
-function outcomeLine(operation: EvmNativeOperationStatus) {
-  return nativeOperationOutcome(
-    operation,
-    props.networkName(operation.chainIdentifier) || operation.chainIdentifier,
-  )
+/** The outcome line: a send still under way reads as such, not as unresolved. A given-up
+ * call's cancellation reads as what it was: the expired swap cancelled, only its fee paid. */
+function outcomeLine(
+  entry: WalletHistoryRow,
+  operation: EvmNativeOperationStatus,
+) {
+  const network =
+    props.networkName(operation.chainIdentifier) || operation.chainIdentifier
+  if (feeOnly(entry))
+    return { key: 'walletHistory.cancelledOutcome', params: { network } }
+  return nativeOperationOutcome(operation, network)
+}
+
+/** The address a send's card names: its recipient. A given-up call's cancellation names the
+ * account that paid its fee (the cancellation went from it to itself), as another device's row
+ * does from the note: the contract it never called is not shown. */
+function nativeAddress(entry: WalletHistoryRow & { kind: 'native' }): string {
+  return feeOnly(entry)
+    ? entry.operation.members[0]?.account ?? entry.operation.recipient
+    : entry.operation.recipient
 }
 
 /** The fee a row's details name first. A send's is the card's own figure (every transaction,
@@ -697,6 +732,9 @@ function statusLabel(entry: WalletHistoryRow) {
   if (entry.kind === 'deposit') return 'walletHistory.receivedStatus.received'
   if (entry.kind === 'received')
     return `walletHistory.receivedStatus.${entry.payment.status}`
+  // Given up: nothing was sent; the fee its cancellation charged is the row's figure.
+  if (feeOnly(entry) && (entry.kind !== 'noted' || entry.state === 'included'))
+    return 'walletHistory.status.cancelled'
   if (entry.kind === 'noted') return `walletHistory.status.${entry.state}`
   if (entry.contactOutcome === 'failed') return 'walletHistory.status.failed'
   if (entry.contactOutcome === 'released')
@@ -717,6 +755,8 @@ function statusColor(entry: WalletHistoryRow) {
       ? entry.payment.status
       : entry.kind === 'deposit'
       ? 'received'
+      : feeOnly(entry) && (entry.kind !== 'noted' || entry.state === 'included')
+      ? 'cancelled'
       : entry.kind === 'noted'
       ? entry.state
       : entry.contactOutcome === 'released'

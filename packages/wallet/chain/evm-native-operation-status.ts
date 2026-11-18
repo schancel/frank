@@ -4,6 +4,7 @@ import {
   memberSignings,
   nativeMemberEnded,
   nativeMemberNeedsOwnMoveRecovery,
+  nativeMemberSuperseded,
   type EvmNativeOperation,
 } from "../storage/evm-native-operation-journal";
 
@@ -17,6 +18,9 @@ import {
  * - `group-write`: the payment for a write to a group (creating it, or a message in it);
  * - `consolidation`: a background merge of the wallet's small coins into one of its own accounts
  *   (`evm-coin-consolidator.ts`); it moves no money out of the wallet, only its fee;
+ * - `cancellation`: a contract call (a swap past its deadline) given up at its nonce by a
+ *   transfer of nothing from its account to itself (`evm-contract-cancel.ts`); it moves no
+ *   money, only its fee;
  * - `transfer`: anything else (Send to Address, a contract call).
  */
 export type EvmSendPurpose =
@@ -25,7 +29,12 @@ export type EvmSendPurpose =
   | "forum"
   | "group-write"
   | "consolidation"
+  | "cancellation"
   | "transfer";
+
+/** The stage a given-up call's cancellation is noted under, with the call's own operation
+ * identity: what the account's other devices name it from. */
+export const EVM_CANCELLATION_STAGE = "cancellation";
 
 /** The prefix of a shared transaction set's preparation identity. */
 const TRANSACTION_SET_PREFIX = "evm-transaction-set:";
@@ -42,6 +51,7 @@ export function classifyEvmOperation(
 ): { purpose: EvmSendPurpose; messageId?: string } {
   const stamp = (id: string | undefined) =>
     /^stamp-([0-9a-f]{32})(?:-[rp][0-9]+)?$/.exec(id ?? "");
+  if (stageId === EVM_CANCELLATION_STAGE) return { purpose: "cancellation" };
   const staged = stamp(stageId);
   if (staged) return { purpose: "stamp", messageId: staged[1]! };
   if (preparationId?.startsWith("stealth-payment:"))
@@ -170,9 +180,16 @@ export function summarizeEvmNativeOperation(
     member.observation.state === "abandoned" || nativeMemberEnded(member)
       ? ("superseded" as const)
       : member.observation.state;
+  // A given-up call whose cancellation the chain included: the cancellation is the transaction
+  // that took the nonce, and its fee is what the operation cost.
+  const cancelledBy = (member: EvmNativeOperation["members"][number]) =>
+    row.kind === "contract" && member.cancellation?.included && nativeMemberSuperseded(member)
+      ? { transactionHash: member.cancellation.transactionHash, ...member.cancellation.included }
+      : undefined;
   const members = row.members.map((member) => {
     const observation = member.observation;
     const included = "transactionHash" in observation;
+    const cancel = cancelledBy(member);
     if (
       included &&
       !memberSignings(member).some(
@@ -190,9 +207,16 @@ export function summarizeEvmNativeOperation(
       ...(member.transactionSet?.stageId === undefined
         ? {}
         : { stageId: member.transactionSet.stageId }),
-      transactionHash: landedSigning(member)?.transactionHash,
+      transactionHash: cancel?.transactionHash ?? landedSigning(member)?.transactionHash,
       submitted: member.exposed,
       state: stateOf(member),
+      ...(cancel
+        ? {
+            blockNumber: cancel.blockNumber,
+            blockHash: cancel.blockHash,
+            feeWei: cancel.feeWei,
+          }
+        : {}),
       ...(included
         ? {
             blockNumber: observation.blockNumber,
@@ -228,7 +252,10 @@ export function summarizeEvmNativeOperation(
       paymentMembers.every((member) => member.state === "superseded")
     ? "superseded"
     : "unknown";
-  const { purpose, messageId } = classifyEvmOperation(row.preparationId);
+  const classified = classifyEvmOperation(row.preparationId);
+  const { purpose, messageId } = cancelledBy(final)
+    ? { purpose: "cancellation" as const, messageId: undefined }
+    : classified;
   return {
     operationId: row.operationId,
     chainIdentifier: row.binding.chainIdentifier,

@@ -220,6 +220,22 @@ export interface EvmNativeSigning {
   rawTransaction: string
   transactionHash: string
 }
+/**
+ * The cancellation of a given-up contract call (`EvmNativeMember.cancellation`). `included` is
+ * what the chain showed of it once the call's nonce was seen taken and the cancellation's own
+ * receipt was read (`recordCancellationIncluded`): its block and the fee it charged. The fee is
+ * real spend of the call's account, so, as for any included send, the account's other devices
+ * are told of it; `syncApplied` once that note was delivered (`markCancellationSyncApplied`).
+ */
+export interface EvmNativeCancellation extends EvmNativeSigning {
+  included?: {
+    blockHash: string
+    blockNumber: number
+    transactionIndex: number
+    feeWei: string
+  }
+  syncApplied?: true
+}
 export interface EvmNativeMember extends EvmNativeMemberPlan {
   /** The newest signing of this member: what is handed to the node. */
   signed: EvmNativeSigning | null
@@ -236,7 +252,7 @@ export interface EvmNativeMember extends EvmNativeMemberPlan {
    * anyone. At most one of it and the call lands; the observation stays the call's own, so the
    * call reads superseded only when the chain shows its nonce taken and no receipt of its own.
    */
-  cancellation?: EvmNativeSigning
+  cancellation?: EvmNativeCancellation
   exposed: boolean
   observation: EvmNativeObservation
   account: EvmNativeAccountObservation | null
@@ -1051,8 +1067,29 @@ function validateCancellation(
   source: string,
 ): void {
   if (member.signed === null || member.exposed !== true) fail()
-  const signing = object(member.cancellation, ['rawTransaction', 'transactionHash'])
+  const given = member.cancellation
+  const signing = object(given, [
+    'rawTransaction',
+    'transactionHash',
+    ...(given && typeof given === 'object' && 'included' in given ? ['included'] : []),
+    ...(given && typeof given === 'object' && 'syncApplied' in given ? ['syncApplied'] : []),
+  ])
   hash(signing.transactionHash)
+  if ('included' in signing) {
+    const included = object(signing.included, [
+      'blockHash',
+      'blockNumber',
+      'transactionIndex',
+      'feeWei',
+    ])
+    hash(included.blockHash)
+    integer(included.blockNumber)
+    integer(included.transactionIndex)
+    uint(included.feeWei)
+  }
+  // Delivered to the other devices only once it was seen in a block.
+  if ('syncApplied' in signing && (signing.syncApplied !== true || !('included' in signing)))
+    fail()
   if (typeof signing.rawTransaction !== 'string' || signing.rawTransaction.length > 1024)
     fail()
   let parsed: Transaction
@@ -2131,6 +2168,44 @@ export class EvmNativeOperationJournal {
       if (row.reservedBytes > MAX_ROW) fail('capacity')
     })
   }
+  /**
+   * Records what the chain showed of a recorded cancellation: its receipt, read once the call's
+   * own nonce was seen taken (`nativeMemberSuperseded`), in a canonical block, and the fee it
+   * charged. Recorded once: a later call changes nothing (a cancellation that a reorganisation
+   * moves to another block keeps the block and fee first read; see the commit notes). Refused for
+   * a member whose call the chain shows included, or that has no cancellation.
+   */
+  recordCancellationIncluded(
+    id: string,
+    index: number,
+    included: NonNullable<EvmNativeCancellation['included']>,
+  ): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      const m = row.members[index]
+      if (row.kind !== 'contract' || row.cancelled || !m?.cancellation || !nativeMemberSuperseded(m))
+        fail('conflict')
+      if (m.cancellation.included) return false
+      m.cancellation.included = {
+        blockHash: included.blockHash,
+        blockNumber: included.blockNumber,
+        transactionIndex: included.transactionIndex,
+        feeWei: included.feeWei,
+      }
+      row.reservedBytes = reservation(row)
+      if (row.reservedBytes > MAX_ROW) fail('capacity')
+    })
+  }
+  /** The cancellation's note reached the account's other devices. Only once it was included. */
+  markCancellationSyncApplied(id: string, index: number): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      const m = row.members[index]
+      if (!m?.cancellation?.included) fail('conflict')
+      if (m.cancellation.syncApplied) return false
+      m.cancellation.syncApplied = true
+      row.reservedBytes = reservation(row)
+      if (row.reservedBytes > MAX_ROW) fail('capacity')
+    })
+  }
   markExposed(id: string, index: number): Promise<EvmNativeOperation> {
     return this.mutate(id, row => {
       const m = row.members[index]
@@ -2343,6 +2418,19 @@ export class EvmNativeOperationJournal {
       m.observation = frozenObservation
       m.account = frozenAccount
       if (frozenObservation.state !== 'included-success') m.syncApplied = false
+      // The call itself in a block: its cancellation, seen included before, was not after all
+      // (a reorganisation). Only one of them can hold the nonce.
+      if (
+        m.cancellation?.included &&
+        (frozenObservation.state === 'included-success' ||
+          frozenObservation.state === 'included-revert')
+      ) {
+        m.cancellation = {
+          rawTransaction: m.cancellation.rawTransaction,
+          transactionHash: m.cancellation.transactionHash,
+        }
+        row.reservedBytes = reservation(row)
+      }
       recorded = true
     })
     return recorded

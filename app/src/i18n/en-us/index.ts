@@ -1638,6 +1638,9 @@ export const rawEnUS = {
     includedAt: 'In a block on {date}.',
     notYetInBlock: 'Not in a block yet.',
     transaction: 'Transaction {number}',
+    cancellationTransaction: 'Cancellation',
+    cancelledOutcome:
+      'The expired swap was cancelled on {network}. Nothing was sent; only the network fee was paid.',
     change: 'Change returned to your wallet ({count})',
     changeNote:
       'What was left after the payment, moved to your own accounts. It is not part of the amount sent.',
@@ -1648,9 +1651,11 @@ export const rawEnUS = {
       'forum': 'Forum post burn',
       'group-write': 'Group write fee',
       'consolidation': 'Small coins merged into one of your accounts',
+      'cancellation': 'Expired swap cancelled',
       'transfer': 'To',
     },
     merged: 'Merged {count} coins',
+    feeOnly: 'Nothing was sent; only the network fee was paid',
     stamp: 'Message stamp {amount} {unit}',
     fee: 'Network fee {amount} {unit}',
     noted: 'Read from the notes your devices share with each other.',

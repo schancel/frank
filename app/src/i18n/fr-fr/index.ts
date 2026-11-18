@@ -1675,6 +1675,9 @@ export const rawFrFR = {
     includedAt: 'Dans un bloc le {date}.',
     notYetInBlock: 'Pas encore dans un bloc.',
     transaction: 'Transaction {number}',
+    cancellationTransaction: 'Annulation',
+    cancelledOutcome:
+      "L'échange expiré a été annulé sur {network}. Rien n'a été envoyé ; seuls les frais de réseau ont été payés.",
     change: 'Monnaie rendue à votre portefeuille ({count})',
     changeNote:
       'Ce qui restait après le paiement, déplacé vers vos propres comptes. Cela ne fait pas partie du montant envoyé.',
@@ -1685,9 +1688,11 @@ export const rawFrFR = {
       'forum': 'Brûlage pour un message du forum',
       'group-write': "Frais d'écriture dans un groupe",
       'consolidation': "Petites pièces regroupées dans l'un de vos comptes",
+      'cancellation': 'Échange expiré annulé',
       'transfer': 'À',
     },
     merged: '{count} pièces regroupées',
+    feeOnly: "Rien n'a été envoyé ; seuls les frais de réseau ont été payés",
     stamp: 'Timbre de message {amount} {unit}',
     fee: 'Frais de réseau {amount} {unit}',
     noted: 'Lu dans les notes que vos appareils partagent entre eux.',

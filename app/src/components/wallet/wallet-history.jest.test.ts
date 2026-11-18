@@ -2,6 +2,7 @@ import { includedNativeTransfer } from '../../../test/jest/utils/native-operatio
 import type { NativeWalletHandle } from '@frank/wallet/chain'
 import {
   classifyEvmOperation,
+  EVM_CANCELLATION_STAGE,
   notedSendPurpose,
   type EvmNativeOperationStatus,
   type NotedSendStatus,
@@ -12,6 +13,7 @@ import {
   loadWalletHistory,
   readWalletDeposits,
   mergedCoins,
+  feeOnly,
   type WalletHistoryRow,
 } from './wallet-history'
 
@@ -247,6 +249,101 @@ describe('buildWalletHistoryGroups', () => {
       },
     }).flatMap(group => group.rows)
     expect(plain).toHaveLength(0)
+  })
+
+  it('shows a landed cancellation of an expired swap as one fee-only row, "Expired swap cancelled", with its fee, on the device that cancelled and on another', () => {
+    const main = '0x' + '0c'.repeat(20)
+    const call = '0x' + 'c1'.repeat(32)
+    const cancel = '0x' + 'c2'.repeat(32)
+    const fee = '23100000000000'
+    const inclusion = {
+      status: 'success' as const,
+      blockNumber: 12,
+      blockHash: '0x' + '0f'.repeat(32),
+      blockTimeMs: 12000,
+      feeWei: fee,
+    }
+    // What the cancellation's note says, as every device of the account reads it: the call's
+    // operation at its cancellation stage, a transfer of nothing from the account to itself.
+    const facts = {
+      operation: { id: `tx-${call}`, stage: EVM_CANCELLATION_STAGE },
+    }
+    const note = sent(cancel, {
+      from: main,
+      to: main,
+      valueWei: '0',
+      ...facts,
+      purpose: notedSendPurpose(facts),
+      toOwnAccount: true,
+      inclusion,
+    })
+    expect(note.purpose).toBe('cancellation')
+    const load = (
+      operations: EvmNativeOperationStatus[],
+      noted: NotedSendStatus[],
+    ) =>
+      buildWalletHistoryGroups({
+        chainIdentifier: 'monad-regtest',
+        swaps: [],
+        load: {
+          status: 'available',
+          stampStages: [],
+          operations,
+          received: [],
+          noted,
+          contactPayments: [],
+          blockTimes: new Map([[inclusion.blockHash, 12000]]),
+        },
+      }).flatMap(group => group.rows)
+
+    // The device that cancelled: its journal's contract call, given up, its member the
+    // cancellation that took the nonce (`summarizeEvmNativeOperation`). Its own note, read
+    // back from the mailbox, is the same transaction: one row.
+    const given = operation({
+      operationId: 'swap-call',
+      kind: 'contract',
+      purpose: 'cancellation',
+      recipient: '0x' + '0d'.repeat(20),
+      intendedValueWei: '1000',
+      payment: 'superseded',
+      finalTransactionHash: call,
+      members: [
+        {
+          role: 'payment',
+          account: main,
+          nonce: 0,
+          transactionHash: cancel,
+          submitted: true,
+          state: 'superseded',
+          blockNumber: inclusion.blockNumber,
+          blockHash: inclusion.blockHash,
+          feeWei: fee,
+        },
+      ],
+      observedFeeWei: fee,
+      feeCoverage: 'complete',
+    })
+    for (const rows of [load([given], []), load([given], [note])]) {
+      expect(rows).toHaveLength(1)
+      const row = rows[0]!
+      expect(row.kind).toBe('native')
+      expect(feeOnly(row)).toBe(true)
+      expect(row.kind === 'native' && row.feeWei).toBe(fee)
+      expect(row.kind === 'native' && row.feeCoverage).toBe('complete')
+      expect(row.timeMs).toBe(12000)
+    }
+
+    // Another device: only the note. Sent to the account itself, yet a row of its own, with
+    // nothing sent and the same fee.
+    const other = load([], [note])
+    expect(other).toHaveLength(1)
+    const row = other[0]!
+    expect(row.kind).toBe('noted')
+    expect(feeOnly(row)).toBe(true)
+    expect(row.kind === 'noted' && row.purpose).toBe('cancellation')
+    expect(row.kind === 'noted' && row.valueWei).toBe('0')
+    expect(row.kind === 'noted' && row.feeWei).toBe(fee)
+    expect(row.kind === 'noted' && row.state).toBe('included')
   })
 
   it("shows another device's sends once per message, dated by their payment's block, and this device's own once", () => {

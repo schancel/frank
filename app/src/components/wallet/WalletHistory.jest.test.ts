@@ -472,21 +472,166 @@ it('reads a background merge of coins as "Merged N coins", with what it was and 
   expect(wrapper.get('[data-testid="wallet-activity-fee"]').exists()).toBe(true)
 })
 
-it('reads a landed cancellation of an expired swap as "Expired swap cancelled", cancelled, with its fee and no amount sent', () => {
-  const wrapper = mountHistory('superseded', 'contract', 'cancellation')
-  expect(wrapper.get('[data-testid="wallet-activity-cancelled"]').text()).toBe(
-    'Expired swap cancelled',
-  )
-  expect(wrapper.get('.wallet-history-amount').text()).not.toContain('MONT')
-  expect(wrapper.get('[data-testid="wallet-activity-status"]').text()).toBe(
-    'Cancelled',
-  )
-  expect(wrapper.text()).toContain(
-    'Nothing was sent; only the network fee was paid',
-  )
-  expect(wrapper.get('[data-testid="wallet-activity-fee"]').text()).toContain(
-    '0.0021',
-  )
+describe('a landed cancellation of an expired swap', () => {
+  const account = '0x' + '0c'.repeat(20)
+  const contract = '0x' + '0d'.repeat(20)
+  const cancelHash = '0x' + 'c2'.repeat(32)
+  const fee = '23100000000000'
+  const mount = (row: Record<string, unknown>) =>
+    shallowMount(History, {
+      props: {
+        chainIdentifier: 'monad-testnet',
+        groups: [{ id: 'activity', label: 'walletPanel.tabHistory', rows: [row] }],
+        inspectionStatus: 'available',
+        nativeUnit: 'MONT',
+        nativeAmount: value => (value === fee ? '0.0000231' : `amount:${value}`),
+        networkName: () => 'Monad Testnet',
+        transactionExplorerLink: hash => `https://explorer.example/${hash}`,
+        formatSwapTime: () => 'Oct 11',
+      },
+      global: {
+        mocks: { $t: translate },
+        stubs: {
+          AddressText: {
+            props: ['address'],
+            template: '<span class="address-text">{{ address }}</span>',
+          },
+          ...Object.fromEntries(
+            [
+              'QCardSection',
+              'QList',
+              'QItemLabel',
+              'QItem',
+              'QItemSection',
+              'QIcon',
+              'QBadge',
+            ].map(name => [name, { template: '<div><slot /></div>' }]),
+          ),
+        },
+      },
+    } as never)
+  // The card both devices show: the label, Cancelled, no amount, the account that paid the fee
+  // (never the contract), and the fee.
+  const expectFeeOnlyCard = (wrapper: ReturnType<typeof mount>) => {
+    expect(wrapper.get('[data-testid="wallet-activity-cancelled"]').text()).toBe(
+      'Expired swap cancelled',
+    )
+    expect(wrapper.get('.wallet-history-amount').text()).not.toContain('MONT')
+    expect(wrapper.get('[data-testid="wallet-activity-status"]').text()).toBe(
+      'Cancelled',
+    )
+    expect(wrapper.text()).toContain('Nothing was sent; only the network fee was paid')
+    expect(wrapper.get('[data-testid="wallet-activity-fee"]').text()).toBe(
+      'Network fee 0.0000231 MONT',
+    )
+    const addresses = wrapper.findAll('.wallet-history-address .address-text')
+    expect(addresses[0]!.text()).toBe(account)
+    expect(wrapper.text()).not.toContain(contract)
+  }
+
+  it('on the device that cancelled: the card, and details that say what happened', () => {
+    const operation: EvmNativeOperationStatus = {
+      operationId: 'evm-native-v1:0000000000000002',
+      chainIdentifier: 'monad-testnet',
+      kind: 'contract',
+      recipient: contract,
+      purpose: 'cancellation',
+      intendedValueWei: '1000',
+      payment: 'superseded',
+      finalTransactionHash: '0x' + 'c1'.repeat(32),
+      members: [
+        {
+          role: 'payment',
+          account,
+          nonce: 0,
+          transactionHash: cancelHash,
+          submitted: true,
+          state: 'superseded',
+          blockNumber: 12,
+          blockHash: '0x' + '0f'.repeat(32),
+          feeWei: fee,
+        },
+      ],
+      observedFeeWei: fee,
+      feeCoverage: 'complete',
+      sharing: 'none',
+    }
+    const wrapper = mount({
+      id: 'native:cancel',
+      kind: 'native',
+      operation,
+      stampWei: '0',
+      feeWei: fee,
+      feeCoverage: 'complete',
+      timeMs: 12000,
+    })
+    expectFeeOnlyCard(wrapper)
+    const details = wrapper.get('[data-testid="wallet-native-operation"]')
+    const text = details.text()
+    expect(text).toContain(
+      'The expired swap was cancelled on Monad Testnet. Nothing was sent; only the network fee was paid.',
+    )
+    expect(text).not.toContain(translate('walletHistory.intended'))
+    expect(text).not.toContain('Nonce used')
+    expect(text).not.toContain('no longer has this transfer')
+    expect(text).not.toContain('Transaction 1')
+    const transaction = details.get('.wallet-history-transaction')
+    expect(transaction.text()).toContain('Cancellation')
+    expect(transaction.text()).toContain('Confirmed')
+    expect(transaction.text()).toContain(cancelHash)
+    expect(details.get('[data-testid="wallet-native-operation-fee"]').text()).toContain(
+      '0.0000231',
+    )
+  })
+
+  it('on another device, from the note: the same card; Cancelled only once the chain shows it', () => {
+    const send = (state: 'included' | 'pending') => ({
+      txHash: cancelHash,
+      from: account,
+      nonce: 0,
+      to: account,
+      valueWei: '0',
+      call: false,
+      operation: { id: 'tx-' + 'c1'.repeat(32), stage: 'cancellation' },
+      purpose: 'cancellation',
+      noteIndex: 0,
+      notedAtMs: 1,
+      state,
+      toOwnAccount: true,
+      ...(state === 'included'
+        ? {
+            inclusion: {
+              status: 'success',
+              blockNumber: 12,
+              blockHash: '0x' + '0f'.repeat(32),
+              blockTimeMs: 12000,
+              feeWei: fee,
+            },
+          }
+        : {}),
+    })
+    const row = (state: 'included' | 'pending') => ({
+      id: 'noted:operation:cancel',
+      kind: 'noted',
+      purpose: 'cancellation',
+      recipient: account,
+      valueWei: '0',
+      stampWei: '0',
+      sends: [send(state)],
+      feeWei: state === 'included' ? fee : '0',
+      state,
+      timeMs: 12000,
+    })
+    expectFeeOnlyCard(mount(row('included')))
+    // Not in a block yet: the note says what it is, but not yet that it was cancelled.
+    const pending = mount(row('pending'))
+    expect(pending.get('[data-testid="wallet-activity-cancelled"]').text()).toBe(
+      'Expired swap cancelled',
+    )
+    expect(pending.get('[data-testid="wallet-activity-status"]').text()).toBe(
+      'Pending',
+    )
+  })
 })
 
 it('names one network fee for a send: the card and its details show the same figure', () => {

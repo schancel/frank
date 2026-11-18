@@ -1638,6 +1638,9 @@ export const rawEnUS = {
     includedAt: 'In a block on {date}.',
     notYetInBlock: 'Not in a block yet.',
     transaction: 'Transaction {number}',
+    cancellationTransaction: 'Cancellation',
+    cancelledOutcome:
+      'The expired swap was cancelled on {network}. Nothing was sent; only the network fee was paid.',
     change: 'Change returned to your wallet ({count})',
     changeNote:
       'What was left after the payment, moved to your own accounts. It is not part of the amount sent.',

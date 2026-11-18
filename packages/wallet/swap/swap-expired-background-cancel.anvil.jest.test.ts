@@ -451,6 +451,77 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     })
   })
 
+  it('a cancellation that never took the nonce (another transaction did) is read again only at a slowing pace, and never again once the chain is final past it', async () => {
+    const notes: WalletSyncItem[] = []
+    f.config.emitWalletSync = async item => {
+      notes.push(item)
+    }
+    const swap = await submitLostSwap()
+    await passDeadline(swap.deadline)
+    await alice.reobserveNativeOperations!()
+    const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+    // The cancellation is lost, and another transaction of the account (another device's)
+    // takes the nonce.
+    await chain.send('anvil_dropTransaction', [cancellation.transactionHash])
+    await chain.send('anvil_impersonateAccount', [main])
+    await chain.send('eth_sendTransaction', [
+      {
+        from: main,
+        to: dev.address,
+        value: '0x1',
+        nonce: '0x' + swap.nonce.toString(16),
+        gas: '0x5208',
+        gasPrice: '0x' + (2n * GAS_PRICE).toString(16),
+      },
+    ])
+    await chain.send('evm_mine', [])
+    await chain.send('evm_setAutomine', [true])
+    await alice.getContractCallFunds!()
+    expect(rowOf(swap.handle.operationId).members[0]!.observation.state).toBe('missing')
+
+    // Every read of the cancellation's receipt from here on is counted.
+    let reads = 0
+    const send = JsonRpcProvider.prototype.send
+    const counting = jest
+      .spyOn(JsonRpcProvider.prototype, 'send')
+      .mockImplementation(async function (this: JsonRpcProvider, method, params) {
+        if (
+          method === 'eth_getTransactionReceipt' &&
+          ((params as string[])[0] ?? '').toLowerCase() === cancellation.transactionHash
+        )
+          reads++
+        return send.call(this, method, params)
+      })
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    try {
+      // The first background pass looks; one right after it waits its turn.
+      await alice.reobserveNativeOperations!()
+      expect(reads).toBe(1)
+      await alice.reobserveNativeOperations!()
+      expect(reads).toBe(1)
+      // Blocks pass and so does the wait: it looks once more, with the head final past the
+      // block that showed the nonce taken, and ends.
+      for (let i = 0; i < 3; i++) await chain.send('evm_mine', [])
+      offset += 60 * 60_000
+      await alice.reobserveNativeOperations!()
+      expect(reads).toBe(2)
+      // Never again: no further read, however long it waits, so it holds no probe of a pass.
+      for (const hours of [2, 4, 8]) {
+        offset += hours * 60 * 60_000
+        await alice.reobserveNativeOperations!()
+      }
+      expect(reads).toBe(2)
+    } finally {
+      clock.mockRestore()
+      counting.mockRestore()
+    }
+    expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included).toBeUndefined()
+    expect(await alice.flushNativeSync!()).toEqual([])
+    expect(notes.find(item => item.txHash === cancellation.transactionHash)).toBeUndefined()
+  })
+
   it('a resume of an exposed swap past its deadline gives it up instead of re-sending it', async () => {
     const swap = await submitLostSwap()
     await passDeadline(swap.deadline)

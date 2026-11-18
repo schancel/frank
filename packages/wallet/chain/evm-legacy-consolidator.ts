@@ -20,6 +20,7 @@ import type { EvmTransactionBuilder } from './evm-transaction-builder'
 import { readSpendRuleHead } from './evm-spend-rule'
 import { cancellationOf } from './evm-contract-cancel'
 import { EVM_CANCELLATION_STAGE } from './evm-native-operation-status'
+import { EVM_FAILURE_CONFIRMATIONS } from './evm-settlement'
 import type {
   HtlcRecordItem,
   SwapRecordItem,
@@ -550,6 +551,14 @@ export class EvmLegacyConsolidator {
    * recorded with the fee it charged (`recordCancellationIncluded`), so the account's other
    * devices are told of that spend as of any included send (`applySync`). A read that fails,
    * or a receipt that does not check, records nothing; the next look reads it again.
+   *
+   * When it is not the cancellation that took the nonce (another transaction of the account,
+   * another device's), the receipt never comes. The rule that ends the looks: the node answers
+   * no receipt while its head is `EVM_FAILURE_CONFIRMATIONS` blocks past the block in which the
+   * nonce was seen taken. A cancellation that took the nonce is in that block or an earlier one,
+   * so its receipt would be there; this session never reads it again (`cancellationNotLanded`).
+   * A restart looks once more and ends the same way. Reads go through the re-observation stop:
+   * a wallet that closes stops waiting for the node at once.
    */
   private async observeCancellation(
     operationId: string,
@@ -560,13 +569,29 @@ export class EvmLegacyConsolidator {
     const journal = this.journal(lifetime)
     const member = journal.get(operationId).members[index]
     const cancellation = member?.cancellation
-    if (!member || !cancellation || cancellation.included || !nativeMemberSuperseded(member))
+    if (
+      !member ||
+      !cancellation ||
+      cancellation.included ||
+      !nativeMemberSuperseded(member) ||
+      this.cancellationNotLanded.has(cancellation.transactionHash)
+    )
       return
     try {
       const { provider } = this.config
-      const receipt = await provider.getTransactionReceipt(cancellation.transactionHash)
-      if (!receipt || (wanted && !wanted())) return
-      const block = await provider.getBlock(receipt.blockNumber)
+      const read = <T>(body: () => Promise<T>) =>
+        this.stoppable(evidenceRead(body, wanted))
+      const receipt = await read(() =>
+        provider.getTransactionReceipt(cancellation.transactionHash),
+      )
+      if (wanted && !wanted()) return
+      if (!receipt) {
+        const head = await read(() => provider.getBlockNumber())
+        if (head >= member.account!.blockNumber + EVM_FAILURE_CONFIRMATIONS)
+          this.cancellationNotLanded.add(cancellation.transactionHash)
+        return
+      }
+      const block = await read(() => provider.getBlock(receipt.blockNumber))
       if (wanted && !wanted()) return
       const cancel = Transaction.from(cancellation.rawTransaction)
       if (
@@ -587,6 +612,22 @@ export class EvmLegacyConsolidator {
     } catch {
       /* Unavailable evidence records nothing. */
     }
+  }
+  /** Cancellations this session found did not take their call's nonce (`observeCancellation`). */
+  private readonly cancellationNotLanded = new Set<string>()
+  /** `read`, abandoned (rejected) when re-observation stops or after one lookup's I/O budget. */
+  private stoppable<T>(read: Promise<T>): Promise<T> {
+    let stop!: () => void
+    const stopped = new Promise<never>((_, reject) => {
+      stop = () => reject(REOBSERVE_STOPPED)
+    })
+    this.reobserveStops.add(stop)
+    const timer = setTimeout(stop, this.reobservationLookupTimeoutMs)
+    if (this.reobserveStopped) stop()
+    return Promise.race([read, stopped]).finally(() => {
+      clearTimeout(timer)
+      this.reobserveStops.delete(stop)
+    })
   }
   /** The signed, exposed members spending `address` that the chain has not answered for: not seen in a
    * block (successful or reverted), and the account's nonce not seen past theirs. */
@@ -1587,22 +1628,33 @@ export class EvmLegacyConsolidator {
             nativeMemberSuperseded(member)
           ) {
             this.contractResendAt.delete(key)
-            // A given-up call whose cancellation took its nonce, with the cancellation's receipt
-            // not read yet (the first read failed, or the node had no receipt then): read again
-            // here, so its fee is recorded and noted without waiting for another contract call.
+            // A given-up call whose nonce is taken, with its cancellation's receipt not read yet
+            // (the first read failed, or the node had no receipt then): read again here, so its
+            // fee is recorded and noted without waiting for another contract call. Paced as a
+            // re-send is; never again once the nonce is known taken by another transaction.
+            const cancelKey = `${key}:cancellation`
             if (
               nativeMemberSuperseded(member) &&
               member.cancellation &&
-              !member.cancellation.included
+              !member.cancellation.included &&
+              !this.cancellationNotLanded.has(member.cancellation.transactionHash)
             ) {
+              const last = this.contractResendAt.get(cancelKey)
+              if (last && now >= last.at && now - last.at < last.waitMs) continue
               handled++
+              this.contractResendAt.set(cancelKey, {
+                at: now,
+                waitMs: last
+                  ? Math.min(last.waitMs * 2, REOBSERVE_MAX_BACKOFF_MS)
+                  : REOBSERVE_MIN_INTERVAL_MS,
+              })
               await this.observeCancellation(
                 listed.operationId,
                 index,
                 lifetime,
                 () => !this.reobserveStopped,
               )
-            }
+            } else this.contractResendAt.delete(cancelKey)
             continue
           }
           const last = this.contractResendAt.get(key)

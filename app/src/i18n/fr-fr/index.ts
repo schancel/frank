@@ -1675,6 +1675,9 @@ export const rawFrFR = {
     includedAt: 'Dans un bloc le {date}.',
     notYetInBlock: 'Pas encore dans un bloc.',
     transaction: 'Transaction {number}',
+    cancellationTransaction: 'Annulation',
+    cancelledOutcome:
+      "L'échange expiré a été annulé sur {network}. Rien n'a été envoyé ; seuls les frais de réseau ont été payés.",
     change: 'Monnaie rendue à votre portefeuille ({count})',
     changeNote:
       'Ce qui restait après le paiement, déplacé vers vos propres comptes. Cela ne fait pas partie du montant envoyé.',

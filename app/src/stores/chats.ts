@@ -2132,6 +2132,7 @@ function isInternalMessage(items: unknown): boolean {
         typeof item === 'object' &&
         !Array.isArray(item) &&
         (item.type === 'swap-record' ||
+          item.type === 'htlc-record' ||
           item.type === 'wallet-sync' ||
           item.type === 'received-coin' ||
           item.type === 'conversation-state' ||

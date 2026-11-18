@@ -293,6 +293,24 @@ export interface SwapRecordItem {
   timestamp: number
 }
 
+/**
+ * The record of one GenericHTLC call this account made for a swap (`lock`, `withdraw` or
+ * `refund`), carried in the note the account sends itself when the call's transaction is
+ * included, beside its `wallet-sync` item. It says which step, of which swap, on which lock, by
+ * which transaction; what the lock holds is read from the chain by `lockId`.
+ */
+export interface HtlcRecordItem {
+  type: 'htlc-record'
+  chainIdentifier: string
+  action: 'lock' | 'withdraw' | 'refund'
+  /** The swap: 32 bytes as lowercase hex without `0x`. */
+  swapId: string
+  /** The lock the call acts on: `0x` and 64 lowercase hex digits. */
+  lockId: string
+  txHash: string
+  timestamp: number
+}
+
 export interface SwapRecordAsset {
   symbol: string
   /** Absent for the chain's native coin. */
@@ -893,6 +911,7 @@ export type MessageItem = (
   | RaffleItem
   | SwapOfferItem
   | SwapRecordItem
+  | HtlcRecordItem
   | ReceivedCoinItem
   | ConversationStateItem
   | ContactStateItem

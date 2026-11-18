@@ -108,6 +108,7 @@ export async function canonicalPollingFixture() {
       prepareNextRevision: unavailable,
       publicGenerationZeroPoints: unavailable,
       conversationIdSalt: unavailable,
+      swapPreimage: unavailable,
       dispose: () => undefined,
     },
   }

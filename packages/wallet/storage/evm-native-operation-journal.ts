@@ -243,11 +243,14 @@ export interface EvmNativeMember extends EvmNativeMemberPlan {
   syncApplied: boolean
 }
 /**
- * What a contract call is, kept with its signed transaction: the record a swap carries. Plain
- * JSON, amounts as decimal strings in each asset's smallest unit. The chain is the journal's
- * binding. The wallet's sync event turns it into the note the account sends itself.
+ * What a contract call is, kept with its signed transaction. Plain JSON. The chain is the
+ * journal's binding. The wallet's sync event turns it into the note the account sends itself:
+ * a `swap-record` item for a swap, an `htlc-record` item for an HTLC call.
  */
-export interface EvmContractCallRecord {
+export type EvmContractCallRecord = EvmSwapCallRecord | EvmHtlcCallRecord
+
+/** A swap's record: amounts as decimal strings in each asset's smallest unit. */
+export interface EvmSwapCallRecord {
   kind: 'swap'
   venueId: string
   account: string
@@ -263,9 +266,35 @@ export interface EvmContractCallRecord {
   /** The exchange's own description of the route; needed to read the outcome later. */
   route: unknown
 }
+
+export const EVM_HTLC_CALL_ACTIONS = ['lock', 'withdraw', 'refund'] as const
+export type EvmHtlcCallAction = (typeof EVM_HTLC_CALL_ACTIONS)[number]
+
+/**
+ * A GenericHTLC v2 call made for a swap: which step (`lock`, `withdraw`, `refund`), the swap
+ * (32 bytes, lowercase hex without `0x`) and the lock it acts on (`0x` and 64 lowercase hex
+ * digits; for `lock`, the id the contract gives the new lock). The consolidator checks, before
+ * anything is signed, that the call's calldata is that step on that lock.
+ */
+export interface EvmHtlcCallRecord {
+  kind: 'htlc'
+  action: EvmHtlcCallAction
+  swapId: string
+  lockId: string
+}
+const SWAP_ID = /^[0-9a-f]{64}$/
 const MAX_RECORD_BYTES = 8 * 1024
 function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
   if (kind !== 'contract') fail()
+  if (!value || typeof value !== 'object' || Array.isArray(value)) fail()
+  if ((value as { kind?: unknown }).kind === 'htlc') {
+    const row = object(value, ['kind', 'action', 'swapId', 'lockId'])
+    if (!(EVM_HTLC_CALL_ACTIONS as readonly unknown[]).includes(row.action))
+      fail()
+    if (typeof row.swapId !== 'string' || !SWAP_ID.test(row.swapId)) fail()
+    hash(row.lockId)
+    return clone(value) as EvmHtlcCallRecord
+  }
   const row = object(value, [
     'kind',
     'venueId',
@@ -297,7 +326,7 @@ function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
   ])
     uint(amount)
   if (encodedBytes(value) > MAX_RECORD_BYTES) fail('capacity')
-  return clone(value) as EvmContractCallRecord
+  return clone(value) as EvmSwapCallRecord
 }
 export interface EvmTransactionSetStage {
   /** Absent only for the original recipient leg. */

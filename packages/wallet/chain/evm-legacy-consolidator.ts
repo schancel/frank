@@ -20,13 +20,17 @@ import type { EvmTransactionBuilder } from './evm-transaction-builder'
 import { readSpendRuleHead } from './evm-spend-rule'
 import { cancellationOf } from './evm-contract-cancel'
 import type {
+  HtlcRecordItem,
   SwapRecordItem,
   WalletSyncItem,
   WalletSyncOperation,
 } from '@frank/cashweb/types/messages'
+import { htlcCallOf } from '../swap-escrow'
 import {
+  EvmNativeJournalError,
   EvmNativeOperationJournal,
   type EvmContractCallRecord,
+  type EvmSwapCallRecord,
   nativeMaximumFee,
   nativeMemberSuperseded,
   landedSigning,
@@ -48,9 +52,10 @@ export interface ContractCallParams {
   /** The gas limit the caller quoted to the user. Estimated here when omitted. */
   gasLimit?: bigint
   /**
-   * What this call is (a swap's record). It is written to the journal with the plan, so before
-   * anything is signed or broadcast, and once the call is included the sync event carries it:
-   * composition sends it in the account's note to itself. The caller records nothing itself.
+   * What this call is (a swap's record, or an HTLC step's). It is written to the journal with
+   * the plan, so before anything is signed or broadcast, and once the call is included the sync
+   * event carries it: composition sends it in the account's note to itself. The caller records
+   * nothing itself.
    */
   record?: EvmContractCallRecord
   /** After signing and before broadcast, so the caller can record the exact operation first. */
@@ -129,8 +134,8 @@ export interface EvmLegacyConsolidatorConfig {
   onSyncCheckpoint?: () => Promise<void>
   onSyncTransaction?: (
     item: WalletSyncItem,
-    /** The swap this transaction made, when its contract call carried a record. */
-    record?: SwapRecordItem,
+    /** What this transaction was, when its contract call carried a record. */
+    record?: ContractCallRecordItem,
   ) => Promise<void>
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
@@ -149,14 +154,45 @@ export interface EvmLegacyConsolidatorConfig {
    * finalized one). Absent: the newest block. */
   spendRuleHead?: 'latest' | 'finalized'
 }
-/** The swap-record item of an included contract call that carried a record, else undefined. */
+/** The note-to-self item a contract call's record becomes. */
+export type ContractCallRecordItem = SwapRecordItem | HtlcRecordItem
+
+/** The note-to-self item of an included contract call that carried a record, else undefined:
+ * a `swap-record` for a swap, an `htlc-record` for an HTLC step. */
+export function contractCallRecordItemOf(
+  row: EvmNativeOperation,
+): ContractCallRecordItem | undefined {
+  return row.record?.kind === 'htlc' ? htlcRecordItemOf(row) : swapRecordItemOf(row)
+}
+
+/** The htlc-record item of an included HTLC call, else undefined. */
+export function htlcRecordItemOf(
+  row: EvmNativeOperation,
+): HtlcRecordItem | undefined {
+  const signed = row.members[0]?.signed
+  const { record } = row
+  if (row.kind !== 'contract' || record?.kind !== 'htlc' || !signed)
+    return undefined
+  return {
+    type: 'htlc-record',
+    chainIdentifier: row.binding.chainIdentifier,
+    action: record.action,
+    swapId: record.swapId,
+    lockId: record.lockId,
+    txHash: signed.transactionHash,
+    timestamp: Date.now(),
+  }
+}
+
+/** The swap-record item of an included swap call that carried a record, else undefined. */
 export function swapRecordItemOf(
   row: EvmNativeOperation,
 ): SwapRecordItem | undefined {
   const signed = row.members[0]?.signed
   const { record } = row
-  if (row.kind !== 'contract' || !record || !signed) return undefined
-  const asset = (a: EvmContractCallRecord['assetIn']) => ({
+  if (row.kind !== 'contract' || record?.kind !== 'swap' || !signed)
+    return undefined
+  const asset = (a: EvmSwapCallRecord['assetIn']) => ({
     symbol: a.symbol,
     ...(a.address === null ? {} : { address: a.address }),
     decimals: a.decimals,
@@ -1246,7 +1282,7 @@ export class EvmLegacyConsolidator {
               timestamp: Date.now(),
               operation: syncOperationOf(row, member),
             },
-            swapRecordItemOf(row),
+            contractCallRecordItemOf(row),
           )
         }
       }
@@ -1271,7 +1307,7 @@ export class EvmLegacyConsolidator {
     operationId: string,
     memberIndex: number,
     item: WalletSyncItem,
-    record?: SwapRecordItem,
+    record?: ContractCallRecordItem,
   ): void {
     const key = `${operationId}:${memberIndex}`
     if (this.transporting.has(key)) return
@@ -1545,6 +1581,22 @@ export class EvmLegacyConsolidator {
     if (this.config.transactionBuilder.supportsNativeConsolidation !== true)
       throw new Error('Contract calls are unavailable on this network')
     const main = this.config.mainSource
+    // An HTLC record must name the step and the lock this calldata is; the journal checks
+    // its shape. Refused before anything is planned, signed or sent.
+    if (params.record?.kind === 'htlc') {
+      let call: ReturnType<typeof htlcCallOf> | undefined
+      try {
+        call = htlcCallOf(main.address, params.data)
+      } catch {
+        call = undefined
+      }
+      if (
+        !call ||
+        call.action !== params.record.action ||
+        call.lockId !== params.record.lockId
+      )
+        throw new EvmNativeJournalError('invalid', 'record')
+    }
     const account = await this.mainAccount(lifetime)
     // Absent while an earlier transaction of its own is unresolved.
     if (!account || BigInt(account.balanceWei) === 0n)

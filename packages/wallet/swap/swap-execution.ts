@@ -6,7 +6,7 @@
  */
 
 import type { UniswapV4Deployment } from '../chain/dex-deployments'
-import type { EvmContractCallRecord } from '../storage/evm-native-operation-journal'
+import type { EvmSwapCallRecord } from '../storage/evm-native-operation-journal'
 import {
   chargedGasPrice,
   estimateCallFee,
@@ -98,7 +98,7 @@ export interface SwapWallet {
  * the wallet's own; the transaction id is the wallet's to add; what the swap then did is read
  * from the chain and is not part of the record.
  */
-export type ContractCallRecord = EvmContractCallRecord
+export type ContractCallRecord = EvmSwapCallRecord
 
 export type SwapFailure =
   | SwapRevertReason

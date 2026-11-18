@@ -163,6 +163,7 @@ import {
   WalletSyncItem,
 } from "@frank/cashweb/types/messages";
 import { applyWalletSyncItem } from "../sync-dispatcher";
+import type { SwapSecretCapability } from "../swap-preimage";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import {
@@ -700,6 +701,27 @@ export function conversationIdSaltOf(
   if (!material?.canonicalRoles || !internals.typed || internals.closed)
     return undefined;
   return material.canonicalRoles.conversationIdSalt();
+}
+/**
+ * The live typed wallet's swap-secret capability: the HTLC preimage of a swap this account
+ * offers (`frank/swap-htlc-preimage/v1`, `../swap-preimage`), derived on each call and never
+ * stored. It hands out preimages only, never the root; it refuses once the wallet is closed.
+ * `undefined` for a wallet with no typed messaging root.
+ */
+export function swapSecretCapabilityOf(
+  wallet: NativeWalletHandle | WalletHandle
+): SwapSecretCapability | undefined {
+  const internals = evmWalletInternals(wallet);
+  if (!internals.material?.canonicalRoles || !internals.typed || internals.closed)
+    return undefined;
+  return Object.freeze({
+    swapPreimage(input: { policyName: string; swapId: Uint8Array }) {
+      const live = evmWalletInternals(wallet);
+      if (live.closed || !live.material?.canonicalRoles)
+        throw new Error("Swap secrets require live typed wallet custody");
+      return live.material.canonicalRoles.swapPreimage(input);
+    },
+  });
 }
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: EvmChainWalletHandle) {

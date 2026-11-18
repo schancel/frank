@@ -922,9 +922,9 @@ test('production CHOMP adapter journals through the composed wallet', async () =
       },
     })
     expect(node.broadcast).toHaveBeenCalledTimes(1)
-    expect(wallet.getNativeOperations!()[0]!.record?.assetOut.symbol).toBe(
-      'CHOMP',
-    )
+    expect(wallet.getNativeOperations!()[0]!.record).toMatchObject({
+      assetOut: { symbol: 'CHOMP' },
+    })
   } finally {
     await wallet.close()
     await rm(dir, { recursive: true, force: true })

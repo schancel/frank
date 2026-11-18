@@ -74,6 +74,7 @@ import {
   conversationIdSalt,
   conversationIdSaltFromBip39Seed,
 } from '@frank/cashweb/relay/conversation-id'
+import { deriveSwapPreimage } from './swap-preimage'
 import {
   openOwnDirectMessage,
   type OpenOwnDirectMessageInput,
@@ -143,6 +144,10 @@ export interface MonadCanonicalRoleOwner {
    * under a fixed label: the same on every device holding the account, computable by nobody
    * else. See `@frank/cashweb/relay/conversation-id`. A fresh copy on every call. */
   conversationIdSalt(): Uint8Array
+  /** The HTLC preimage of swap `swapId` (32 bytes) under pair policy `policyName`: 32 bytes,
+   * derived from the messaging root (`frank/swap-htlc-preimage/v1`, see `./swap-preimage`), the
+   * same on every device of the account, never stored. A fresh copy on every call. */
+  swapPreimage(input: { policyName: string; swapId: Uint8Array }): Uint8Array
   dispose(): void
 }
 
@@ -500,6 +505,12 @@ function roleOwner(
       return historical
         ? conversationIdSaltFromBip39Seed(auxiliarySecret)
         : conversationIdSalt(auxiliarySecret)
+    },
+    swapPreimage(input: { policyName: string; swapId: Uint8Array }) {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      if (!input || typeof input !== 'object')
+        throw new Error('Expected a swap policy name and swap id')
+      return deriveSwapPreimage(auxiliarySecret, input.policyName, input.swapId)
     },
     publicGenerationZeroPoints() {
       if (disposed) throw new Error('canonical-roles:disposed')

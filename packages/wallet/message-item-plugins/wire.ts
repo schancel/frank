@@ -110,6 +110,10 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   swap's `wallet-sync` item. A host adds it to the account's swap history; it carries no
  *   outcome, which is read from the chain. Because it is carried only here, a record another
  *   person sends is never written into that history.
+ * - `htlc-record`: the record of one GenericHTLC call (lock, withdraw, refund) this account made
+ *   for a swap, which rides in the same note as the call's `wallet-sync` item. It names the swap
+ *   and the lock; what the lock holds is read from the chain. Because it is carried only here,
+ *   another person cannot make an account believe it locked, claimed or refunded anything.
  *
  * - `received-coin`: how the key of one coin this account received is derived (the chain, the
  *   one-time account, and the stealth ephemeral key or the stamp's shared point and child index).
@@ -143,6 +147,7 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
 export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set([
   'wallet-sync',
   'swap-record',
+  'htlc-record',
   'received-coin',
   'conversation-state',
   'contact-state',

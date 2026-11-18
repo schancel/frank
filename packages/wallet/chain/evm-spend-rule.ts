@@ -1,4 +1,71 @@
 import { recordWalletFailure } from '../wallet-failure'
+import { getChainRegistryEntry } from './chains-registry'
+
+/** A network's spend rule as an EVM wallet configuration carries it (`EvmChainConfig`). */
+export interface EvmSpendRuleConfig {
+  readonly spendSpacingBlocks?: number
+  readonly spendRuleHead?: 'latest' | 'finalized'
+  readonly reserveBalanceWei?: bigint
+}
+
+/** The registry row's spend rule fields, exactly as the protocol states them. */
+function registrySpendRuleOf(entry: {
+  readonly spendSpacingBlocks?: number
+  readonly spendRuleHead?: 'latest' | 'finalized'
+  readonly reserveBalanceWei?: string
+}): EvmSpendRuleConfig {
+  return {
+    ...(entry.spendSpacingBlocks === undefined ? {} : { spendSpacingBlocks: entry.spendSpacingBlocks }),
+    ...(entry.spendRuleHead === undefined ? {} : { spendRuleHead: entry.spendRuleHead }),
+    ...(entry.reserveBalanceWei === undefined ? {} : { reserveBalanceWei: BigInt(entry.reserveBalanceWei) }),
+  }
+}
+
+/**
+ * The spend rule of `chainIdentifier` (Monad: 10 MON reserve, 3 blocks, counted on the finalized
+ * head), from its registry row: the one source every EVM wallet configuration takes it from (the
+ * app's wallet owner, `loadMonadChainConfigFromEnv`, the livechecks). Every field is present,
+ * `undefined` where the network has none (or the registry does not know it), so spread over a
+ * configuration built for another network it replaces that network's rule instead of keeping
+ * it: Monad's rule must never travel to a peer chain such as Ethereum Sepolia.
+ */
+export function registrySpendRule(chainIdentifier: string): EvmSpendRuleConfig {
+  const entry = getChainRegistryEntry(chainIdentifier)
+  const rule = entry ? registrySpendRuleOf(entry) : {}
+  return {
+    spendSpacingBlocks: rule.spendSpacingBlocks,
+    spendRuleHead: rule.spendRuleHead,
+    reserveBalanceWei: rule.reserveBalanceWei,
+  }
+}
+
+/**
+ * Refuses an EVM wallet configuration for a network whose registry row carries a spend rule when
+ * the configuration leaves any part of that rule out or states it differently. A wallet that
+ * signs without the rule sends transfers at consecutive nonces that the network mines and
+ * reverts (fee paid, value not moved); the rule is a protocol fact, never a host's choice.
+ *
+ * `localNodeWithoutSpendRule` is the one exception: a local development node (anvil) standing in
+ * for such a network, which enforces no rule, as test fixtures run one. The configuration may
+ * then state whatever rule it exercises, or none.
+ */
+export function requireRegistrySpendRule(
+  chainIdentifier: string,
+  config: EvmSpendRuleConfig & { readonly localNodeWithoutSpendRule?: boolean },
+): void {
+  const entry = getChainRegistryEntry(chainIdentifier)
+  if (!entry || config.localNodeWithoutSpendRule === true) return
+  const rule = registrySpendRuleOf(entry)
+  const fields = ['spendSpacingBlocks', 'spendRuleHead', 'reserveBalanceWei'] as const
+  const differing = fields.filter(field => config[field] !== rule[field])
+  if (differing.length > 0)
+    throw new Error(
+      `EVM spend rule mismatch for ${chainIdentifier}: ${differing
+        .map(field => `${field} is ${String(config[field] ?? 'absent')}, the registry says ${String(rule[field] ?? 'absent')}`)
+        .join('; ')}. Take it from the registry (registrySpendRule).`,
+    )
+}
+
 /**
  * How many blocks after the block that brought money into an account the node first admits a
  * transfer out of that money, on a network with a spend-spacing rule

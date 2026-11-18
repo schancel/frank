@@ -8,6 +8,7 @@ import { durableBatch, durablePut, openDurableLevel } from './level-durability'
 import { validateTransactionSetGraph, type UnsignedTransactionFacts } from './evm-transaction-set-graph'
 import { recordSignedTransactionSender } from '../evm-signed-sender'
 import { isResigningOf, MAX_SIGNINGS } from '../chain/evm-refused-resign'
+import { isCancellationOf } from '../chain/evm-contract-cancel'
 
 /** Current facts for the same archived operation. The signing graph lives only in history. */
 export interface ArchivedOwnMoveRecoveryInput {
@@ -228,6 +229,14 @@ export interface EvmNativeMember extends EvmNativeMemberPlan {
    * one of all the signings can, since they share a nonce. Absent when it was signed once.
    */
   earlierSignings?: EvmNativeSigning[]
+  /**
+   * A contract call given up after its bytes were handed out (a swap past its deadline): a
+   * transfer of nothing from the same account to itself at the same nonce, at replacement fees
+   * (`recordCancellation`, `chain/evm-contract-cancel.ts`). Durable before it is handed to
+   * anyone. At most one of it and the call lands; the observation stays the call's own, so the
+   * call reads superseded only when the chain shows its nonce taken and no receipt of its own.
+   */
+  cancellation?: EvmNativeSigning
   exposed: boolean
   observation: EvmNativeObservation
   account: EvmNativeAccountObservation | null
@@ -775,6 +784,12 @@ async function validateRow(
       'earlierSignings' in (row.members[i] as object)
         ? ['earlierSignings']
         : []),
+      ...(row.kind === 'contract' &&
+      !!row.members[i] &&
+      typeof row.members[i] === 'object' &&
+      'cancellation' in (row.members[i] as object)
+        ? ['cancellation']
+        : []),
     ])
     const source = checked('source', () => validateSource(member.source))
     if (sourceAddresses.has(source.address) && row.kind !== 'transaction-set')
@@ -834,6 +849,7 @@ async function validateRow(
     } else if (member.exposed || member.syncApplied) fail()
     if ('earlierSignings' in member)
       validateEarlierSignings(member, source.address)
+    if ('cancellation' in member) validateCancellation(member, source.address)
     const observation = checked('observation', () =>
       validateObservation(member.observation),
     )
@@ -969,6 +985,34 @@ function validateEarlierSignings(
   chain.push(Transaction.from((member.signed as EvmNativeSigning).rawTransaction))
   for (let i = 1; i < chain.length; i++)
     if (!isResigningOf(chain[i - 1]!, chain[i]!)) fail()
+}
+
+/** A cancelled contract call: it was exposed, and its cancellation is a valid signature of the
+ * member's source that gives up the call's own signing (`isCancellationOf`). */
+function validateCancellation(
+  member: Record<string, unknown>,
+  source: string,
+): void {
+  if (member.signed === null || member.exposed !== true) fail()
+  const signing = object(member.cancellation, ['rawTransaction', 'transactionHash'])
+  hash(signing.transactionHash)
+  if (typeof signing.rawTransaction !== 'string' || signing.rawTransaction.length > 1024)
+    fail()
+  let parsed: Transaction
+  try {
+    parsed = Transaction.from(signing.rawTransaction)
+  } catch {
+    return fail('invalid', 'signature')
+  }
+  if (
+    !parsed.isSigned() ||
+    parsed.serialized !== signing.rawTransaction ||
+    parsed.from?.toLowerCase() !== source ||
+    parsed.hash !== signing.transactionHash
+  )
+    fail('invalid', 'signature')
+  const call = Transaction.from((member.signed as EvmNativeSigning).rawTransaction)
+  if (!isCancellationOf(call, parsed, source)) fail()
 }
 
 /** The new baseline alone permits repeated sources, with an explicit contiguous nonce chain. */
@@ -1992,6 +2036,40 @@ export class EvmNativeOperationJournal {
           this.maxBytes
       )
         fail('capacity')
+    })
+  }
+  /**
+   * Records `rawTransaction`, the cancellation of an exposed contract call that the chain has
+   * not shown included or its nonce consumed (`chain/evm-contract-cancel.ts`). Durable before
+   * the bytes are handed to anyone; idempotent for the same bytes; one cancellation per call.
+   */
+  recordCancellation(
+    id: string,
+    index: number,
+    rawTransaction: string,
+  ): Promise<EvmNativeOperation> {
+    return this.mutate(id, row => {
+      const m = row.members[index]
+      if (row.kind !== 'contract' || row.cancelled || !m?.signed || !m.exposed)
+        fail('conflict')
+      if (m.cancellation?.rawTransaction === rawTransaction) return false
+      if (
+        m.cancellation ||
+        m.observation.state === 'included-success' ||
+        m.observation.state === 'included-revert' ||
+        nativeMemberSuperseded(m)
+      )
+        fail('conflict')
+      const parsed = Transaction.from(rawTransaction)
+      if (
+        !parsed.isSigned() ||
+        parsed.from?.toLowerCase() !== m.source.address ||
+        !isCancellationOf(Transaction.from(m.signed.rawTransaction), parsed, m.source.address)
+      )
+        fail('conflict')
+      m.cancellation = { rawTransaction: parsed.serialized, transactionHash: parsed.hash! }
+      row.reservedBytes = reservation(row)
+      if (row.reservedBytes > MAX_ROW) fail('capacity')
     })
   }
   markExposed(id: string, index: number): Promise<EvmNativeOperation> {

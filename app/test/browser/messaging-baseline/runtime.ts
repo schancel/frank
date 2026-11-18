@@ -4,6 +4,7 @@ import type { AccountSessionState } from '../../../src/accounts/session.original
 import { getBytes } from 'ethers'
 import { activeChain, createEvmChain } from '@frank/wallet/chain'
 import type { EvmChainWalletHandle } from '@frank/wallet/chain'
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule'
 import { fixedStampDefault } from '@frank/wallet/oracle/stamp-policy.testutil'
 import vectors from '../../../../packages/domain-roots/vectors/domain-roots-v1.json'
 import type { MonadRootBundle } from '@frank/wallet/evm-wallet-material'
@@ -60,6 +61,7 @@ export async function initialize(): Promise<void> {
     const chain = createEvmChain({
       networkId: 'monad-testnet',
       rpcChain: 'monad-testnet',
+      ...registrySpendRule('monad-testnet'),
       chainId: 10143,
       relayBaseUrl: location.origin + '/fixture',
       networkTag: 'MONT',

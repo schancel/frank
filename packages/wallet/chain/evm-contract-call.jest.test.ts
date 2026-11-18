@@ -823,6 +823,7 @@ describe('contract calls through the native operation journal', () => {
     const USDC = findToken(deployment, 'USDC')!
     const MON = findToken(deployment, 'MON')!
     const canned = cannedNode(deployment)
+    canned.node.tokenBalance.set(USDC.address!.toLowerCase(), 15_000n)
     canned.node.pools.set(
       poolId(routesFor(deployment, MON, USDC)[0]!.key).toLowerCase(),
       {

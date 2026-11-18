@@ -1338,6 +1338,7 @@ describe("with the real canonical wallet", () => {
     const chain = actual.createEvmChain({
       networkId: "monad-testnet",
       rpcChain: "monad-testnet",
+      localNodeWithoutSpendRule: true,
       chainId: 10143,
       nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
       relayBaseUrl: RELAY,

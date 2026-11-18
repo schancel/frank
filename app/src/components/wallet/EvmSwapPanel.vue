@@ -517,7 +517,7 @@ interface Problem {
 }
 
 interface Outcome {
-  status: 'confirmed' | 'reverted' | 'pending'
+  status: 'confirmed' | 'reverted' | 'cancelled' | 'pending'
   txHash: string
   toSymbol: string
   received?: string
@@ -548,6 +548,8 @@ const FAILURE_KEYS: Record<SwapFailure, string> = {
   'insufficient-native': 'swap.errorInsufficientNative',
   'account-busy': 'swap.errorAccountBusy',
   'approval-failed': 'swap.errorApprovalFailed',
+  'insufficient-token': 'swap.errorInsufficientToken',
+  'token-transfer-failed': 'swap.errorTokenTransferFailed',
 }
 
 export default defineComponent({
@@ -807,7 +809,7 @@ export default defineComponent({
       result: SwapResult,
     ) => {
       const amountIn =
-        result.status === 'reverted'
+        result.status === 'reverted' || result.status === 'cancelled'
           ? 0n
           : (result.status === 'confirmed' ? result.amountIn : undefined) ??
             q.amountIn
@@ -821,7 +823,7 @@ export default defineComponent({
       }
       return {
         key:
-          result.status === 'reverted'
+          result.status === 'reverted' || result.status === 'cancelled'
             ? 'swap.resultPaidFeeOnly'
             : q.tokenIn.address === null
             ? 'swap.resultPaidSame'
@@ -1178,7 +1180,10 @@ export default defineComponent({
           : {
               status: 'failed',
               feeWei: result.totalFeeWei.toString(),
-              reason: result.reason ?? 'reverted',
+              reason:
+                result.status === 'cancelled'
+                  ? 'cancelled'
+                  : result.reason ?? 'reverted',
             },
       )
     }
@@ -1436,14 +1441,16 @@ export default defineComponent({
       resultIcon: computed(() =>
         outcome.value?.status === 'confirmed'
           ? 'check_circle'
-          : outcome.value?.status === 'reverted'
+          : outcome.value?.status === 'reverted' ||
+            outcome.value?.status === 'cancelled'
           ? 'cancel'
           : 'schedule',
       ),
       resultColor: computed(() =>
         outcome.value?.status === 'confirmed'
           ? 'positive'
-          : outcome.value?.status === 'reverted'
+          : outcome.value?.status === 'reverted' ||
+            outcome.value?.status === 'cancelled'
           ? 'negative'
           : 'warning',
       ),
@@ -1452,6 +1459,8 @@ export default defineComponent({
           ? 'swap.resultConfirmed'
           : outcome.value?.status === 'reverted'
           ? 'swap.resultReverted'
+          : outcome.value?.status === 'cancelled'
+          ? 'swap.resultCancelled'
           : 'swap.resultPending',
       ),
       resultDetailKey: computed(() => {
@@ -1462,10 +1471,13 @@ export default defineComponent({
             ? 'swap.resultConfirmedDetail'
             : 'swap.resultConfirmedUnknown'
         if (o.status === 'pending') return 'swap.resultPendingDetail'
+        if (o.status === 'cancelled') return 'swap.resultCancelledDetail'
         return o.reason === 'slippage'
           ? 'swap.resultRevertedSlippage'
           : o.reason === 'deadline'
           ? 'swap.resultRevertedDeadline'
+          : o.reason === 'token-transfer-failed'
+          ? 'swap.resultRevertedTokenTransfer'
           : 'swap.resultRevertedOther'
       }),
       resultDetailParams: computed(() => ({

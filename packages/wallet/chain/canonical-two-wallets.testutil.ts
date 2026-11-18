@@ -404,6 +404,7 @@ export async function fixture(overrides: Partial<EvmChainConfig> = {}) {
   const config: EvmChainConfig = {
     networkId: 'monad-testnet',
     rpcChain: 'monad-testnet',
+    localNodeWithoutSpendRule: true,
     chainId: 10143,
     nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
     relayBaseUrl: RELAY,

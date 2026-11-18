@@ -18,6 +18,7 @@ import {
 } from './chain-wallet'
 import type { EvmTransactionBuilder } from './evm-transaction-builder'
 import { readSpendRuleHead } from './evm-spend-rule'
+import { cancellationOf } from './evm-contract-cancel'
 import type {
   SwapRecordItem,
   WalletSyncItem,
@@ -61,6 +62,24 @@ export interface ContractCallParams {
 export interface ContractCallResult {
   operationId: string
   txHash: string
+}
+/**
+ * What giving up an exposed contract call found (`cancelContractCall`). `call-included`: the
+ * chain has the call itself, nothing was signed. `nonce-taken`: another transaction, not this
+ * wallet's cancellation, took its nonce: the call can never land. `cancelling`: its
+ * cancellation is recorded and handed to the network (again); either it or the call lands.
+ */
+export type ContractCallCancellation =
+  | { state: 'call-included' }
+  | { state: 'nonce-taken' }
+  | { state: 'cancelling'; cancelTxHash: string }
+
+/** The bytes a member is handed out as: its cancellation, once it has one, else its own. */
+function handedOut(member: {
+  signed: { rawTransaction: string } | null
+  cancellation?: { rawTransaction: string }
+}): string {
+  return (member.cancellation ?? member.signed!).rawTransaction
 }
 /** Fixed independent terms. No fan-in, dependent funding, or source reselection. */
 export interface IndependentPaymentTerms {
@@ -563,7 +582,7 @@ export class EvmLegacyConsolidator {
           continue
         }
         await this.config.provider
-          .broadcastTransaction(member.signed.rawTransaction)
+          .broadcastTransaction(handedOut(member))
           .catch(() => undefined)
       }
     }
@@ -712,10 +731,12 @@ export class EvmLegacyConsolidator {
         }
         await journal.markExposed(id, i)
         try {
+          // A call given up is never handed out again: its cancellation is, in its place.
+          const bytes = member.cancellation ?? member.signed!
           const response = await provider.broadcastTransaction(
-            member.signed!.rawTransaction,
+            bytes.rawTransaction,
           )
-          if (response.hash.toLowerCase() !== member.signed!.transactionHash)
+          if (response.hash.toLowerCase() !== bytes.transactionHash)
             throw new Error('Unexpected native transaction hash')
         } catch (reason) {
           throw new EvmNativeOperationPendingError(journal.get(id), reason)
@@ -809,7 +830,7 @@ export class EvmLegacyConsolidator {
           continue
         }
         await this.config.provider
-          .broadcastTransaction(member.signed.rawTransaction)
+          .broadcastTransaction(handedOut(member))
           .catch(() => undefined)
       }
     }
@@ -1362,7 +1383,7 @@ export class EvmLegacyConsolidator {
             !nativeMemberSuperseded(observed)
           )
             await this.config.provider
-              .broadcastTransaction(observed.signed.rawTransaction)
+              .broadcastTransaction(handedOut(observed))
               .catch(() => undefined)
         }
       }
@@ -1373,6 +1394,89 @@ export class EvmLegacyConsolidator {
     } catch {
       /* A closed journal or an ended lifetime ends the pass. */
     }
+  }
+  /**
+   * Gives up an exposed contract call that is not in a block, for a caller that knows the call
+   * can no longer do what it was for (a swap past its deadline: it is certain to revert and
+   * would charge its fee for nothing). The call is looked at first; when it is still open, a
+   * transfer of nothing from its account to itself at its nonce, at replacement fees, is signed,
+   * recorded with the call before anyone sees it, and handed to the network
+   * (`chain/evm-contract-cancel.ts`). Called again, the same cancellation is handed out again.
+   * Rejects, having signed nothing, when the cancellation would cost more than the call was
+   * allowed to, or the account cannot pay its fee. Not proof the call did not land: the caller
+   * reads both receipts, and only the chain says which one took the nonce.
+   */
+  cancelContractCall(
+    operationId: string,
+    lifetime?: WalletOperationLifetime,
+  ): Promise<ContractCallCancellation> {
+    return this.run(async () => {
+      const row = this.config.journal.get(operationId)
+      if (row.kind !== 'contract' || row.cancelled || row.members.length !== 1)
+        throw new Error('Only an open contract call can be cancelled')
+      if (!row.members[0]!.signed || !row.members[0]!.exposed)
+        throw new Error('The contract call was never handed to the network')
+      await this.observe(operationId, 0, lifetime)
+      const member = this.config.journal.get(operationId).members[0]!
+      if (
+        member.observation.state === 'included-success' ||
+        member.observation.state === 'included-revert'
+      )
+        return { state: 'call-included' as const }
+      // The nonce is taken and the call has no receipt: the call can never land. Which
+      // transaction took it decides the answer, read from the chain: this wallet's
+      // cancellation (its receipt), or another one, after the cancellation was recorded too.
+      if (nativeMemberSuperseded(member)) {
+        const cancelled = member.cancellation
+          ? await this.config.provider.getTransactionReceipt(
+              member.cancellation.transactionHash,
+            )
+          : null
+        return cancelled
+          ? {
+              state: 'cancelling' as const,
+              cancelTxHash: member.cancellation!.transactionHash,
+            }
+          : { state: 'nonce-taken' as const }
+      }
+      if (member.cancellation) {
+        await this.config.provider
+          .broadcastTransaction(member.cancellation.rawTransaction)
+          .catch(() => undefined)
+        return {
+          state: 'cancelling' as const,
+          cancelTxHash: member.cancellation.transactionHash,
+        }
+      }
+      const fee = await this.config.provider.getFeeData()
+      const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice
+      if (maxFeePerGas == null) throw new Error('Native fee quote unavailable')
+      const cancel = cancellationOf(
+        Transaction.from(member.signed!.rawTransaction),
+        member.source.address,
+        {
+          maxFeePerGas,
+          maxPriorityFeePerGas: fee.maxPriorityFeePerGas ?? maxFeePerGas,
+        },
+      )
+      if (!cancel)
+        throw new Error(
+          'Cancelling this call would cost more than the call itself was allowed to',
+        )
+      const balance = await this.config.provider.getBalance(member.source.address)
+      if (balance < cancel.gasLimit * cancel.maxFeePerGas!)
+        throw new RangeError('Insufficient native funds to cancel the call')
+      const raw = await this.config.sign(member.source, cancel.unsignedSerialized)
+      const recorded = (
+        await this.journal(lifetime).recordCancellation(operationId, 0, raw)
+      ).members[0]!.cancellation!
+      await this.config.provider
+        .broadcastTransaction(recorded.rawTransaction)
+        .catch(() => {
+          /* Recorded: handed out again by the next look (`resendMissingContractCalls`). */
+        })
+      return { state: 'cancelling' as const, cancelTxHash: recorded.transactionHash }
+    })
   }
   /** Contract calls that were broadcast and are not yet seen in a block, oldest first. */
   unresolvedContractCalls(): ContractCallResult[] {

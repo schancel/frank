@@ -481,6 +481,7 @@ async function actualEvmOwner(
     chainIdentifier: entry.id,
     networkId: entry.id,
     rpcChain: entry.id,
+    localNodeWithoutSpendRule: true,
     chainId: BigInt(entry.nativeChainId!),
     networkTag: entry.networkTag!,
     relayBaseUrl: mockRelay,

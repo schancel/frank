@@ -1,4 +1,4 @@
-import { getAddress } from 'ethers'
+import { AbiCoder, getAddress } from 'ethers'
 import {
   assertInterfaceFee,
   getEvmDexDeployment,
@@ -368,6 +368,27 @@ describe('reverts in plain terms', () => {
     ).toBe('allowance')
     expect(classifySwapRevert('0xdeadbeef')).toBeUndefined()
     expect(classifySwapRevert(undefined)).toBeUndefined()
+  })
+
+  it('names a token the router could not take (TRANSFER_FROM_FAILED), alone and inside ExecutionFailed', () => {
+    const transferFromFailed =
+      '0x08c379a0' +
+      AbiCoder.defaultAbiCoder()
+        .encode(['string'], ['TRANSFER_FROM_FAILED'])
+        .slice(2)
+    expect(classifySwapRevert(transferFromFailed)).toBe('token-transfer-failed')
+    expect(
+      classifySwapRevert(
+        universalRouterInterface.encodeErrorResult('ExecutionFailed', [
+          0,
+          transferFromFailed,
+        ]),
+      ),
+    ).toBe('token-transfer-failed')
+    const other =
+      '0x08c379a0' +
+      AbiCoder.defaultAbiCoder().encode(['string'], ['SOMETHING_ELSE']).slice(2)
+    expect(classifySwapRevert(other)).toBeUndefined()
   })
 
   it('finds revert data nested in a provider error', () => {

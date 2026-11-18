@@ -31,6 +31,7 @@
  *  4. that wallet reads what the swap did from the chain, checking that the record's account
  *     paid for the transaction and that it called the exchange.
  */
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule'
 import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { spawnSync } from 'child_process'
 import { randomBytes } from 'crypto'
@@ -130,6 +131,7 @@ async function openAccount(relayBaseUrl: string, dir: string, state: string) {
     chainIdentifier: MESSAGING_CHAIN,
     chainId: 10143,
     rpcChain: MESSAGING_CHAIN,
+    ...registrySpendRule(MESSAGING_CHAIN),
     relayBaseUrl,
     networkTag: 'MONT',
     stampBurnAddress:

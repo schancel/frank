@@ -201,6 +201,101 @@ export async function abandonTakenMembers(params: {
   }
 }
 
+/**
+ * Gives up, on chain evidence, every member of `operationId` that can never be handed out
+ * because a move funding its account was mined and reverted (nonce consumed, fee paid, value not
+ * moved: Monad's reserve-balance rule does this to a transfer sent without the spend spacing),
+ * and what stands on such a member. The lifecycle records a revert only once it is
+ * `EVM_FAILURE_CONFIRMATIONS` deep, so the funding is final. A member waits for its funding to
+ * land successfully before it is handed out (`EvmTransactionSetLifecycle.ready`), so without this
+ * the set never closes, its accounts stay held and its value stays "on its way".
+ *
+ * Only members that never left this wallet are given up: no one else holds their bytes, so
+ * giving them up has no financial effect. An exposed member keeps its obligation until its own
+ * nonce or receipt decides it. Each given-up account is listed again at what the chain shows
+ * (`EvmTransactionSetPreparer.recordObservation`). A read that fails changes nothing; the set is
+ * looked at again on the next pass. Returns the members given up now.
+ */
+export async function abandonUnfundedMembers(params: {
+  authority: TakenSetAuthority
+  provider: TakenSetProvider
+  operationId: string
+}): Promise<number[]> {
+  const { authority, provider, operationId } = params
+  try {
+    const operation = await authority.readOperation(operationId)
+    if (!operation || operation.cancelled || operation.kind !== 'transaction-set') return []
+    const revertedAt = (index: number): number | undefined => {
+      const observation = operation.members[index]!.observation
+      return observation.state === 'included-revert' ? observation.blockNumber : undefined
+    }
+    if (!operation.members.some((_, index) => revertedAt(index) !== undefined)) return []
+    const given = new Set<number>()
+    const abandon: number[] = []
+    let evidenceBlock = 0
+    for (const [index, member] of operation.members.entries()) {
+      if (nativeMemberAbandoned(member)) {
+        given.add(index)
+        continue
+      }
+      if (member.exposed || landed(member) || nativeMemberEnded(member)) continue
+      // A reverted move from another account was to fund this one. (A reverted predecessor on
+      // the same account still consumed its nonce: what comes after it can land.)
+      const unfundedAt = member.dependencies.flatMap(dependency =>
+        operation.members[dependency]!.source.address !== member.source.address
+          ? (revertedAt(dependency) ?? [])
+          : [],
+      )
+      if (unfundedAt.length === 0 && !member.dependencies.some(dependency => given.has(dependency)))
+        continue
+      evidenceBlock = Math.max(evidenceBlock, ...unfundedAt)
+      given.add(index)
+      abandon.push(index)
+    }
+    if (abandon.length === 0) return []
+    const head = await provider.getBlockNumber()
+    const block = await provider.getBlock(head)
+    if (!block?.hash || block.number !== head) return []
+    const accounts = new Map<string, { nonce: number; balanceWei: string }>()
+    const committed: number[] = []
+    for (const index of abandon) {
+      const member = operation.members[index]!
+      const address = member.source.address
+      let known = accounts.get(address)
+      if (!known) {
+        const [nonce, balance] = await Promise.all([
+          provider.getTransactionCount(address, head),
+          provider.getBalance(address, head),
+        ])
+        known = { nonce, balanceWei: balance.toString() }
+        accounts.set(address, known)
+      }
+      const recorded = await authority.recordObservation(
+        operationId,
+        index,
+        { state: 'abandoned', blockNumber: evidenceBlock || head },
+        { blockHash: block.hash, blockNumber: head, ...known },
+        member,
+      )
+      // A newer exposure or observation invalidates this plan and what stands on it: a fresh
+      // pass decides those. A rejected write is never reported as given up.
+      if (!recorded) break
+      committed.push(index)
+    }
+    if (committed.length > 0)
+      console.warn(
+        `[evm-transaction-set] ${operationId}: a move funding ${committed.length} transaction(s) of the set was mined and reverted; they never left the wallet and can never be sent, so they are given up and their accounts are listed again at what the chain shows.`,
+      )
+    return committed
+  } catch (error) {
+    console.warn(
+      `[evm-transaction-set] ${operationId}: could not settle the transactions a reverted funding move stranded; looked at again later:`,
+      error,
+    )
+    return []
+  }
+}
+
 /** Every payment of the set (of `stageId`, when given) has ended without landing. */
 export function paymentsEnded(operation: EvmNativeOperation, stageId?: string): boolean {
   const payments = operation.members.filter(member =>

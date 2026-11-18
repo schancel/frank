@@ -52,6 +52,7 @@ import { deriveDomainRoot } from '@frank/domain-roots'
 import type { ActiveChain, DirectMessageReceived, DirectMessageSendResult } from '@frank/wallet/chain/active-chain'
 import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import { installCanonicalDirectory, loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule'
 import type { EvmChainWalletHandle } from '@frank/wallet/evm-wallet-handle'
 import { monadProtocolIdentity } from '@frank/wallet/evm-provider'
 import { createDefaultMessageItemRegistry } from '@frank/wallet/message-item-plugins/default-registry'
@@ -302,6 +303,7 @@ export async function openRealWallet(params: {
     ...loadMonadChainConfigFromEnv({ isTestnet: true }),
     networkId: network.rpcChain,
     rpcChain: network.rpcChain,
+    ...registrySpendRule(network.rpcChain),
     chainId: identity.chainId,
     relayBaseUrl: params.relayUrl,
     networkTag: network.networkTag,

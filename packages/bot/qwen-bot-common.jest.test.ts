@@ -90,6 +90,7 @@ describe('#703/#778 canonical Qwen composition on the open directory', () => {
     return {
       networkId: 'monad-testnet',
       rpcChain: 'monad-testnet',
+      localNodeWithoutSpendRule: true,
       chainId: 10143,
       relayBaseUrl: `http://127.0.0.1:${
         (server.address() as AddressInfo).port

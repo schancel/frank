@@ -312,7 +312,11 @@ import {
 } from "../storage/stamp-attempt-journal";
 import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
 import { readEvmBlockTimes } from "./evm-block-times";
-import { fundsSettleBlocks } from "./evm-spend-rule";
+import {
+  fundsSettleBlocks,
+  registrySpendRule,
+  requireRegistrySpendRule,
+} from "./evm-spend-rule";
 import {
   ChainUnreachableError,
   isChainUnreachableError,
@@ -525,12 +529,8 @@ export function loadMonadChainConfigFromEnv(overrides?: {
       readEnv("MONAD_STAMP_BURN_ADDRESS") ??
       "0x000000000000000000000000000000000000dEaD",
     // The network's reserve-balance rule, from its registry row (Monad: 10 MON, 3 blocks).
-    spendSpacingBlocks: getChainRegistryEntry(rpcChain)?.spendSpacingBlocks,
-    spendRuleHead: getChainRegistryEntry(rpcChain)?.spendRuleHead,
+    ...registrySpendRule(rpcChain),
     paymentPollIntervalMs: getChainRegistryEntry(rpcChain)?.paymentPollIntervalMs,
-    reserveBalanceWei: ((wei) => (wei === undefined ? undefined : BigInt(wei)))(
-      getChainRegistryEntry(rpcChain)?.reserveBalanceWei
-    ),
     // A vote is burned, never moved, so the payment floor does not apply to it; it is not the
     // relay's message minimum either.
     defaultTopicVoteValueWei: BigInt(
@@ -882,6 +882,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
   if (config.name !== undefined && config.name !== chainEntry.name) {
     throw new Error(`EVM name mismatch for ${chainIdentifier}`);
   }
+  // A protocol fact: a wallet signing without its network's spend rule sends transfers the
+  // network mines and reverts. Refused here, explicitly, rather than signed.
+  requireRegistrySpendRule(chainIdentifier, config);
   const nativeDecimals = chainEntry.nativeDecimals;
   const isTestnet = chainEntry.isTestnet;
   const requirePeerSyncDelivery = (): void => {
@@ -3284,6 +3287,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               invalidateBalanceRead();
               return result;
             },
+            // Gives up an exposed call (a swap past its deadline) with a cancellation at its
+            // nonce; see `EvmLegacyConsolidator.cancelContractCall`.
+            async cancelContractCall(operationId) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, (admission) =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.cancelContractCall(operationId, admission)
+                )
+              );
+              invalidateBalanceRead();
+              return result;
+            },
             runOwnTransfer: (sign, options) =>
               runUnjournalledTransfer(wallet, sign, options?.mainAccountWaitMs),
             // What a contract call from the main account can spend: what it holds, and the most
@@ -3315,9 +3330,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 mainAddress: main,
                 mainBalance,
                 otherBalance: other,
+                // Busy while something of the wallet's holds or spends the account. A coin the
+                // chain shows spent, with nothing left after it, is an empty account, not a busy
+                // one: money moved into it first (the consolidation) is what the call spends.
                 mainBusy:
                   coinList.isAccountReserved(main) ||
-                  (coin !== undefined && coin.state !== "unspent") ||
+                  (coin !== undefined && coin.state !== "unspent" && coin.state !== "spent") ||
                   nativeOperationOwner(wallet).holdsSource(main),
               };
             },

@@ -116,6 +116,7 @@ async function wallet(index: number) {
   const chain = createEvmChain({
     networkId: 'monad-testnet',
     rpcChain: 'monad-testnet',
+    localNodeWithoutSpendRule: true,
     chainId: 10143,
     relayBaseUrl: RELAY,
     networkTag: 'MONT',

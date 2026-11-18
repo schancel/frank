@@ -51,7 +51,9 @@ export interface SwapChainReader {
     maxPriorityFeePerGas?: bigint | null
   }>
   /** The latest block's base fee, for what a transaction will actually be charged. */
-  getBlock?(tag: 'latest'): Promise<{ baseFeePerGas: bigint | null } | null>
+  getBlock?(
+    tag: 'latest',
+  ): Promise<{ baseFeePerGas: bigint | null; timestamp?: number } | null>
 }
 
 export class SwapNoRouteError extends Error {

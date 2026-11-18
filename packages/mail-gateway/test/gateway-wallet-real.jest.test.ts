@@ -7,6 +7,7 @@ import level from 'level';
 
 import { deriveDomainRoot } from '@frank/domain-roots';
 import { createEvmChain } from '@frank/wallet/chain/evm-chain';
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule';
 import { MonadIdentity } from '@frank/wallet/evm-identity';
 import { createMonadWalletMaterial } from '@frank/wallet/evm-wallet-material';
 import { openGatewayWallet, provisionGatewayWalletAdmission } from '../src/host/gateway-wallet';
@@ -47,6 +48,7 @@ it('real wallet factory refuses empty LevelDB namespaces, then reopens a provisi
         chainIdentifier: 'monad-testnet',
         rpcChain: 'monad-testnet',
         networkId: 'monad-testnet',
+        ...registrySpendRule('monad-testnet'),
         networkTag: 'MONT',
         chainId: 10143,
         walletStorageLocation: walletBase,

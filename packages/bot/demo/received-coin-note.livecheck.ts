@@ -30,6 +30,7 @@
  *  3. no chat message is handed on for the note, and the second wallet writes no note of its own;
  *  4. a third read changes nothing.
  */
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule'
 import { installGroupMessageItemPlugins } from '@frank/group-messaging/groups/plugin'
 import { randomBytes } from 'crypto'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
@@ -95,6 +96,7 @@ async function openWallet(relayBaseUrl: string, dir: string, state: string) {
     chainIdentifier: CHAIN,
     chainId: 10143,
     rpcChain: CHAIN,
+    ...registrySpendRule(CHAIN),
     relayBaseUrl,
     networkTag: 'MONT',
     stampBurnAddress:

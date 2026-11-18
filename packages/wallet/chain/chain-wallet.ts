@@ -519,6 +519,14 @@ export interface NativeWalletHandle {
      * milliseconds, having signed nothing. Wallets with no such account ignore it. */
     mainAccountWaitMs?: number;
   }): Promise<ContractCallHandle>;
+  /**
+   * Gives up a contract call this wallet handed to the network and the chain has not included
+   * (a swap past its deadline): a transfer of nothing to itself at the call's nonce, recorded
+   * with the call before it is broadcast. Either it or the call lands; the caller reads both.
+   */
+  cancelContractCall?(
+    operationId: string
+  ): Promise<import("./evm-legacy-consolidator").ContractCallCancellation>;
   /** What a contract call can spend: the main account's balance and what could be moved into it. */
   getContractCallFunds?(): Promise<{
     mainAddress: string;

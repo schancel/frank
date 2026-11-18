@@ -8,6 +8,7 @@ import {
   createEvmChain,
   loadMonadChainConfigFromEnv,
 } from "@frank/wallet/chain/evm-chain";
+import { registrySpendRule } from "@frank/wallet/chain/evm-spend-rule";
 import { chainAmounts } from "../src/amounts";
 
 const chainOf = (chainIdentifier: string) => {
@@ -16,6 +17,7 @@ const chainOf = (chainIdentifier: string) => {
     ...loadMonadChainConfigFromEnv(),
     networkId: entry.id,
     rpcChain: entry.id,
+    ...registrySpendRule(entry.id),
     chainIdentifier: entry.id,
     chainId: BigInt(entry.nativeChainId!),
     networkTag: entry.networkTag!,

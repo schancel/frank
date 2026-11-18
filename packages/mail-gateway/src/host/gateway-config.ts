@@ -3,6 +3,7 @@ import { isAbsolute } from 'node:path';
 import { getAddress } from 'ethers';
 import type { EvmChainConfig } from '@frank/wallet/chain/evm-chain-config';
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain';
+import { registrySpendRule } from '@frank/wallet/chain/evm-spend-rule';
 import { canonicalNetworkDescriptor } from '@frank/cashweb/relay/canonical-dm-transport';
 
 export interface GatewayIdentityConfig {
@@ -113,6 +114,7 @@ function loadGatewayIdentityConfig(env: NodeJS.ProcessEnv): GatewayIdentityConfi
     networkId: descriptor.network,
     rpcChain: descriptor.network,
     chainId: descriptor.chainId,
+    ...registrySpendRule(descriptor.network),
     walletStorageLocation,
     requireBoundWalletState: true,
     walletStateExists: existsSync,

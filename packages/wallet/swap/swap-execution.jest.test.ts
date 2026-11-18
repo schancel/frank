@@ -1,3 +1,4 @@
+import { AbiCoder } from 'ethers'
 import { getEvmDexDeployment } from '../chain/dex-deployments'
 import { fetchSwapQuote, planSwap, type SwapPlan } from './evm-swap'
 import {
@@ -50,6 +51,8 @@ function setup(
   } = {},
 ) {
   const canned = cannedNode(deployment)
+  // The account holds the token it pays in, unless a test says otherwise.
+  canned.node.tokenBalance.set(USDC.address!.toLowerCase(), 10n ** 30n)
   canned.node.pools.set(
     poolId(routesFor(deployment, MON, USDC)[0]!.key).toLowerCase(),
     {
@@ -214,6 +217,46 @@ describe('executing a swap', () => {
       }),
     ).rejects.toMatchObject({ reason: 'approval-failed' })
     expect(s.wallet.sendContractCall).toHaveBeenCalledTimes(1)
+  })
+
+  it('pays for no approval (or consolidation) when the account holds less of the token than the swap pays in', async () => {
+    const s = setup({ funds: { otherBalance: 10n ** 18n } })
+    const plan = await s.plan('token-in')
+    expect(plan.approvals.length).toBeGreaterThan(0)
+    s.node.tokenBalance.set(USDC.address!.toLowerCase(), plan.quote.amountIn - 1n)
+    const refusal = await executeSwap({
+      reader: s.reader,
+      wallet: s.wallet,
+      deployment,
+      plan,
+      account,
+      consolidateWei: 10n ** 15n,
+      timing,
+    }).catch(error => error)
+    expect(refusal).toBeInstanceOf(SwapRefusedError)
+    expect(refusal.reason).toBe('insufficient-token')
+    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
+    expect(s.wallet.fundMainAccount).not.toHaveBeenCalled()
+  })
+
+  it('names a token the router could not take from the account (TRANSFER_FROM_FAILED), not a price move', async () => {
+    const s = setup()
+    const plan = await s.plan('native-in')
+    const transferFromFailed =
+      '0x08c379a0' +
+      AbiCoder.defaultAbiCoder().encode(['string'], ['TRANSFER_FROM_FAILED']).slice(2)
+    s.node.gasEstimate = callRevert(transferFromFailed)
+    const refusal = await executeSwap({
+      reader: s.reader,
+      wallet: s.wallet,
+      deployment,
+      plan,
+      account,
+      timing,
+    }).catch(error => error)
+    expect(refusal).toBeInstanceOf(SwapRefusedError)
+    expect(refusal.reason).toBe('token-transfer-failed')
+    expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
   })
 
   it('refuses before signing when the price has moved beyond the slippage', async () => {

@@ -55,6 +55,9 @@ export interface SwapWallet {
      * the caller never does either.
      */
     record?: ContractCallRecord
+    /** The deadline the call carries (block-time seconds): the wallet gives the call up rather
+     * than hand it out again once the chain is past it. None for an approval. */
+    deadline?: number
     onSigned?: (signed: {
       operationId: string
       txHash: string
@@ -601,6 +604,7 @@ async function send(
   gasLimit: bigint,
   onSigned?: (signed: Handle) => Promise<void>,
   record?: ContractCallRecord,
+  deadline?: number,
 ): Promise<Handle> {
   try {
     return await wallet.sendContractCall({
@@ -609,6 +613,7 @@ async function send(
       value: call.value,
       gasLimit,
       ...(record ? { record } : {}),
+      ...(deadline === undefined ? {} : { deadline }),
       onSigned,
     })
   } catch (error) {
@@ -748,6 +753,7 @@ export async function executeSwap(params: {
     params.record
       ? { ...params.record, networkFeeWei: fee.chargedFeeWei.toString() }
       : undefined,
+    plan.deadline,
   )
   onProgress?.({ stage: 'submitted', txHash: handle.txHash })
   const settled = await settleSwap(reader, wallet, handle, plan.deadline, timing)

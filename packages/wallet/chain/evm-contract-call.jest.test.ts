@@ -1088,4 +1088,63 @@ describe('contract calls through the native operation journal', () => {
       }),
     ).rejects.toBeInstanceOf(EvmNativeJournalError)
   })
+
+  it('keeps a contract call’s deadline in the journal row, and refuses one anywhere else or malformed', async () => {
+    const state = node({ main: 10_000_000n, spend: 10_000_000n })
+    const sent = await owner(state).executor.sendContractCall({
+      ...call,
+      gasLimit: 250_000n,
+      deadline: 1_900_000_000,
+    })
+    expect(journal.get(sent.operationId).deadline).toBe(1_900_000_000)
+    await journal.Close()
+    await open()
+    expect(journal.get(sent.operationId).deadline).toBe(1_900_000_000)
+    // A call that carries none has none: an approval.
+    const plain = await owner(state).executor.sendContractCall({
+      ...call,
+      gasLimit: 250_000n,
+    })
+    expect(journal.get(plain.operationId)).not.toHaveProperty('deadline')
+    for (const deadline of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1])
+      await expect(
+        owner(state).executor.sendContractCall({ ...call, gasLimit: 250_000n, deadline }),
+      ).rejects.toThrow(RangeError)
+    // The journal refuses one on anything but a contract call, and a malformed one, itself.
+    const unsignedTransaction = (to: string, data = '0x') =>
+      Transaction.from({
+        type: 2,
+        to,
+        chainId: 10143n,
+        nonce: 0,
+        value: 1n,
+        data,
+        gasLimit: 21_000n,
+        maxFeePerGas: 2n,
+        maxPriorityFeePerGas: 1n,
+      }).unsignedSerialized
+    const plan = (kind: 'native' | 'contract', deadline: unknown) =>
+      journal.prepare({
+        kind,
+        recipient: router,
+        intendedValueWei: '1',
+        members: [
+          {
+            source: sources[1]!,
+            unsignedTransaction: unsignedTransaction(
+              router,
+              kind === 'contract' ? calldata : '0x',
+            ),
+            dependencies: [],
+          },
+        ],
+        deadline: deadline as number,
+      })
+    await expect(plan('native', 1_900_000_000)).rejects.toMatchObject({
+      validation: 'record',
+    })
+    await expect(plan('contract', '1900000000')).rejects.toMatchObject({
+      validation: 'record',
+    })
+  })
 })

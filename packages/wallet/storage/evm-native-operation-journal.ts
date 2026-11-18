@@ -328,6 +328,18 @@ function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
   if (encodedBytes(value) > MAX_RECORD_BYTES) fail('capacity')
   return clone(value) as EvmSwapCallRecord
 }
+/** A call's deadline: block-time seconds, on a contract call of one transaction. */
+function validateDeadline(row: Record<string, unknown>): void {
+  if (
+    row.kind !== 'contract' ||
+    !Array.isArray(row.members) ||
+    row.members.length !== 1 ||
+    typeof row.deadline !== 'number' ||
+    !Number.isSafeInteger(row.deadline) ||
+    row.deadline <= 0
+  )
+    fail()
+}
 export interface EvmTransactionSetStage {
   /** Absent only for the original recipient leg. */
   stageId?: string
@@ -368,6 +380,16 @@ export interface EvmNativeOperation {
    * was, so adding the field needed no new journal version and no reset.
    */
   record?: EvmContractCallRecord
+  /**
+   * The latest block time (seconds) at which a contract call can still do what it was for: the
+   * deadline the call itself carries (a swap's router refuses once `block.timestamp >` it).
+   * Written with the plan, from what the caller signed, and so before anything is signed. Once
+   * the chain's newest block is past it the wallet no longer hands the call out; it gives the
+   * call up instead (`EvmLegacyConsolidator`, `chain/evm-contract-cancel.ts`). Only a
+   * single-member contract call can have one. Absent: the call has no deadline (an approval) or
+   * was signed before the wallet kept them, and it is handed out again as it always was.
+   */
+  deadline?: number
 }
 /** The composing owner checkpoints its obligations before requesting archival. This is
  * evidence of local completion bookkeeping, never atomicity of external chain/relay steps. */
@@ -414,6 +436,8 @@ export interface EvmNativePlan {
   intendedValueWei: string
   members: EvmNativeMemberPlan[]
   record?: EvmContractCallRecord | null
+  /** `EvmNativeOperation.deadline`. */
+  deadline?: number
 }
 export type EvmNativeValidation =
   | 'record'
@@ -723,6 +747,8 @@ async function validateRow(
     !!value && typeof value === 'object' && 'submissionPolicy' in value
   const hasPreparationId =
     !!value && typeof value === 'object' && 'preparationId' in value
+  const hasDeadline =
+    !!value && typeof value === 'object' && 'deadline' in value
   const row = object(value, [
     'version',
     'operationId',
@@ -739,6 +765,7 @@ async function validateRow(
     ...('submissionAuthorized' in (value as object) ? ['submissionAuthorized'] : []),
     ...(hasRecord ? ['record'] : []),
     ...(hasSubmissionPolicy ? ['submissionPolicy'] : []),
+    ...(hasDeadline ? ['deadline'] : []),
   ])
   if ('submissionAuthorized' in row && (row.submissionAuthorized !== true || row.kind !== 'transaction-set')) fail()
   if (
@@ -757,6 +784,7 @@ async function validateRow(
   )
     fail()
   if (hasRecord) checked('record', () => validateRecord(row.record, row.kind))
+  if (hasDeadline) checked('record', () => validateDeadline(row))
   if (
     hasSubmissionPolicy &&
     (row.kind !== 'contract' || row.submissionPolicy !== 'explicit')
@@ -1782,6 +1810,7 @@ export class EvmNativeOperationJournal {
               existing.intendedValueWei !== frozen.intendedValueWei ||
               JSON.stringify(existing.record ?? null) !==
                 JSON.stringify(frozen.record ?? null) ||
+              existing.deadline !== frozen.deadline ||
               JSON.stringify(
                 existing.members.map(
                   ({
@@ -1877,6 +1906,7 @@ export class EvmNativeOperationJournal {
           cancelled: false,
           reservedBytes: 0,
           ...(frozen.record ? { record: frozen.record } : {}),
+          ...(frozen.deadline === undefined ? {} : { deadline: frozen.deadline }),
         }
         row.reservedBytes = reservation(row)
         const validated = await validateRow(row, this.binding, this.signatures)

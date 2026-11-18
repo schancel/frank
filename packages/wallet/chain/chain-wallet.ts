@@ -513,6 +513,9 @@ export interface NativeWalletHandle {
     gasLimit?: bigint;
     /** What the call is (a swap's record): journaled with it and carried by its note to self. */
     record?: import("../storage/evm-native-operation-journal").EvmContractCallRecord;
+    /** The deadline the call carries (block-time seconds): once the chain is past it the wallet
+     * gives the call up (`cancelContractCall`) instead of handing it out again. */
+    deadline?: number;
     onSigned?: (signed: ContractCallHandle) => Promise<void>;
     /** While an earlier payment from the main account has not been seen on chain this send
      * waits its turn, however long that takes. With this it gives up after so many

@@ -7,6 +7,7 @@ import {
   executeSwap,
   networkFeeShare,
   reconcileSwap,
+  swapDeadlineOf,
   UNESTIMATED_APPROVAL_GAS,
   UNESTIMATED_SWAP_GAS,
   SwapRefusedError,
@@ -682,6 +683,12 @@ describe('the exchange adapter and the wallet it is given', () => {
       networkFeeWei: (230_000n * 100n * 10n ** 9n).toString(),
       route: quote.route,
     })
+    // The swap's deadline goes with it, the one its calldata carries; an approval has none.
+    const deadlines = s.wallet.sendContractCall.mock.calls.map(
+      ([params]) => (params as { deadline?: number }).deadline,
+    )
+    expect(deadlines).toEqual([undefined, undefined, plan.deadline])
+    expect(swapDeadlineOf(plan.swap.data)).toBe(plan.deadline)
   })
 
   it('finishes a recorded swap from its stored route and call, and refuses a route that is not its own', async () => {

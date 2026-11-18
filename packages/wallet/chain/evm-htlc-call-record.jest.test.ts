@@ -61,7 +61,7 @@ const mainSource: EvmNativeSource = {
   kind: 'main',
   address: main.address.toLowerCase(),
 }
-const HTLC = '0x' + '11'.repeat(20)
+const HTLC = '0x' + 'ab'.repeat(20)
 const SWAP_ID = '5a'.repeat(32)
 const terms = {
   recipient: '0x' + '22'.repeat(20),
@@ -189,6 +189,7 @@ describe('the htlc contract-call record', () => {
       item: WalletSyncItem,
       record?: MessageItem,
     ) => Promise<void>,
+    htlcContract: (() => string) | null = () => HTLC,
   ) => {
     const sign = jest.fn(async (_source: EvmNativeSource, raw: string) =>
       main.signTransaction(Transaction.from(raw)),
@@ -203,6 +204,7 @@ describe('the htlc contract-call record', () => {
         ownedSource: address =>
           address.toLowerCase() === mainSource.address ? mainSource : undefined,
         sign,
+        ...(htlcContract ? { htlcContract } : {}),
         ...(onSyncTransaction ? { onSyncTransaction } : {}),
       }),
     }
@@ -332,6 +334,57 @@ describe('the htlc contract-call record', () => {
       itemType: 'htlc-record',
     })
     expect(read[1]).toEqual({ type: 'text', text: 'beside it' })
+  })
+
+  it("sends an htlc call only to the network's GenericHTLC", async () => {
+    const state = node()
+    const refused = {
+      name: 'EvmNativeJournalError',
+      code: 'invalid',
+      validation: 'record',
+    }
+    const { call } = STEPS.refund
+    const params = (to: string) => ({
+      to: { raw: to },
+      data: call.data,
+      value: 0n,
+      gasLimit: 250_000n,
+      record: recordOf('refund'),
+    })
+    const elsewhere = '0x' + '66'.repeat(20)
+    const cases: Array<[string, (() => string) | null, string]> = [
+      ['another contract', () => HTLC, elsewhere],
+      ['no GenericHTLC configured', null, HTLC],
+      [
+        'none deployed on the network',
+        () => {
+          throw new Error('GenericHTLC is not deployed on monad-testnet')
+        },
+        HTLC,
+      ],
+      ['a malformed configured address', () => '0x1234', HTLC],
+    ]
+    for (const [, contract, to] of cases) {
+      const { executor, sign } = owner(state, undefined, contract)
+      await expect(executor.sendContractCall(params(to))).rejects.toMatchObject(
+        refused,
+      )
+      expect(sign).not.toHaveBeenCalled()
+    }
+    expect(state.raws).toEqual([])
+    expect(journal.list()).toEqual([])
+    // The same call to that contract, in any letter case, goes; a call without an htlc record
+    // is not bound to it.
+    const { executor } = owner(state, undefined, () =>
+      HTLC.toUpperCase().replace('0X', '0x'),
+    )
+    const sent = await executor.sendContractCall(params(HTLC))
+    expect(journal.get(sent.operationId).record).toEqual(recordOf('refund'))
+    const plain = await owner(state).executor.sendContractCall({
+      ...params(elsewhere),
+      record: undefined,
+    })
+    expect(journal.get(plain.operationId)).not.toHaveProperty('record')
   })
 
   it('refuses a malformed record, or one that is not its call, before anything is signed', async () => {

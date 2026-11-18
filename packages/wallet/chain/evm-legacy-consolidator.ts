@@ -113,6 +113,10 @@ export interface EvmLegacyConsolidatorConfig {
   transactionBuilder: EvmTransactionBuilder
   /** The main account: contract calls are made from it. */
   mainSource: EvmNativeSource
+  /** The GenericHTLC of this wallet's network (it throws where none is deployed). A call
+   * carrying an `htlc` record is refused unless it goes there; without this, every such call is
+   * refused. */
+  htlcContract?: () => string
   /** This wallet's custody reference for an account that can pay a token (main, identity, a
    * received coin), or undefined when the wallet does not own it. */
   ownedSource: (address: string) => EvmNativeSource | undefined
@@ -1581,17 +1585,22 @@ export class EvmLegacyConsolidator {
     if (this.config.transactionBuilder.supportsNativeConsolidation !== true)
       throw new Error('Contract calls are unavailable on this network')
     const main = this.config.mainSource
-    // An HTLC record must name the step and the lock this calldata is; the journal checks
-    // its shape. Refused before anything is planned, signed or sent.
+    // An HTLC record must go to this network's GenericHTLC and name the step and the lock its
+    // calldata is; the journal checks its shape. Refused before anything is planned, signed or
+    // sent.
     if (params.record?.kind === 'htlc') {
       let call: ReturnType<typeof htlcCallOf> | undefined
+      let contract: string | undefined
       try {
         call = htlcCallOf(main.address, params.data)
+        const configured = this.config.htlcContract?.()
+        contract = configured && getAddress(configured).toLowerCase()
       } catch {
         call = undefined
       }
       if (
         !call ||
+        contract !== to ||
         call.action !== params.record.action ||
         call.lockId !== params.record.lockId
       )

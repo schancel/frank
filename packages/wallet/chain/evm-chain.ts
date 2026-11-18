@@ -922,6 +922,11 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     config.networkTag
       ? resolveChainIdentifier(config.networkTag)?.id ?? config.networkTag
       : chainIdentifier;
+  // The GenericHTLC of this network: a regtest run's own (`config.contracts`), else the
+  // registry's deployment. Throws where none is deployed.
+  const htlcAddress = (): string =>
+    config.contracts?.htlc ??
+    requireChainContract(contractChainIdentifier(), "htlc");
   const transactionBuilder =
     config.transactionBuilder ?? defaultNativeEvmTransactionBuilder;
   const walletsByIdentity = new Map<
@@ -3532,6 +3537,8 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               fundsSettleBlocks: fundsSettleBlocks(config.spendSpacingBlocks),
               spendRuleHead: config.spendRuleHead,
               transactionBuilder,
+              // An `htlc` record's call must go to this network's GenericHTLC.
+              htlcContract: htlcAddress,
               mainSource: { kind: "main", address: mainAccount.address.toLowerCase() },
               ownedSource: (address) => {
                 const key = address.toLowerCase();
@@ -3794,10 +3801,7 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
     },
 
     getHtlcAddress(): string {
-      return (
-        config.contracts?.htlc ??
-        requireChainContract(contractChainIdentifier(), "htlc")
-      );
+      return htlcAddress();
     },
   };
 }

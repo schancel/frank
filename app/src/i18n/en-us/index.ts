@@ -2269,6 +2269,9 @@ export const rawEnUS = {
       'The network rejected the swap. You kept your funds and paid only the network fee.',
     resultRevertedTokenTransfer:
       'The token could not be taken from your wallet (it held less than the amount, or the token refused the transfer). You kept your funds and paid only the network fee.',
+    resultCancelled: 'Swap expired and cancelled',
+    resultCancelledDetail:
+      'The swap was not in a block before its deadline, so it could only fail. Frank cancelled it instead of sending it again: nothing was swapped and you kept your funds. At most the small fee of the cancellation was charged.',
     resultPending: 'Submitted, not confirmed yet',
     resultPendingDetail:
       'The network has not confirmed this swap yet. It may still complete; its status updates in Recent swaps. Do not send it again.',

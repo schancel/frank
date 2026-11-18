@@ -1024,6 +1024,7 @@ export type NativeExecutionJournal = NativeJournalReader &
     | 'discardUnexposed'
     | 'discardRefusedBeforeBroadcast'
     | 'recordResigned'
+    | 'recordCancellation'
     | 'beginCapture'
     | 'recordObservation'
     | 'appendTransactionSet'
@@ -1101,6 +1102,11 @@ export function nativeAdmissionJournal(
       mutation(async () => {
         owner.checkNative(id)
         return journal.recordResigned(id, index, raw)
+      }),
+    recordCancellation: (id, index, raw) =>
+      mutation(async () => {
+        owner.checkNative(id)
+        return journal.recordCancellation(id, index, raw)
       }),
     beginCapture: (id, index) => {
       owner.owners.assertLifetime(lifetime)

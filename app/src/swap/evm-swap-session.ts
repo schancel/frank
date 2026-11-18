@@ -105,6 +105,7 @@ export async function openEvmSwapSession(
     resumeLegacySend: optional(wallet.resumeLegacySend),
     resumeNativeOperation: optional(wallet.resumeNativeOperation),
     getUnresolvedContractCalls: optional(wallet.getUnresolvedContractCalls),
+    cancelContractCall: optional(wallet.cancelContractCall),
     reobserveNativeOperations: optional(wallet.reobserveNativeOperations),
   }
   const Adapter = EVM_DEX_ADAPTERS[entry.adapter]

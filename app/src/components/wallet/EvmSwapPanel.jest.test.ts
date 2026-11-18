@@ -12,7 +12,12 @@ import {
   cannedNode,
   tooLittleReceived,
 } from '@frank/wallet/swap/swap-reader.testutil'
-import { findToken, poolId, routesFor } from '@frank/wallet/swap/uniswap-v4'
+import {
+  encodeSwap,
+  findToken,
+  poolId,
+  routesFor,
+} from '@frank/wallet/swap/uniswap-v4'
 import vectors from '@frank/wallet/swap/monad-testnet-swap-vectors.json'
 import en from '../../i18n/en-us'
 import fr from '../../i18n/fr-fr'
@@ -818,6 +823,79 @@ describe('confirming and executing', () => {
       }),
     ])
     expect(s.wallet.sendContractCall).not.toHaveBeenCalled()
+  })
+
+  it('cancels a journaled swap past its deadline instead of sending it again, and remembers it as cancelled', async () => {
+    const s = scene()
+    const route = routesFor(deployment, MON, USDC)[0]!
+    const deadline = 1_000
+    // The chain's newest block is past the swap's deadline: re-sent, it could only revert.
+    Object.assign(s.reader, {
+      getBlock: async () => ({ baseFeePerGas: null, timestamp: deadline + 1 }),
+    })
+    const cancelContractCall = jest.fn(async () => ({
+      state: 'cancelling' as const,
+      cancelTxHash: '0xcancel',
+    }))
+    mockSession.getWallet.mockResolvedValue({
+      ...(await mockSession.getWallet()),
+      cancelContractCall,
+    })
+    s.receipts.set('0xcancel', receipt({ logs: [] }))
+    s.rows.push({
+      operationId: 'op-old',
+      kind: 'contract',
+      cancelled: false,
+      binding: { chainIdentifier: 'monad-testnet' },
+      record: {
+        kind: 'swap',
+        venueId: 'uniswap-v4',
+        account,
+        assetIn: { symbol: 'MON', address: null, decimals: 18 },
+        amountIn: '20000000000000000',
+        assetOut: { symbol: 'USDC', address: USDC.address, decimals: 6 },
+        quotedAmountOut: '19996',
+        minimumAmountOut: '19796',
+        interfaceFeeAmount: '0',
+        networkFeeWei: '23000000000000000',
+        route: { key: { ...route.key }, zeroForOne: true },
+      },
+      members: [
+        {
+          signed: { transactionHash: '0xold', rawTransaction: '0x00' },
+          exposed: true,
+          observation: { state: 'missing' },
+          unsignedTransaction: Transaction.from({
+            type: 2,
+            to: deployment.universalRouter,
+            chainId: 10143n,
+            nonce: 0,
+            value: 20_000_000_000_000_000n,
+            data: encodeSwap({
+              deployment,
+              route,
+              amountIn: 20_000_000_000_000_000n,
+              minimumAmountOut: 19_796n,
+              deadline,
+            }).data,
+            gasLimit: 230_000n,
+            maxFeePerGas: 2n,
+            maxPriorityFeePerGas: 1n,
+          }).unsignedSerialized,
+        },
+      ],
+    })
+    await mountPanel()
+    await flushPromises()
+    expect(cancelContractCall).toHaveBeenCalledWith('op-old')
+    expect(s.wallet.resumeNativeOperation).not.toHaveBeenCalledWith('op-old')
+    expect(mockOutcomes).toEqual([
+      expect.objectContaining({
+        id: swapRecordId('monad-testnet', '0xold'),
+        status: 'failed',
+        reason: 'cancelled',
+      }),
+    ])
   })
 
   it('shows on the review card what will be moved into the main account, and moves exactly that once', async () => {

@@ -19,6 +19,7 @@ import {
 } from './evm-swap'
 import {
   readSwapOutcome,
+  universalRouterInterface,
   type EncodedCall,
   type PoolRoute,
   type ReceiptLog,
@@ -76,6 +77,17 @@ export interface SwapWallet {
   resumeNativeOperation?(operationId: string): Promise<unknown>
   /** Contract calls this wallet signed that are not yet seen in a block. */
   getUnresolvedContractCalls?(): { operationId: string; txHash: string }[]
+  /**
+   * Gives up a call that was handed out and is not in a block: a transfer of nothing to itself
+   * at the call's nonce, recorded before it is broadcast. Not proof the call did not land.
+   */
+  cancelContractCall?(
+    operationId: string,
+  ): Promise<
+    | { state: 'call-included' }
+    | { state: 'nonce-taken' }
+    | { state: 'cancelling'; cancelTxHash: string }
+  >
   reobserveNativeOperations?(): Promise<void>
 }
 
@@ -127,6 +139,19 @@ export type SwapResult =
       txHash: string
       operationId: string
       reason?: SwapRevertReason
+      feeWei: bigint
+      totalFeeWei: bigint
+    }
+  /**
+   * Never landed and never can: its deadline passed before it was in a block, and its nonce went
+   * to the wallet's cancellation (`cancelTxHash`, whose fee is `feeWei`) or, without one, to
+   * another transaction of the account (`feeWei` 0). Nothing was swapped.
+   */
+  | {
+      status: 'cancelled'
+      txHash: string
+      operationId: string
+      cancelTxHash?: string
       feeWei: bigint
       totalFeeWei: bigint
     }
@@ -191,6 +216,124 @@ export async function settle(
     /* Still unresolved: the caller reports it pending and it is looked at again later. */
   })
   return awaitReceipt(reader, handle.txHash, timing)
+}
+
+/** What watching a swap found: its own receipt, or that it was given up past its deadline. */
+type SwapSettlement =
+  | { receipt: SwapReceipt }
+  | { cancelled: { cancelTxHash?: string; feeWei: bigint } }
+  | undefined
+
+/** Whether the chain's newest block is past `deadline` (seconds): a swap still unmined then is
+ * certain to revert (the router refuses once `block.timestamp > deadline`). */
+async function deadlinePassed(
+  reader: SwapExecutionReader,
+  deadline: number | undefined,
+): Promise<boolean> {
+  if (deadline === undefined || !reader.getBlock) return false
+  const block = await reader.getBlock('latest').catch(() => null)
+  return typeof block?.timestamp === 'number' && block.timestamp > deadline
+}
+
+/** The first of `hashes` the chain shows in a block, watched as `awaitReceipt` watches one. */
+async function awaitFirstReceipt(
+  reader: SwapExecutionReader,
+  hashes: readonly string[],
+  timing: SwapTiming,
+): Promise<{ hash: string; receipt: SwapReceipt } | undefined> {
+  for (let waited = 0, attempt = 0; ; attempt++) {
+    for (const hash of hashes) {
+      const receipt = await reader.getTransactionReceipt(hash).catch(() => null)
+      if (receipt) return { hash, receipt }
+    }
+    if (waited >= timing.inclusionTimeoutMs) return undefined
+    const wait =
+      timing.pollMs *
+      RECEIPT_BACKOFF[Math.min(attempt, RECEIPT_BACKOFF.length - 1)]!
+    await timing.sleep(wait)
+    waited += wait
+  }
+}
+
+/**
+ * A swap past its deadline, not in a block: re-sending it would only buy a revert at the full
+ * swap fee. It is cancelled instead (the wallet's transfer of nothing to itself at the same
+ * nonce), and both are watched: what the chain includes is what is reported. When the wallet
+ * cannot cancel (it would cost more than the swap was allowed to, or the account cannot pay)
+ * the swap is left as it is, neither re-sent nor given up, and reported pending.
+ */
+async function cancelExpired(
+  reader: SwapExecutionReader,
+  cancel: NonNullable<SwapWallet['cancelContractCall']>,
+  handle: Handle,
+  timing: SwapTiming,
+): Promise<SwapSettlement> {
+  const own = async (): Promise<SwapSettlement> => {
+    const receipt = await reader.getTransactionReceipt(handle.txHash).catch(() => null)
+    return receipt ? { receipt } : undefined
+  }
+  let outcome: Awaited<ReturnType<typeof cancel>>
+  try {
+    outcome = await cancel(handle.operationId)
+  } catch {
+    return own()
+  }
+  if (outcome.state === 'call-included') return own()
+  // The wallet saw the nonce taken and no receipt of the swap's: it can never land.
+  if (outcome.state === 'nonce-taken')
+    return (await own()) ?? { cancelled: { feeWei: 0n } }
+  const landed = await awaitFirstReceipt(
+    reader,
+    [handle.txHash, outcome.cancelTxHash],
+    timing,
+  )
+  if (!landed) return undefined
+  if (landed.hash === handle.txHash) return { receipt: landed.receipt }
+  return {
+    cancelled: {
+      cancelTxHash: outcome.cancelTxHash,
+      feeWei: landed.receipt.gasUsed * landed.receipt.gasPrice,
+    },
+  }
+}
+
+/**
+ * Watches a submitted swap as `settle` does, except once its deadline (`deadline`, seconds, by
+ * the chain's block time) has passed: then it is not re-sent but cancelled (`cancelExpired`).
+ */
+export async function settleSwap(
+  reader: SwapExecutionReader,
+  wallet: Pick<SwapWallet, 'resumeNativeOperation' | 'cancelContractCall'>,
+  handle: Handle,
+  deadline: number | undefined,
+  timing: SwapTiming,
+  firstWait: SwapTiming = timing,
+): Promise<SwapSettlement> {
+  const receipt = await awaitReceipt(reader, handle.txHash, firstWait)
+  if (receipt) return { receipt }
+  if (wallet.cancelContractCall && (await deadlinePassed(reader, deadline)))
+    return cancelExpired(reader, wallet.cancelContractCall, handle, timing)
+  if (!wallet.resumeNativeOperation) return undefined
+  // A node that could not answer is not a node that does not know the transaction.
+  const known = await reader
+    .getTransaction(handle.txHash)
+    .catch(() => 'unknown')
+  if (known !== null) return undefined
+  await wallet.resumeNativeOperation(handle.operationId).catch(() => {
+    /* Still unresolved: the caller reports it pending and it is looked at again later. */
+  })
+  const again = await awaitReceipt(reader, handle.txHash, timing)
+  return again ? { receipt: again } : undefined
+}
+
+/** The deadline (seconds) a Universal Router `execute` call carries; undefined for any other. */
+export function swapDeadlineOf(data: string): number | undefined {
+  try {
+    const deadline = universalRouterInterface.decodeFunctionData('execute', data)[2] as bigint
+    return deadline <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(deadline) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 /** A submission whose outcome the wallet could not learn still names the exact transaction. */
@@ -607,7 +750,12 @@ export async function executeSwap(params: {
       : undefined,
   )
   onProgress?.({ stage: 'submitted', txHash: handle.txHash })
-  const receipt = await settle(reader, wallet, handle, timing)
+  const settled = await settleSwap(reader, wallet, handle, plan.deadline, timing)
+  if (settled && 'cancelled' in settled) {
+    await wallet.reobserveNativeOperations?.()
+    return cancelledResult(handle, settled.cancelled, earlierFeesWei)
+  }
+  const receipt = settled?.receipt
   // The wallet now reads the same inclusion into its journal and starts the note to self that
   // carries the swap's record. Nothing is re-sent for a transaction already in a block, and
   // the note is the wallet's to retry: neither can change what the swap did.
@@ -634,13 +782,14 @@ export async function executeSwap(params: {
 /**
  * Finishes a swap that was recorded as submitted but whose outcome is unknown (the page closed,
  * the node timed out). If the chain has it, reports what it did. If the chain has never seen it,
- * re-submits the same signed transaction through the wallet (never a new one) and watches again.
+ * re-submits the same signed transaction through the wallet (never a new one) and watches again;
+ * past the swap's deadline it is cancelled instead (`settleSwap`), and what lands is reported.
  */
 export async function reconcileSwap(params: {
   reader: SwapExecutionReader
   wallet: Pick<
     SwapWallet,
-    'resumeNativeOperation' | 'reobserveNativeOperations'
+    'resumeNativeOperation' | 'reobserveNativeOperations' | 'cancelContractCall'
   >
   deployment: UniswapV4Deployment
   route: PoolRoute
@@ -650,14 +799,31 @@ export async function reconcileSwap(params: {
   timing?: SwapTiming
 }): Promise<SwapResult> {
   const timing = params.timing ?? DEFAULT_SWAP_TIMING
-  const receipt = await settle(
+  const settled = await settleSwap(
     params.reader,
     params.wallet,
     params.handle,
+    swapDeadlineOf(params.swap.data),
     timing,
     { ...timing, inclusionTimeoutMs: 0 },
   )
   await params.wallet.reobserveNativeOperations?.()
-  if (!receipt) return { status: 'pending', ...params.handle }
-  return readSwapResult({ ...params, receipt })
+  if (!settled) return { status: 'pending', ...params.handle }
+  if ('cancelled' in settled)
+    return cancelledResult(params.handle, settled.cancelled)
+  return readSwapResult({ ...params, receipt: settled.receipt })
+}
+
+function cancelledResult(
+  handle: Handle,
+  cancelled: { cancelTxHash?: string; feeWei: bigint },
+  earlierFeesWei = 0n,
+): SwapResult {
+  return {
+    status: 'cancelled',
+    ...handle,
+    ...(cancelled.cancelTxHash ? { cancelTxHash: cancelled.cancelTxHash } : {}),
+    feeWei: cancelled.feeWei,
+    totalFeeWei: cancelled.feeWei + earlierFeesWei,
+  }
 }

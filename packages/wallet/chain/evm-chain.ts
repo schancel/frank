@@ -3287,6 +3287,18 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               invalidateBalanceRead();
               return result;
             },
+            // Gives up an exposed call (a swap past its deadline) with a cancellation at its
+            // nonce; see `EvmLegacyConsolidator.cancelContractCall`.
+            async cancelContractCall(operationId) {
+              const owner = nativeOperationOwner(wallet);
+              const result = await runWalletExclusive(wallet, (admission) =>
+                runMainAccountExclusive(wallet, () =>
+                  owner.cancelContractCall(operationId, admission)
+                )
+              );
+              invalidateBalanceRead();
+              return result;
+            },
             runOwnTransfer: (sign, options) =>
               runUnjournalledTransfer(wallet, sign, options?.mainAccountWaitMs),
             // What a contract call from the main account can spend: what it holds, and the most

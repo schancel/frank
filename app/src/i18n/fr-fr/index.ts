@@ -2330,6 +2330,9 @@ export const rawFrFR = {
       'Le réseau a rejeté l’échange. Vous gardez vos fonds et n’avez payé que les frais de réseau.',
     resultRevertedTokenTransfer:
       'Le jeton n’a pas pu être prélevé de votre portefeuille (il en détenait moins que le montant, ou le jeton a refusé le transfert). Vous gardez vos fonds et n’avez payé que les frais de réseau.',
+    resultCancelled: 'Échange expiré et annulé',
+    resultCancelledDetail:
+      'L’échange n’était pas dans un bloc avant son échéance, il ne pouvait donc qu’échouer. Frank l’a annulé au lieu de le renvoyer : rien n’a été échangé et vous gardez vos fonds. Seuls les faibles frais de l’annulation ont pu être prélevés.',
     resultPending: 'Envoyé, pas encore confirmé',
     resultPendingDetail:
       'Le réseau n’a pas encore confirmé cet échange. Il peut encore aboutir ; son état est mis à jour dans les échanges récents. Ne le renvoyez pas.',

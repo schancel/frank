@@ -733,6 +733,8 @@ export class FrankBotHost {
         }
       );
 
+      // Handler tasks and side tasks of this bot (`runInBackground`): stop waits for all of them.
+      const tasks = new Set<Promise<unknown>>();
       const context: BotContext = {
         botId: definition.id,
         address: botAddress,
@@ -968,6 +970,19 @@ export class FrankBotHost {
           return wallet.getSpendableBalance();
         },
 
+        runInBackground: (what, task) => {
+          const side = Promise.resolve()
+            .then(task)
+            .catch((error) =>
+              console.warn(
+                `[bot-host] [${definition.id}] ${what} failed:`,
+                error instanceof Error ? error.message : error
+              )
+            );
+          tasks.add(side);
+          void side.finally(() => tasks.delete(side));
+        },
+
         publishTopicMessage: async ({ topic, entries, voteWeightWei }) => {
           return this.chain.topics.post({
             wallet,
@@ -1023,7 +1038,7 @@ export class FrankBotHost {
         wallet,
         state,
         operations,
-        tasks: new Set(),
+        tasks,
         directory,
         uninstallDirectory,
         loopGuard,

@@ -738,7 +738,7 @@ export interface PokerItem {
   holeCardCommits?: Record<string, string>
   /** Revealed hole-card salts (player address -> salt). */
   holeCardSalts?: Record<string, string>
-  /** The hand this item describes, from 1. */
+  /** The hand this item describes (the table's hand count: 0 before the first deal). */
   handNumber?: number
 }
 

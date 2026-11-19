@@ -679,10 +679,7 @@ export function verifyLiarsDiceReveal(
 }
 
 export type LiarsDiceMessageEnvelope =
-  | (LiarsDiceItem & {
-      cupCommits?: Record<string, string>
-      cupSalts?: Record<string, string>
-    })
+  | LiarsDiceItem
   | {
       senderAddress?: string
       peerAddress?: string
@@ -697,10 +694,7 @@ export interface FoldedLiarsDiceState extends LiarsDiceGameState {
 function extractLiarsDiceItems(
   messages: ReadonlyArray<LiarsDiceMessageEnvelope>,
 ): Array<{
-  item: LiarsDiceItem & {
-    cupCommits?: Record<string, string>
-    cupSalts?: Record<string, string>
-  }
+  item: LiarsDiceItem
   senderAddress?: string
 }> {
   const out: Array<{ item: any; senderAddress?: string }> = []

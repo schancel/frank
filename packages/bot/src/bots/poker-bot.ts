@@ -362,18 +362,20 @@ export class PokerBot implements FrankBotDefinition {
           item,
         ]);
 
-        // Announced on the public discovery topic after the player has the table: the post pays
-        // on chain and may be slow or fail, and the reply never waits for it.
-        await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
-          gameName: "Texas Hold'em Poker",
-          gameType: "poker",
-          tableId,
-          hostAddress: sender,
-          buyInAmount: `${ctx.formatAmount(POKER_DEFAULT_BUY_IN_WEI)} (1000 chips, blinds 10/20)`,
-          currentPlayers: table.players.length,
-          maxPlayers: table.maxPlayers,
-          botAddress: ctx.address,
-        });
+        // Announced on the public discovery topic beside the handler: the post pays on chain and
+        // may be slow or fail, and neither this reply nor the player's next message waits for it.
+        ctx.runInBackground(`Announcing table ${tableId}`, () =>
+          this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
+            gameName: "Texas Hold'em Poker",
+            gameType: "poker",
+            tableId,
+            hostAddress: sender,
+            buyInAmount: `${ctx.formatAmount(POKER_DEFAULT_BUY_IN_WEI)} (1000 chips, blinds 10/20)`,
+            currentPlayers: table.players.length,
+            maxPlayers: table.maxPlayers,
+            botAddress: ctx.address,
+          })
+        );
         return;
       }
 

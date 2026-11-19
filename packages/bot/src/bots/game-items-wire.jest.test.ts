@@ -60,7 +60,9 @@ function harness(options: { hostStampedReplies?: boolean } = {}) {
     );
     sync();
   };
-  return { ...h, sent, say, sync };
+  /** Every message the bot sent, with its recipient. */
+  const messages = h.sent;
+  return { ...h, messages, sent, say, sync };
 }
 
 /** Every reply crosses the wire unchanged, and at least one item of `type` was produced. */
@@ -192,7 +194,7 @@ describe("game bot replies cross the canonical wire", () => {
 
   it("poker: create, status, seeds, joins, a hand played to showdown and its settlement", async () => {
     const bot = new PokerBot({ escrows: seatingEscrowBook("poker").book });
-    const { sent, say } = harness({ hostStampedReplies: true });
+    const { sent, say, messages } = harness({ hostStampedReplies: true });
     const last = () =>
       sent[sent.length - 1].find((i) => i.type === "poker") as PokerItem | undefined;
     await say(bot, ALICE, "/poker create");
@@ -220,11 +222,27 @@ describe("game bot replies cross the canonical wire", () => {
     expect(last()?.holeCardSalts).toBeDefined();
     await say(bot, ALICE, "/poker status");
     expectCarried(sent, "poker", ["create", "action", "settle"]);
+    // Before the showdown nothing secret leaves the bot: no seed or salt, and no player's hole
+    // cards but the recipient's own.
+    let hidden = 0;
+    for (const message of messages)
+      for (const item of message.items) {
+        if (item.type !== "poker" || item.street === "showdown" || item.street === "settled")
+          continue;
+        hidden++;
+        expect(item.serverSeed).toBeUndefined();
+        expect(item.playerSeeds).toBeUndefined();
+        expect(item.holeCardSalts).toBeUndefined();
+        for (const player of item.players ?? [])
+          if (player.address.toLowerCase() !== message.to.toLowerCase())
+            expect(player.holeCards).toBeUndefined();
+      }
+    expect(hidden).toBeGreaterThan(3);
   });
 
   it("liar's dice: create, status, seeds, joins, rounds of bids and challenges to a winner", async () => {
     const bot = new LiarsDiceBot({ escrows: seatingEscrowBook("liars-dice").book });
-    const { sent, say } = harness({ hostStampedReplies: true });
+    const { sent, say, messages } = harness({ hostStampedReplies: true });
     const last = () =>
       sent[sent.length - 1].find((i) => i.type === "liars-dice") as LiarsDiceItem | undefined;
     await say(bot, ALICE, "/status");
@@ -250,7 +268,46 @@ describe("game bot replies cross the canonical wire", () => {
     expect(winner).toBeDefined();
     expect(sent.flat().some((i) => i.type === "liars-dice" && i.cupCommits && Object.keys(i.cupCommits).length > 0)).toBe(true);
     expectCarried(sent, "liars-dice", ["create", "join", "round_start", "bid", "showdown"]);
+    // Before a round's showdown nothing secret leaves the bot: no seed, salt or other cup.
+    let hidden = 0;
+    for (const message of messages)
+      for (const item of message.items) {
+        if (item.type !== "liars-dice" || item.action === "showdown" || item.action === "settle")
+          continue;
+        hidden++;
+        expect(item.serverSeed).toBeUndefined();
+        expect(item.playerSeeds).toBeUndefined();
+        expect(item.cupSalts).toBeUndefined();
+        expect(item.revealedCups).toBeUndefined();
+      }
+    expect(hidden).toBeGreaterThan(3);
   });
+
+  it.each([
+    ["poker", () => new PokerBot({ escrows: seatingEscrowBook("poker").book }), "/poker create", "/poker join"],
+    ["liar's dice", () => new LiarsDiceBot({ escrows: seatingEscrowBook("liars-dice").book }), "/table create 0.05", "/table join"],
+  ] as const)(
+    "%s: a join right after create is answered while the table's announcement has not finished",
+    async (_name, make, create, join) => {
+      const bot = make();
+      const h = harness({ hostStampedReplies: true });
+      let posts = 0;
+      // A paid topic post that never finishes.
+      (h.ctx as { publishTopicMessage?: unknown }).publishTopicMessage = () => {
+        posts++;
+        return new Promise(() => undefined);
+      };
+      await h.say(bot, ALICE, create);
+      await h.say(bot, ALICE, join);
+      expect(h.sent.map((items) => (items[0] as { text: string }).text)).toEqual([
+        expect.stringContaining("created"),
+        expect.stringContaining("joined"),
+      ]);
+      expect(h.background).toHaveLength(1);
+      await Promise.resolve();
+      expect(posts).toBe(1);
+    }
+  );
 
   it("a swap offer as the app's dialog builds it is not carried: refused before any payment", () => {
     const offer: MessageItem = {

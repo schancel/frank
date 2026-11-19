@@ -834,15 +834,7 @@ export function verifyPokerShowdown(
 }
 
 export type PokerMessageEnvelope =
-  | (PokerItem & {
-      serverCommit?: string
-      serverSeed?: string
-      playerCommits?: Record<string, string>
-      playerSeeds?: Record<string, string>
-      holeCardCommits?: Record<string, string>
-      holeCardSalts?: Record<string, string>
-      handNumber?: number
-    })
+  | PokerItem
   | {
       senderAddress?: string
       peerAddress?: string
@@ -857,15 +849,7 @@ export interface FoldedPokerState extends PokerGameState {
 function extractPokerItems(
   messages: ReadonlyArray<PokerMessageEnvelope>,
 ): Array<{
-  item: PokerItem & {
-    serverCommit?: string
-    serverSeed?: string
-    playerCommits?: Record<string, string>
-    playerSeeds?: Record<string, string>
-    holeCardCommits?: Record<string, string>
-    holeCardSalts?: Record<string, string>
-    handNumber?: number
-  }
+  item: PokerItem
   senderAddress?: string
 }> {
   const out: Array<{ item: any; senderAddress?: string }> = []

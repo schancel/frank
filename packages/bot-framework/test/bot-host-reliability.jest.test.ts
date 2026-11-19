@@ -1268,6 +1268,39 @@ describe("FrankBotHost Reliability Features", () => {
       await instance.walletQuestions;
     });
 
+    it("stop waits for a wallet question still running, and for a bot's side task, before closing the wallet", async () => {
+      let answer!: (value: Record<string, string>) => void;
+      const reconcileAttempts = jest.fn(
+        () =>
+          new Promise<Record<string, string>>((resolve) => {
+            answer = resolve;
+          })
+      );
+      const { host, instance } = await registered("stop", reconcileAttempts);
+      let finishSide!: () => void;
+      instance.context.runInBackground(
+        "A side task",
+        () => new Promise<void>((resolve) => (finishSide = resolve))
+      );
+      const closed = jest.spyOn(instance.wallet, "close");
+      await (host as any).pollBot("whole-wallet-bot", instance);
+      expect(instance.walletQuestions).toBeDefined();
+      let stopped = false;
+      const stopping = host.stop().then(() => {
+        stopped = true;
+      });
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(stopped).toBe(false);
+      expect(closed).not.toHaveBeenCalled();
+      answer({});
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(stopped).toBe(false);
+      expect(closed).not.toHaveBeenCalled();
+      finishSide();
+      await stopping;
+      expect(closed).toHaveBeenCalled();
+    });
+
     it("pin: a row that points at a reply is the one question of its poll", async () => {
       const reconcileAttempts = jest.fn(async () => ({}));
       const { host, instance } = await registered("linked", reconcileAttempts);

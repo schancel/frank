@@ -28,6 +28,7 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     mockBotCtx = {
       ...amountsOf('monad-testnet'),
       sendMessage: jest.fn(),
+      runInBackground: (_what: string, task: () => Promise<unknown>) => void task(),
       state: {
         get: jest.fn(),
         set: jest.fn(),

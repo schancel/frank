@@ -124,7 +124,12 @@ export function harness(
     return { payloadDigest, stampValueWei: options?.stampValueWei ?? 0n } as any;
   };
 
+  /** The side tasks the bot started (`runInBackground`), still running or not. */
+  const background: Promise<unknown>[] = [];
   const ctx = {
+    runInBackground: (_what: string, task: () => Promise<unknown>) => {
+      background.push(Promise.resolve().then(task).catch(() => undefined));
+    },
     botId: "test",
     address: BOT,
     subject: "02" + "b0".repeat(32),
@@ -195,6 +200,7 @@ export function harness(
     ctx,
     data,
     sent,
+    background,
     chain,
     /** Makes every send be refused before any attempt exists, with `error`, until called with
      * nothing. */

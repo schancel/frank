@@ -375,18 +375,20 @@ export class LiarsDiceBot implements FrankBotDefinition {
           item,
         ]);
 
-        // Announced on the public discovery topic after the player has the table: the post pays
-        // on chain and may be slow or fail, and the reply never waits for it.
-        await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
-          gameName: "Liar's Dice",
-          gameType: "liars-dice",
-          tableId,
-          hostAddress: sender,
-          buyInAmount: ctx.formatAmount(buyInWei),
-          currentPlayers: game.players.length,
-          maxPlayers: game.maxPlayers,
-          botAddress: ctx.address,
-        });
+        // Announced on the public discovery topic beside the handler: the post pays on chain and
+        // may be slow or fail, and neither this reply nor the player's next message waits for it.
+        ctx.runInBackground(`Announcing table ${tableId}`, () =>
+          this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
+            gameName: "Liar's Dice",
+            gameType: "liars-dice",
+            tableId,
+            hostAddress: sender,
+            buyInAmount: ctx.formatAmount(buyInWei),
+            currentPlayers: game.players.length,
+            maxPlayers: game.maxPlayers,
+            botAddress: ctx.address,
+          })
+        );
         return;
       }
 

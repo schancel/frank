@@ -1456,10 +1456,13 @@ mod spa_tests {
             }
         }
         let lotus_hash = "cd".repeat(32);
+        let xec_regtest_hash = "ef".repeat(32);
         let bitcoin = cashweb_config::BitcoinProxyConf {
             enabled: true,
             chains: vec![
-                row("lotus-v2-regtest", 1, &lotus_hash),
+                // An operator may write the hash in either case; it is advertised lowercase.
+                row("lotus-v2-regtest", 1, &lotus_hash.to_ascii_uppercase()),
+                row("xec-regtest", 101, &xec_regtest_hash),
                 row(
                     "xec-testnet",
                     1_421_481,
@@ -1494,6 +1497,11 @@ mod spa_tests {
         assert_eq!(
             lotus["operator_checkpoint"],
             serde_json::json!({ "block_number": 1, "block_hash": lotus_hash })
+        );
+        let xec_regtest = chains.iter().find(|c| c["id"] == "xec-regtest").unwrap();
+        assert_eq!(
+            xec_regtest["operator_checkpoint"],
+            serde_json::json!({ "block_number": 101, "block_hash": xec_regtest_hash })
         );
         let xec = chains.iter().find(|c| c["id"] == "xec-testnet").unwrap();
         assert!(xec.get("operator_checkpoint").is_none());

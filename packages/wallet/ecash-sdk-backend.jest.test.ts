@@ -24,9 +24,11 @@ let importedCoins = [1, 2].map(n => ({
   sats: 10000n, blockHeight: 800000, isCoinbase: false, isFinal: true,
 }));
 let wrongScript = false, broadcasts = 0, queries = 0;
+const summaryCalls = [], usedPkhs = new Set();
+const hdPkh = path => Buffer.from(shaRmd160(new Ecc().derivePubkey(account.derivePath(path).seckey()))).toString('hex');
 const chronik = {
   blockchainInfo: async () => ({ tipHeight: 900000 }),
-  batchSummary: async scripts => scripts.map(() => ({ numTxs: 0, numUtxos: 0 })),
+  batchSummary: async scripts => { summaryCalls.push(scripts.length); return scripts.map(s => ({ numTxs: usedPkhs.has(s.payload) ? 1 : 0, numUtxos: 0 })); },
   batchUtxos: async scripts => scripts.map(s => ({ utxos: { outputScript: '76a914' + s.payload + '88ac', utxos: [] } })),
   script: (type, payload) => ({ utxos: async () => {
     assert.equal(type, 'p2pkh'); assert.equal(payload, Buffer.from(pkh).toString('hex')); queries++;
@@ -83,6 +85,14 @@ const chronik = {
   assert.throws(() => backend.buildNativeConstruction({ ...params, excludedInputs: [{ txid: 'bad', vout: 0 }] }));
   assert.throws(() => backend.buildNativeConstruction({ ...params, excludedInputs: importedCoins.map(c => ({ txid: c.outpoint.txid, vout: c.outpoint.outIdx })) }));
   await backend.sync(); assert.equal(backend.balanceSats, 20000n); assert.equal(sdk.utxos.length, 2);
+  // An ordinary refresh with nothing new probes only the gap window: 20 scripts per chain.
+  summaryCalls.length = 0; await backend.sync(); assert.deepEqual(summaryCalls, [40]);
+  // Another device used change 1/(changeIndex + 5): the probe sees it and resumes discovery.
+  const change = sdk.changeIndex; usedPkhs.add(hdPkh('1/' + (change + 5)));
+  summaryCalls.length = 0; await backend.sync();
+  assert.equal(summaryCalls[0], 40); assert(summaryCalls.length > 1);
+  assert.equal(sdk.changeIndex, change + 6);
+  summaryCalls.length = 0; await backend.sync(); assert.deepEqual(summaryCalls, [40]);
   wrongScript = true; await assert.rejects(backend.sync(), /wrong imported eCash script/); wrongScript = false;
   importedCoins = []; await backend.sync(); assert.equal(backend.balanceSats, 0n);
   importedCoins = [{ outpoint: { txid: '3'.repeat(64), outIdx: 0 }, sats: 10000n, blockHeight: 800000, isCoinbase: false, isFinal: true }];

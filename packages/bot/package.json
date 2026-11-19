@@ -30,6 +30,7 @@
     "regtest:check": "node --import tsx demo/regtest/regtest-stack.livecheck.ts",
     "regtest:ecash-send": "node --import tsx demo/regtest/ecash-send.livecheck.ts",
     "regtest:ecash-htlc": "node --import tsx demo/regtest/ecash-htlc.livecheck.ts",
+    "regtest:ecash-shared-seed": "node --import tsx demo/regtest/ecash-shared-seed.livecheck.ts",
     "regtest:htlc-swap": "node --import tsx demo/regtest/htlc-swap.livecheck.ts",
     "regtest:monad-check": "node --import tsx demo/regtest/monad-check.livecheck.ts",
     "regtest:monad-reserve": "node --import tsx demo/regtest/monad-reserve.livecheck.ts",

@@ -1,7 +1,10 @@
 /**
  * Custody-internal eCash SDK capability predecessor. The SDK remains the only coin inventory,
  * selector and signer; Chronik owns unspent facts. Imported scripts are explicitly refreshed into
- * that inventory because SDK HD discovery scans only HD indices. No ChainUtxoPool is consulted.
+ * that inventory because SDK HD discovery scans only HD indices. Every refresh probes the gap
+ * window of both HD chains, so change another device of the same seed allocated is found
+ * (issue 2084).
+ * No ChainUtxoPool is consulted.
  *
  * This construction view is used by EcashWallet's durable operation owner, which reloads input
  * claims and the HD change floor under a short cross-instance lock and persists intent/signed
@@ -41,6 +44,12 @@ export interface EcashSdkWallet extends EcashWalletBackend {
   utxos: Array<ScriptUtxo & { address: string }>;
   keypairs: Map<string, Keypair>;
   clone(): EcashSdkWallet;
+  getChangeAddress(index: number): string;
+  /** BIP44 gap-limit scan of the external (0/) and change (1/) chains, then a UTXO sync. */
+  syncAndDiscoverAddresses(options?: {
+    startReceiveIndex?: number;
+    startChangeIndex?: number;
+  }): Promise<void>;
   spendableSatsOnlyUtxos(): Array<ScriptUtxo & { address: string }>;
   updateBalance(): void;
   action(action: {
@@ -82,6 +91,9 @@ export interface EcashNativeConstruction {
   /** Must be durably allocated by the future operation owner before exposure. */
   readonly nextChangeIndex: number;
 }
+
+/** BIP44 gap limit, the SDK's DEFAULT_GAP_LIMIT (Electrum ABC's GAP_LIMIT). */
+const ECASH_HD_GAP_LIMIT = 20;
 
 function outpointKey(input: EcashInputReference): string {
   if (
@@ -370,7 +382,17 @@ export class EcashSdkBackend implements EcashWalletBackend {
     }
     const promise = (async () => {
       this.assertCustodyActive();
+      // Another device of the same seed (its own operation store) advances the shared HD
+      // chains, so indices known locally are only a floor: an index-bounded sync never sees
+      // change that device created. Full discovery rescans each chain from index 0; an
+      // ordinary refresh first probes the next gap-limit addresses of each chain and resumes
+      // the full scan at the known indices only when one of them has history.
       if (discovery) await this.sdk.syncAndDiscoverAddresses();
+      else if (await this.gapWindowUsed())
+        await this.sdk.syncAndDiscoverAddresses({
+          startReceiveIndex: this.sdk.receiveIndex,
+          startChangeIndex: this.sdk.changeIndex,
+        });
       else await this.sdk.sync();
       await this.refreshImportedCoins();
       this.assertCustodyActive();
@@ -395,6 +417,38 @@ export class EcashSdkBackend implements EcashWalletBackend {
     };
     void promise.then(clear, clear);
     return promise;
+  }
+
+  /**
+   * Whether any of the GAP_LIMIT addresses from each chain's known index on has history
+   * (Chronik's numTxs counts mempool) or coins: one batchSummary of 2 × GAP_LIMIT scripts.
+   * The SDK's own discovery always sends 500 scripts per chain, and the relay charges per
+   * script, so it runs only after this probe finds something. Fails safe: an unavailable
+   * batch endpoint falls back to the SDK's discovery, which has its own fallback.
+   */
+  private async gapWindowUsed(): Promise<boolean> {
+    const scripts: Array<{ scriptType: "p2pkh"; payload: string }> = [];
+    for (const [start, address] of [
+      [this.sdk.receiveIndex, (i: number) => this.sdk.getReceiveAddress(i)],
+      [this.sdk.changeIndex, (i: number) => this.sdk.getChangeAddress(i)],
+    ] as const)
+      for (let i = start; i < start + ECASH_HD_GAP_LIMIT; i++) {
+        const keypair = this.sdk.keypairs.get(address(i));
+        if (keypair === undefined)
+          throw new Error("Missing eCash HD keypair for gap probe");
+        scripts.push({
+          scriptType: "p2pkh",
+          payload: Buffer.from(keypair.pkh).toString("hex"),
+        });
+      }
+    let rows: Awaited<ReturnType<ChronikClient["batchSummary"]>>;
+    try {
+      rows = await this.chronik.batchSummary(scripts);
+    } catch {
+      return true;
+    }
+    if (rows.length !== scripts.length) return true;
+    return rows.some((row) => row.numTxs > 0 || row.numUtxos > 0);
   }
 
   /** Copies the key and returns only its address. Custody owns re-import after reopening. */

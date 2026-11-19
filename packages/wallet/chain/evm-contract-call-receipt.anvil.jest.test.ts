@@ -20,10 +20,11 @@
  * device reads it as its inbox would.
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
+ * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN, or fails
+ * under FRANK_REQUIRE_NODES=1.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync, mkdtempSync, rmSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
+import { mkdtempSync, rmSync } from 'fs'
 import { createServer } from 'net'
 import { tmpdir } from 'os'
 import { dirname, join } from 'path'
@@ -42,6 +43,7 @@ import { withDefaultMessageItems } from './message-items.testutil'
 import { fixedStampDefault } from '../oracle/stamp-policy.testutil'
 import { HTLC_NATIVE_TOKEN, encodeHtlcLock, htlcLockId, type EvmHtlcTerms } from '../swap-escrow'
 import type { EvmHtlcCallRecord } from '../storage/evm-native-operation-journal'
+import { anvilBinary, findAnvil, nodeSuiteReady } from '../node-binaries.testutil'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -53,18 +55,6 @@ jest.mock('../evm-provider', () => {
   }
 })
 
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN
-  try {
-    const root = dirname(dirname(require.resolve('@foundry-rs/anvil/package.json')))
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil')
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -98,10 +88,7 @@ const FUNDED = 10n ** 18n
 const LOCKED = 10n ** 15n
 
 const anvilBin = findAnvil()
-if (!anvilBin)
-  // eslint-disable-next-line no-console
-  console.warn('NOT RUN: evm-contract-call-receipt.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.')
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('evm-contract-call-receipt.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 
 suite('a contract call’s receipt settles its account’s coins on every device (anvil)', () => {
   jest.setTimeout(300_000)

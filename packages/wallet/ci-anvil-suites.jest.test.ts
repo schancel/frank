@@ -8,9 +8,11 @@
  *     `yarn workspace <package> <script>` (not behind a `#`), where that package's script runs
  *     jest, and
  *   - free of its own NOT RUN skip, so the shared decision is the only one.
- * What the command line does to the run itself (`-t`, an ignore pattern, a `.skip`) is caught when
- * it runs: under FRANK_REQUIRE_NODES=1 scripts/jest/require-nodes-reporter.cjs fails a run that
- * skipped a test or ran none.
+ * Such a step may not narrow its jest runs with `-t`, `--testNamePattern` or
+ * `--testPathIgnorePatterns`: an ignore pattern that drops one of several named suites, or a name
+ * filter, would leave a suite named but unrun. What remains is caught when the step runs: under
+ * FRANK_REQUIRE_NODES=1 scripts/jest/require-nodes-reporter.cjs fails a run that skipped or left
+ * todo any test it found (a leftover `.skip`), or ran none.
  */
 import { execFileSync } from 'child_process'
 import { existsSync, readdirSync, readFileSync } from 'fs'
@@ -101,6 +103,13 @@ describe('the suites on a real node that hosted CI runs', () => {
       expect(named.has(suite)).toBe(true)
     },
   )
+
+  it('no step that sets FRANK_REQUIRE_NODES=1 narrows a run with -t, --testNamePattern or --testPathIgnorePatterns', () => {
+    const narrowing = requiringSteps
+      .flatMap(block => block.split('\n'))
+      .filter(line => /(^|\s)(-t|--testNamePattern|--testPathIgnorePatterns)(=|\s|$)/.test(line))
+    expect(narrowing).toEqual([])
+  })
 
   it('no step that sets FRANK_REQUIRE_NODES=1 has an `if:`, which could keep it from running', () => {
     expect(requiringSteps.filter(block => /^\s*if:/m.test(block))).toEqual([])

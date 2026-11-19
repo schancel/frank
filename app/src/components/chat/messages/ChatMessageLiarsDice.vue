@@ -191,16 +191,28 @@
 
     <!-- Interactive Actions -->
     <div class="q-mt-sm">
-      <!-- Join Table Action -->
+      <!-- Buy-in: lock, join, refund after the deadline (newest card of the table only) -->
+      <table-buy-in-panel
+        v-if="item.escrow && isNewest"
+        game="liars-dice"
+        :table-id="item.tableId"
+        :buy-in-wei="item.buyInWei"
+        :escrow="item.escrow"
+        :joinable="joinable"
+        :seated="seated"
+        :join-item="joinItem"
+        @sendFollowUp="$emit('sendFollowUp', $event)"
+      />
+      <!-- Start the game once two players are seated -->
       <q-btn
-        v-if="item.action === 'create' || item.action === 'join'"
+        v-if="joinable && seated && (item.players?.length ?? 0) >= 2"
         dense
         no-caps
         color="primary"
         class="full-width q-mb-xs"
-        label="🎲 Join Table"
-        data-testid="join-table-btn"
-        @click="sendJoin"
+        :label="$t('tableBuyIn.startGame')"
+        data-testid="start-game-btn"
+        @click="sendStartRound"
       />
 
       <!-- Bidding Controls -->
@@ -286,15 +298,22 @@
 </template>
 
 <script lang="ts">
-import { defineComponent, type PropType, ref } from 'vue'
-import type { LiarsDiceItem } from '@frank/cashweb/types/messages'
+import { computed, defineComponent, type PropType, ref } from 'vue'
+import type {
+  LiarsDiceItem,
+  TableBuyInLockItem,
+} from '@frank/cashweb/types/messages'
 import { activeChain } from '@frank/wallet/chain'
 import { formatDisplayAmount } from '../../../utils/chain-amount'
+import { chatGameItems } from '../../../utils/chat-game-items'
+import { useReactiveOwnCanonicalAddress } from '../../../utils/own-address'
+import TableBuyInPanel from './TableBuyInPanel.vue'
 
 const DICE_UNICODE = ['', '⚀', '⚁', '⚂', '⚃', '⚄', '⚅']
 
 export default defineComponent({
   name: 'ChatMessageLiarsDice',
+  components: { TableBuyInPanel },
   props: {
     item: {
       type: Object as PropType<LiarsDiceItem>,
@@ -337,32 +356,57 @@ export default defineComponent({
       return props.item.diceCounts?.[idx] ?? props.item.dicePerPlayer ?? 5
     }
 
-    const sendJoin = () => {
+    // `address` is the conversation's peer (the bot); the seats name identities.
+    const ownAddress = useReactiveOwnCanonicalAddress()
+    const seated = computed(
+      () =>
+        !!ownAddress.value &&
+        !!props.item.players?.some(
+          p => p.toLowerCase() === ownAddress.value!.toLowerCase(),
+        ),
+    )
+
+    /** This card is the newest the bot sent for its table: only it offers the buy-in. */
+    const isNewest = computed(() => {
+      const ofTable = chatGameItems('liars-dice', props.address).filter(
+        entry => !entry.outbound && entry.item.tableId === props.item.tableId,
+      )
+      const newest = ofTable[ofTable.length - 1]
+      return !newest || newest.item === props.item
+    })
+
+    /** The table takes players: no round played yet. */
+    const joinable = computed(
+      () =>
+        (props.item.action === 'create' || props.item.action === 'join') &&
+        !props.item.roundNumber,
+    )
+
+    const joinItem = (buyInLock: TableBuyInLockItem): LiarsDiceItem => ({
+      type: 'liars-dice',
+      tableId: props.item.tableId,
+      action: 'join',
+      buyInLock,
+    })
+
+    /** A command to the bot: a text item, paying nothing. */
+    const sendText = (text: string) => {
       emit('sendFollowUp', {
-        type: 'text',
-        text: '/table join',
+        items: [{ type: 'text', text }],
+        stampValueWei: 0n,
       })
     }
 
     const sendStartRound = () => {
-      emit('sendFollowUp', {
-        type: 'text',
-        text: '/start',
-      })
+      sendText('/start')
     }
 
     const sendBid = () => {
-      emit('sendFollowUp', {
-        type: 'text',
-        text: `/bid ${bidQuantity.value} ${bidFace.value}`,
-      })
+      sendText(`/bid ${bidQuantity.value} ${bidFace.value}`)
     }
 
     const sendCallLiar = () => {
-      emit('sendFollowUp', {
-        type: 'text',
-        text: '/liar',
-      })
+      sendText('/liar')
     }
 
     return {
@@ -373,7 +417,10 @@ export default defineComponent({
       isTurn,
       isEliminated,
       getDiceCount,
-      sendJoin,
+      seated,
+      isNewest,
+      joinable,
+      joinItem,
       sendStartRound,
       sendBid,
       sendCallLiar,

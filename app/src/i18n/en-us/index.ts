@@ -304,6 +304,40 @@ export const rawEnUS = {
     leftStatus:
       'Left the raffle: {count}/{max} entered. Your entry was refunded.',
   },
+  tableBuyIn: {
+    join: 'Sit at the table (locks {amount})',
+    sendJoin: 'Send the join again',
+    checkAgain: 'Check the buy-in lock again',
+    refund: 'Refund my buy-in',
+    startGame: 'Start the game',
+    viewTransaction: 'View transaction',
+    lockOpen:
+      'Your buy-in of {amount} is locked on chain. If the table does not pay out, refund it from {deadline}.',
+    lockRefunded: 'Your buy-in at this table was refunded.',
+    lockPaidOut: 'Your buy-in at this table was paid out by the table.',
+    checking: 'Checking your buy-in…',
+    funding:
+      'Moving {amount} into your main account for the buy-in and its fee…',
+    locking: 'Locking your buy-in on chain…',
+    lockSent: 'Buy-in lock sent. Waiting for it to be included…',
+    joining: 'Buy-in locked. Sending your join…',
+    refundSent: 'Refund sent. Waiting for it to be included…',
+    pending:
+      'Your transaction is not in a block yet. It may still land; checking again never locks twice.',
+    joinFailed:
+      'Your buy-in is locked, but the join message was not sent. Send it again, or refund the lock after its deadline.',
+    joinSent: "Join sent. The table's reply says whether you are seated.",
+    errors: {
+      'insufficient-funds':
+        'Not enough in your wallet for the buy-in and its network fee.',
+      'lock-reverted':
+        'The buy-in lock failed on chain. Nothing was locked; you only paid its network fee.',
+      'lock-closed': 'Your buy-in lock at this table is already closed.',
+      'refund-reverted': 'The refund failed on chain. Try again.',
+      'unavailable': 'Table buy-ins are not available on this network.',
+      'other': 'That did not work. Try again.',
+    },
+  },
   gameFairness: {
     diceRejected: 'No roll was made.',
     diceRejectionReasons: {

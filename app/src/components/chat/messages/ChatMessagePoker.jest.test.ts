@@ -1,14 +1,26 @@
 /** @jest-environment jsdom */
-// PARKED (#1377): the poker card code is kept for the rebuild and is not registered anywhere. These
-// tests describe its pre-rebuild behaviour (no commitment, no buy-in, a malformed emit from the
-// card); they keep it compiling and are not a statement that it is fair or playable.
+// The poker card's table view and its text commands. Joining (the buy-in lock and the structured
+// join) and the refund are covered in TableBuyInPanel.jest.test.ts.
 
 import { mount } from '@vue/test-utils'
 import * as quasar from 'quasar'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, reactive, ref } from 'vue'
 
 import type { PokerItem } from '@frank/cashweb/types/messages'
 import ChatMessagePoker from './ChatMessagePoker.vue'
+
+const own = ref<string | null>('0xAlice')
+jest.mock('../../../utils/own-address', () => ({
+  useReactiveOwnCanonicalAddress: () => own,
+}))
+const chatStore = reactive({ activeConversation: { messages: [] as any[] } })
+jest.mock('../../../stores/chats', () => ({ useChatStore: () => chatStore }))
+jest.mock('../../../stores/table-locks', () => ({
+  useTableLockStore: () => ({ locksAt: () => [] }),
+}))
+jest.mock('../../../games/table-buy-in-session', () => ({
+  openTableBuyInSession: () => new Promise(() => undefined),
+}))
 
 const quasarStubs: Record<string, any> = Object.fromEntries(
   Object.keys(quasar)
@@ -101,26 +113,18 @@ describe('ChatMessagePoker.vue', () => {
     expect(wrapper.text()).toContain('0xAlic')
     expect(wrapper.text()).toContain('0xBob')
 
-    // Join button
-    const joinBtn = wrapper.find('[data-testid="poker-join-btn"]')
-    expect(joinBtn.exists()).toBe(true)
-    await joinBtn.trigger('click')
-
-    expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
-    expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
-      type: 'text',
-      text: '/poker join',
-    })
+    // A table without an escrow offers no join: the bot seats only a locked buy-in.
+    expect(wrapper.find('[data-testid="table-join-btn"]').exists()).toBe(false)
 
     // Start button
     const startBtn = wrapper.find('[data-testid="poker-start-btn"]')
     expect(startBtn.exists()).toBe(true)
     await startBtn.trigger('click')
 
-    expect(wrapper.emitted('sendFollowUp')).toHaveLength(2)
-    expect(wrapper.emitted('sendFollowUp')![1][0]).toEqual({
-      type: 'text',
-      text: '/poker start',
+    expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
+    expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
+      items: [{ type: 'text', text: '/poker start' }],
+      stampValueWei: 0n,
     })
   })
 
@@ -194,8 +198,8 @@ describe('ChatMessagePoker.vue', () => {
 
     expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
     expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
-      type: 'text',
-      text: '/call',
+      items: [{ type: 'text', text: '/call' }],
+      stampValueWei: 0n,
     })
 
     // Fold button
@@ -205,8 +209,8 @@ describe('ChatMessagePoker.vue', () => {
 
     expect(wrapper.emitted('sendFollowUp')).toHaveLength(2)
     expect(wrapper.emitted('sendFollowUp')![1][0]).toEqual({
-      type: 'text',
-      text: '/fold',
+      items: [{ type: 'text', text: '/fold' }],
+      stampValueWei: 0n,
     })
 
     // Raise button
@@ -215,9 +219,9 @@ describe('ChatMessagePoker.vue', () => {
     await raiseBtn.trigger('click')
 
     expect(wrapper.emitted('sendFollowUp')).toHaveLength(3)
-    expect((wrapper.emitted('sendFollowUp')![2][0] as any).text).toContain(
-      '/raise',
-    )
+    expect(
+      (wrapper.emitted('sendFollowUp')![2][0] as any).items[0].text,
+    ).toContain('/raise')
   })
 
   it('renders settled showdown with winner details', () => {

@@ -503,6 +503,7 @@ import {
   ownJournalCheckpoints,
   ownMessageTombstones,
   ownSwapRecords,
+  ownTableHtlcRecords,
 } from './chats-self-notes'
 export {
   type ChatState,
@@ -2133,6 +2134,7 @@ function isInternalMessage(items: unknown): boolean {
         !Array.isArray(item) &&
         (item.type === 'swap-record' ||
           item.type === 'htlc-record' ||
+          item.type === 'table-htlc-record' ||
           item.type === 'wallet-sync' ||
           item.type === 'received-coin' ||
           item.type === 'conversation-state' ||
@@ -5361,6 +5363,14 @@ export const useChatStore = defineStore('chats', {
           const { useSwapStore } = await import('./swaps')
           for (const item of swaps) useSwapStore().handleSwapItem(item)
         }
+        const tableLocks = recordRows.flatMap(wrapper =>
+          ownTableHtlcRecords(wrapper, ownAddress),
+        )
+        if (tableLocks.length > 0) {
+          const { useTableLockStore } = await import('./table-locks')
+          for (const item of tableLocks)
+            useTableLockStore().handleTableHtlcRecord(item)
+        }
       }
       // What the account's other devices noted about its conversations, tombstones, and checkpoints.
       const checkpointNotes = recordRows.flatMap(wrapper =>
@@ -6135,6 +6145,13 @@ export const useChatStore = defineStore('chats', {
         if (swaps.length > 0)
           void import('./swaps').then(({ useSwapStore }) => {
             for (const item of swaps) useSwapStore().handleSwapItem(item)
+          })
+        // And the game-table buy-in records beside it (a lock, a refund).
+        const tableLocks = ownTableHtlcRecords(wrapper, ownAddress)
+        if (tableLocks.length > 0)
+          void import('./table-locks').then(({ useTableLockStore }) => {
+            for (const item of tableLocks)
+              useTableLockStore().handleTableHtlcRecord(item)
           })
 
         for (const item of message.items ?? []) {

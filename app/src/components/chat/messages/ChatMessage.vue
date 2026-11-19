@@ -223,6 +223,18 @@
               :outbound="message.outbound"
               @sendFollowUp="handleSendFollowUp"
             />
+            <chat-message-poker
+              v-else-if="item.type == 'poker'"
+              :item="item"
+              :address="address"
+              @sendFollowUp="handleSendFollowUp"
+            />
+            <chat-message-liars-dice
+              v-else-if="item.type == 'liars-dice'"
+              :item="item"
+              :address="address"
+              @sendFollowUp="handleSendFollowUp"
+            />
             <chat-message-channel
               v-else-if="item.type == 'channel-update'"
               :item="item"
@@ -327,6 +339,8 @@ import ChatMessageRaffle from './ChatMessageRaffle.vue'
 import { applicationRenderer } from '../../../utils/application-renderers'
 import ChatMessageRps from './ChatMessageRps.vue'
 import ChatMessageDice from './ChatMessageDice.vue'
+import ChatMessagePoker from './ChatMessagePoker.vue'
+import ChatMessageLiarsDice from './ChatMessageLiarsDice.vue'
 import ChatMessageChannel from './ChatMessageChannel.vue'
 import ChatMessageCalendarInvite from '../ChatMessageCalendarInvite.vue'
 import ChatMessageContactCard from '../ChatMessageContactCard.vue'
@@ -380,6 +394,8 @@ export default defineComponent({
     ChatMessageRaffle,
     ChatMessageRps,
     ChatMessageDice,
+    ChatMessagePoker,
+    ChatMessageLiarsDice,
     ChatMessageChannel,
     ChatMessageCalendarInvite,
     ChatMessageContactCard,

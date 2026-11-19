@@ -121,7 +121,9 @@ protocol-owned extension keys at runtime. Client metadata cannot broaden protoco
 The subset currently omits `btc-regtest`, `bch-regtest`, `xpi-mainnet`, `xpi-testnet` and
 `xpi-regtest`. These protocol networks are intentionally unavailable in the client registry.
 `xec-regtest` is in the subset: it is the local eCash node that `packages/bot/demo/regtest`
-starts (see "Local regtest networks" below). Ethereum Holesky is not a protocol row and is not exposed. Runtime chain
+starts (see "Local regtest networks" below). `lotus-v2-regtest` is in the subset too: Lotus v2
+(native v7 transactions), which exists only on regtest; it has no testnet or mainnet row (see
+"Lotus v2 regtest" below). Ethereum Holesky is not a protocol row and is not exposed. Runtime chain
 registration is removed: supporting a network requires a protocol definition and an explicit
 client extension. Unknown direct lookups return `undefined`; existing alias/kind helpers are
 separate consumer seams and do not add networks.
@@ -227,6 +229,19 @@ The wallet library opens an eCash wallet on `xec-regtest` like on any other netw
 (`openRelayUtxoChain`), given that run's checkpoint. It is refused without one, and a public
 network refuses to take one. The app does not offer `xec-regtest` yet: it chooses a network by
 kind and a testnet-or-mainnet setting, and has no setting that supplies a checkpoint.
+
+### Lotus v2 regtest
+
+`lotus-v2-regtest` is a local `lotusd -regtest` from the Lotus repository's v2 series, with
+Chronik. Bitcoin family, client kind `lotus`, unit `rXPI`, 6 decimals, address prefix `rxpi`,
+network tag `XP2R`. Lotus v2 native transactions are accepted only on regtest, so Frank has no
+other Lotus v2 row, and its wallet (`packages/wallet/lotus-v2/`) refuses any other network. Its
+identity probe is an operator block checkpoint, as above; the relay advertises it in
+`GET /chains` (`operator_checkpoint`, for Bitcoin-family regtest rows) and the app's wallet opens
+at it. The relay's Chronik proxy also serves the confirmed-only `/v2` routes that wallet reads.
+The plan and its gaps are in `docs/plans/lotus-v2-base/README.md`; the real-node suites are
+`packages/wallet/lotus-v2/*.regtest.jest.test.ts` (`LOTUSD_BIN`, and `CASHWEBD_BIN` for the relay
+one). The Lotus v1 rows `xpi-*` remain protocol-only.
 
 ### Monad regtest
 

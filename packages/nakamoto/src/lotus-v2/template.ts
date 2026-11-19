@@ -47,6 +47,8 @@ export function lotusV2PublicKeyProgram(
  */
 export interface LotusV2SignatureTemplate {
   readonly script: Uint8Array
+  /** The x-only key whose signature the program's CHECKSIG accepts. */
+  readonly publicKey: Uint8Array
   arguments(signature: Uint8Array): readonly Uint8Array[]
 }
 
@@ -58,6 +60,7 @@ export function lotusV2KeyhashTemplate(
   const script = lotusV2KeyhashProgram(lotusV2Keyhash(key))
   return Object.freeze({
     script,
+    publicKey: Uint8Array.from(key),
     arguments: (signature: Uint8Array) => [Uint8Array.from(signature), key],
   })
 }
@@ -69,6 +72,7 @@ export function lotusV2PublicKeyTemplate(
   const script = lotusV2PublicKeyProgram(xOnlyPublicKey)
   return Object.freeze({
     script,
+    publicKey: Uint8Array.from(xOnlyPublicKey),
     arguments: (signature: Uint8Array) => [Uint8Array.from(signature)],
   })
 }

@@ -85,6 +85,27 @@ function bytesToBigint(bytes: Uint8Array): bigint {
   return value
 }
 
+/**
+ * The checksum constant of `hrp`. The spec's table is the source; a
+ * descriptor that uses the prefix must carry the same constant, or the
+ * descriptor is wrong and decoding refuses to guess which one is meant.
+ */
+function checksumConstant(
+  hrp: string,
+  prefix: { readonly checksumConstant: bigint },
+  descriptors: readonly LotusV2ChainDescriptor[],
+): bigint {
+  for (const descriptor of descriptors)
+    if (
+      descriptor.address.hrp === hrp &&
+      descriptor.address.checksumConstant !== prefix.checksumConstant
+    )
+      throw new Error(
+        `Lotus v2 descriptor ${descriptor.protocolId} disagrees with addresses.md on the ${hrp} checksum constant`,
+      )
+  return prefix.checksumConstant
+}
+
 /** Encode a type-0 (branch root) or type-1 (keyhash) address on `chain`. */
 export function encodeLotusV2Address(
   chain: LotusV2ChainDescriptor,
@@ -102,12 +123,21 @@ export function encodeLotusV2Address(
     p >>= 5n
   }
   const data = [type, ...groups]
+  const hrp = chain.address.hrp
+  const prefix = Object.prototype.hasOwnProperty.call(
+    LOTUS_V2_ADDRESS_PREFIXES,
+    hrp,
+  )
+    ? LOTUS_V2_ADDRESS_PREFIXES[hrp]
+    : undefined
+  if (prefix === undefined)
+    throw new Error(`addresses.md assigns no prefix ${hrp}`)
   const mod =
     polymod40([...data, 0, 0, 0, 0, 0, 0, 0, 0]) ^
-    chain.address.checksumConstant
+    checksumConstant(hrp, prefix, [chain])
   for (let i = 0; i < 8; i += 1)
     data.push(Number((mod >> BigInt(5 * (7 - i))) & 31n))
-  return `${chain.address.hrp}1${data.map(d => CHARSET[d]).join('')}`
+  return `${hrp}1${data.map(d => CHARSET[d]).join('')}`
 }
 
 /** Type-1 address of a 32-byte keyhash. */
@@ -148,7 +178,7 @@ export function decodeLotusV2Address(
   if (body.length !== BODY_SYMBOLS) return fail('bad-length')
   const symbols = [...body].map(ch => CHARSET.indexOf(ch))
   if (symbols.some(s => s < 0)) return fail('bad-character')
-  if (polymod40(symbols) !== prefix.checksumConstant)
+  if (polymod40(symbols) !== checksumConstant(hrp, prefix, [chain, ...known]))
     return fail('bad-checksum')
   const type = symbols[0]
   if (type !== 0 && type !== 1) return fail('unknown-version')

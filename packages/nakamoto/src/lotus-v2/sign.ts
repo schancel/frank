@@ -241,7 +241,10 @@ export function verifyLotusV2Signature(
   else throw new LotusV2ScriptError('CHECKSIG wire encoding')
   if (mode === 2 && target.inputIndex >= tx.outputs.length)
     throw new LotusV2ScriptError('CHECKSIG wire encoding')
-  const message = lotusV2SignatureMessage(chain, tx, coins, { ...target, mode })
+  const message = lotusV2SignatureMessage(chain, tx, coins, {
+    ...target,
+    mode,
+  })
   const verified = verifySchnorr(
     operand.subarray(0, 64),
     message,
@@ -307,6 +310,10 @@ export function signLotusV2Transaction(params: {
       )
     if (spend.signer.publicKey.length !== 32)
       throw new LotusV2FormatError('the signer is not an x-only BIP340 key')
+    if (!equal(spend.signer.publicKey, spend.template.publicKey))
+      throw new LotusV2FormatError(
+        "the signer's key is not the key the template checks",
+      )
     return {
       kind: 'spend',
       prevTxid: spend.prevTxid,

@@ -20,6 +20,10 @@ import {
   type LotusV2ChainDescriptor,
   type LotusV2Input,
   type LotusV2Output,
+  type LotusV2Transaction,
+  LOTUS_V2_ADDRESS_PREFIXES,
+  LOTUS_V2_CHAINS,
+  LOTUS_V2_NO_LOCK,
   LotusV2FormatError,
   LotusV2ScriptError,
   LotusV2UnsupportedError,
@@ -151,6 +155,25 @@ describe('Lotus v2 addresses', () => {
         decoded.ok && decoded.value.type === 0 && hex(decoded.value.root),
       ).toBe(v.root)
     }
+  })
+
+  test('a descriptor checksum constant that disagrees with addresses.md is refused', () => {
+    for (const chain of LOTUS_V2_CHAINS)
+      expect(
+        LOTUS_V2_ADDRESS_PREFIXES[chain.address.hrp]?.checksumConstant,
+      ).toBe(chain.address.checksumConstant)
+    const wrong = withAddress('rxpi', 0x1234n)
+    const address = encodeLotusV2Address(
+      LOTUS_V2_REGTEST,
+      0,
+      new Uint8Array(32).fill(1),
+    )
+    expect(() => encodeLotusV2Address(wrong, 0, new Uint8Array(32))).toThrow(
+      'disagrees with addresses.md',
+    )
+    expect(() => decodeLotusV2Address(wrong, address)).toThrow(
+      'disagrees with addresses.md',
+    )
   })
 
   test('every invalid vector fails with the reference reason, in order', () => {
@@ -540,6 +563,28 @@ describe('Lotus v2 transaction building', () => {
     ).toThrow(LotusV2FormatError)
   })
 
+  test("a signer whose key is not the template's key is refused", () => {
+    // Same coin, same template; only the signing key differs. Without the
+    // check this signs, and the node rejects the transaction.
+    expect(() =>
+      signLotusV2Transaction({
+        chain,
+        inputs: [
+          {
+            prevTxid: new Uint8Array(32).fill(1),
+            prevIndex: 0,
+            coin: keyhashCoin(1, 1000n),
+            template: lotusV2KeyhashTemplate(xOnly(1)),
+            signer: schnorrSigner(2),
+          },
+        ],
+        outputs: [keyhashCoin(1, 500n)],
+      }),
+    ).toThrow("the signer's key is not the key the template checks")
+    expect(lotusV2PublicKeyTemplate(xOnly(3)).publicKey).toEqual(xOnly(3))
+    expect(lotusV2KeyhashTemplate(xOnly(3)).publicKey).toEqual(xOnly(3))
+  })
+
   test('mint signature messages are explicitly unsupported', () => {
     const tx = {
       lock: { kind: 0 as const, value: 0n },
@@ -637,5 +682,193 @@ describe('Lotus v2 transaction building', () => {
     expect(() => decodeLotusV2Transaction(chain, wrongVersion)).toThrow(
       'version/lock',
     )
+  })
+})
+
+describe('Lotus v2 strict parse rejections', () => {
+  const chain = LOTUS_V2_REGTEST
+  const root = lotusV2BranchLeaf(chain, lotusV2KeyhashTemplate(xOnly(1)).script)
+  const coin: LotusV2Output = { value: 1000n, branches: [root], paths: [[0]] }
+  const signed = signLotusV2Transaction({
+    chain,
+    inputs: [
+      {
+        prevTxid: new Uint8Array(32).fill(1),
+        prevIndex: 0,
+        coin,
+        template: lotusV2KeyhashTemplate(xOnly(1)),
+        signer: schnorrSigner(1),
+      },
+    ],
+    outputs: [{ value: 500n, branches: [root], paths: [[0]] }],
+  })
+  // Layout of this one-input, one-output keyhash spend: 16-byte header
+  // (version 0..3, lock kind 4, lock value 5..11, input count 12..13, output
+  // count 14..15); input outpoint 16..51, sequence 52..55, flags 56, path
+  // index 57; the 45-byte output last.
+  const OUTPUT = signed.raw.length - 45
+  const mutate = (change: (b: Uint8Array) => Uint8Array | void) => {
+    const b = Uint8Array.from(signed.raw)
+    return change(b) ?? b
+  }
+  const coinbase: LotusV2Transaction = {
+    lock: LOTUS_V2_NO_LOCK,
+    inputs: [
+      {
+        kind: 'coinbase',
+        prevTxid: new Uint8Array(32),
+        prevIndex: 1,
+        sequence: 0xffffffff,
+      },
+    ],
+    outputs: [{ value: 5n, branches: [root], paths: [[0]] }],
+  }
+
+  test('the unmodified transactions parse', () => {
+    expect(decodeLotusV2Transaction(chain, signed.raw)).toEqual(
+      signed.transaction,
+    )
+    const raw = encodeLotusV2Transaction(chain, coinbase)
+    expect(
+      encodeLotusV2Transaction(chain, decodeLotusV2Transaction(chain, raw)),
+    ).toEqual(raw)
+    // Sequence bit 22 (the relative-lock type flag) is not reserved.
+    expect(() =>
+      decodeLotusV2Transaction(
+        chain,
+        mutate(b => {
+          b.set([5, 0, 0x40, 0], 52)
+        }),
+      ),
+    ).not.toThrow()
+  })
+
+  test.each<[string, (b: Uint8Array) => Uint8Array | void, string]>([
+    ['lock kind 3', b => void (b[4] = 3), 'transaction header'],
+    ['lock kind 0 with a value', b => void (b[5] = 1), 'transaction header'],
+    ['input flags 0', b => void (b[56] = 0), 'input flags'],
+    ['input flags 4', b => void (b[56] = 4), 'input flags'],
+    [
+      'reserved sequence bits',
+      b => void b.set([0xfe, 0xff, 0x80, 0x00], 52),
+      'spend authorization',
+    ],
+    [
+      'non-shortest CompactSize',
+      b => {
+        const o = new Uint8Array(b.length + 2)
+        o.set(b.subarray(0, 57))
+        o.set([0xfd, 0, 0], 57)
+        o.set(b.subarray(58), 60)
+        return o
+      },
+      'path index',
+    ],
+    ['output flag 0x08', b => void (b[OUTPUT] = 0x08), 'flags'],
+    ['a burn output with paths', b => void (b[OUTPUT] = 0x02), 'burn paths'],
+    ['truncated', b => b.subarray(0, b.length - 1), 'output path index'],
+    ['zero inputs', b => void (b[12] = 0), 'transaction count'],
+  ])('%s', (_name, change, reason) => {
+    expect(() => decodeLotusV2Transaction(chain, mutate(change))).toThrow(
+      new LotusV2FormatError(reason),
+    )
+  })
+
+  test('output flag rules: state with burn, a zero state root, the legacy 0x80 entry', () => {
+    expect(() =>
+      encodeLotusV2Output({
+        value: 1n,
+        burn: true,
+        stateRoot: new Uint8Array(32).fill(1),
+        branches: [root],
+        paths: [],
+      }),
+    ).toThrow(new LotusV2FormatError('flags'))
+    expect(() =>
+      encodeLotusV2Output({
+        value: 1n,
+        stateRoot: new Uint8Array(32),
+        branches: [root],
+        paths: [[0]],
+      }),
+    ).toThrow(new LotusV2FormatError('zero state root'))
+    // Flags 0x06 on the wire: state and burn together.
+    const stateBurn = Uint8Array.from([
+      0x06,
+      ...new Uint8Array(8),
+      ...new Uint8Array(32).fill(1),
+      1,
+      ...root,
+      0,
+    ])
+    expect(() => decodeLotusV2Output(stateBurn)).toThrow(
+      new LotusV2FormatError('flags'),
+    )
+    // 0x80 starts a legacy coin entry, never an Output.
+    expect(() =>
+      decodeLotusV2Output(Uint8Array.from([0x80, ...new Uint8Array(8)])),
+    ).toThrow(new LotusV2FormatError('flags'))
+  })
+
+  test('coinbase shape', () => {
+    const shaped = (change: Partial<LotusV2Transaction>) => () =>
+      encodeLotusV2Transaction(chain, { ...coinbase, ...change })
+    expect(
+      shaped({
+        outputs: [
+          { ...coinbase.outputs[0]!, tokenId: new Uint8Array(32).fill(2) },
+        ],
+      }),
+    ).toThrow(new LotusV2FormatError('coinbase shape'))
+    expect(
+      shaped({
+        outputs: [
+          { ...coinbase.outputs[0]!, stateRoot: new Uint8Array(32).fill(2) },
+        ],
+      }),
+    ).toThrow(new LotusV2FormatError('coinbase shape'))
+    expect(shaped({ outputs: [] })).toThrow(
+      new LotusV2FormatError('coinbase shape'),
+    )
+    expect(
+      shaped({
+        inputs: [
+          { ...coinbase.inputs[0]!, data: new Uint8Array(0) } as LotusV2Input,
+        ],
+      }),
+    ).toThrow(new LotusV2FormatError('coinbase data'))
+    // Coinbase data element count 2 (input flags at 56, count at 57).
+    const raw = encodeLotusV2Transaction(chain, coinbase)
+    raw[57] = 2
+    expect(() => decodeLotusV2Transaction(chain, raw)).toThrow(
+      new LotusV2FormatError('coinbase count'),
+    )
+  })
+
+  test('input mix: a repeated outpoint, mint inputs only', () => {
+    const input = signed.transaction.inputs[0]!
+    expect(() =>
+      encodeLotusV2Transaction(chain, {
+        ...signed.transaction,
+        inputs: [input, input],
+      }),
+    ).toThrow(new LotusV2FormatError('repeated outpoint'))
+    expect(() =>
+      encodeLotusV2Transaction(chain, {
+        lock: LOTUS_V2_NO_LOCK,
+        inputs: [
+          {
+            kind: 'mint',
+            tokenId: root,
+            witness: {
+              script: Uint8Array.of(0x4e),
+              siblings: [],
+              arguments: [],
+            },
+          },
+        ],
+        outputs: [],
+      }),
+    ).toThrow(new LotusV2FormatError('ordinary input mix'))
   })
 })

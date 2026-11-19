@@ -23,12 +23,19 @@ import {
   players,
   secret,
 } from '../shared/limits'
+import {
+  tableBuyInLock,
+  tableEscrowTerms,
+  withBuyInLockRule,
+} from '../shared/table-escrow-fields'
 
 const cup = listOf(dieFace, MAX_DICE_PER_PLAYER)
 const quantity = int(1, MAX_TABLE_DICE)
 const count = int(0, MAX_TABLE_DICE)
 
-export const liarsDiceCodec = cborItemCodec<LiarsDiceItem>('liars-dice', {
+export const liarsDiceCodec = withBuyInLockRule<LiarsDiceItem>(
+  'liars-dice',
+  cborItemCodec<LiarsDiceItem>('liars-dice', {
   tableId: req(0, id),
   action: req(
     1,
@@ -82,4 +89,7 @@ export const liarsDiceCodec = cborItemCodec<LiarsDiceItem>('liars-dice', {
   potWei: opt(20, amount),
   // Key 21 was the settlement tx hash; removed with fake settlement, never reuse it.
   stealthAddress: opt(22, evmAddress),
-})
+  escrow: opt(23, tableEscrowTerms),
+  buyInLock: opt(24, tableBuyInLock),
+  }),
+)

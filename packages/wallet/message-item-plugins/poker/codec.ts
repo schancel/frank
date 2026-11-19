@@ -13,6 +13,11 @@ import {
   struct,
 } from '@frank/cashweb/message-items/cbor-fields'
 import { card, cardOrHidden, chips, id, players } from '../shared/limits'
+import {
+  tableBuyInLock,
+  tableEscrowTerms,
+  withBuyInLockRule,
+} from '../shared/table-escrow-fields'
 
 const player = struct<PokerPlayerView>({
   address: req(0, evmAddress),
@@ -28,7 +33,9 @@ const player = struct<PokerPlayerView>({
   holeCards: opt(9, listOf(cardOrHidden, 2)),
 })
 
-export const pokerCodec = cborItemCodec<PokerItem>('poker', {
+export const pokerCodec = withBuyInLockRule<PokerItem>(
+  'poker',
+  cborItemCodec<PokerItem>('poker', {
   tableId: req(0, id),
   action: req(
     1,
@@ -79,4 +86,7 @@ export const pokerCodec = cborItemCodec<PokerItem>('poker', {
   winnerAddress: opt(16, evmAddress),
   // Key 17 was the settlement tx hash; removed with fake settlement, never reuse it.
   stealthAddress: opt(18, evmAddress),
-})
+  escrow: opt(19, tableEscrowTerms),
+  buyInLock: opt(20, tableBuyInLock),
+  }),
+)

@@ -203,12 +203,12 @@
                   class="text-caption settings-muted"
                   data-test="settings-main-balance-network-name"
                 >
-                  {{ mainBalanceNetwork.name }}
-                  <template v-if="mainBalanceNetwork.separate">
+                  {{ mainBalanceNetwork.main }}
+                  <template v-if="mainBalanceNetwork.messaging">
                     ·
                     {{
                       $t('settings.messagingNetwork', {
-                        network: messagingNetworkName,
+                        network: mainBalanceNetwork.messaging,
                       })
                     }}
                   </template>
@@ -769,7 +769,10 @@ import { activeChain, getChainRegistryEntry } from '@frank/wallet/chain'
 import { DEFAULT_CHAIN_STATIC_STAMP_COIN } from '@frank/wallet/oracle'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
-import { MAIN_WALLET_CHAIN } from 'src/accounts/base-wallet'
+import {
+  MAIN_WALLET_CHAIN,
+  mainBalanceNetworkNames,
+} from 'src/accounts/base-wallet'
 import { walletSupport } from 'src/utils/wallet-support'
 import { COLOR_SCHEMES, type ColorScheme } from 'src/utils/color-scheme'
 import {
@@ -1346,17 +1349,10 @@ export default defineComponent({
       resetColdVaultSweep,
       flushPendingEdits,
       getWalletNetworkLabel,
-      mainBalanceNetwork: {
-        name:
-          (
-            MAIN_WALLET_CHAIN ??
-            getChainRegistryEntry(activeChain.chainIdentifier)
-          )?.name ?? activeChain.chainIdentifier,
-        separate: MAIN_WALLET_CHAIN !== undefined,
-      },
-      messagingNetworkName:
-        getChainRegistryEntry(activeChain.chainIdentifier)?.name ??
+      mainBalanceNetwork: mainBalanceNetworkNames(
+        MAIN_WALLET_CHAIN,
         activeChain.chainIdentifier,
+      ),
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
       chainStatus,
       chainStatusKey: (chain: { id: string }) => {

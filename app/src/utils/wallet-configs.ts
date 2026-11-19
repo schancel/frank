@@ -190,7 +190,7 @@ const MAIN_ROW_PRESENTATION = {
 
 /**
  * The wallet rows. `mainChain` is the host's configured base network when it is not the
- * messaging chain's wallet (`MAIN_WALLET_CHAIN`, accounts/base-wallet.ts): it is then the main
+ * messaging chain's wallet (`MAIN_WALLET_CHAIN`, accounts/base-wallet.ts; never EVM): it is then the main
  * row, keyed by its canonical identifier, and replaces its kind's row; the messaging wallet's
  * row stays, as one more wallet. Without it the messaging wallet's row is the main one.
  */
@@ -199,6 +199,11 @@ export function buildWalletConfigs(
 ): WalletItemConfig[] {
   const rows = orderedKinds.map(buildWalletItemConfig)
   if (!mainChain) return rows
+  // The messaging chain's row is never replaced (resolveMainWalletChain refuses an EVM base).
+  if (mainChain.family === 'evm')
+    throw new Error(
+      `An EVM main-balance network (${mainChain.id}) is the messaging chain's own wallet row`,
+    )
   const kindRow = buildWalletItemConfig(mainChain.kind)
   const main: WalletItemConfig = {
     ...buildWalletItemConfig(mainChain.id),

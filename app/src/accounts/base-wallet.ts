@@ -20,7 +20,10 @@ import {
   resolveBaseChain,
   UnsupportedBaseChainError,
 } from '@frank/wallet/chain/base-chain'
-import type { ChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
+import {
+  getChainRegistryEntry,
+  type ChainRegistryEntry,
+} from '@frank/wallet/chain/chains-registry'
 import { readViteEnv } from '@frank/wallet/chain/vite-env'
 
 /** The one public build setting that names the base chain. */
@@ -37,6 +40,13 @@ export function resolveMainWalletChain(
 ): ChainRegistryEntry | undefined {
   const entry = resolveBaseChain(configured)
   if (!entry || entry.id === messaging.chainIdentifier) return undefined
+  // An EVM wallet is the messaging chain's own (base-chain.ts): another EVM network as the main
+  // balance would replace the messaging chain's row of the same kind.
+  if (entry.family === 'evm')
+    throw new UnsupportedBaseChainError(
+      entry.id,
+      `an EVM base network must be the messaging chain, ${messaging.chainIdentifier}`,
+    )
   if (entry.isTestnet !== (messaging.isTestnet ?? false))
     throw new UnsupportedBaseChainError(
       entry.id,
@@ -47,6 +57,22 @@ export function resolveMainWalletChain(
   return entry
 }
 
-/** Read once at start: the build's environment does not change while the app runs. */
+/** What Settings says: the main-balance network, and the messaging one when they differ. */
+export function mainBalanceNetworkNames(
+  main: ChainRegistryEntry | undefined,
+  messagingChainIdentifier: string,
+): { main: string; messaging?: string } {
+  const messaging =
+    getChainRegistryEntry(messagingChainIdentifier)?.name ??
+    messagingChainIdentifier
+  return main ? { main: main.name, messaging } : { main: messaging }
+}
+
+/**
+ * Read once at start: the build's environment does not change while the app runs. A refused
+ * setting throws here, while the app's modules load, so the page does not start (the console
+ * names the setting and the reason). There is no localized failure screen for a build
+ * misconfiguration yet; the build, not the user, has to change.
+ */
 export const MAIN_WALLET_CHAIN: ChainRegistryEntry | undefined =
   resolveMainWalletChain(readViteEnv(BASE_CHAIN_SETTING))

@@ -1,6 +1,10 @@
 import { UnsupportedBaseChainError } from '@frank/wallet/chain/base-chain'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
-import { BASE_CHAIN_SETTING, resolveMainWalletChain } from './base-wallet'
+import {
+  BASE_CHAIN_SETTING,
+  mainBalanceNetworkNames,
+  resolveMainWalletChain,
+} from './base-wallet'
 import { buildWalletConfigs } from '../utils/wallet-configs'
 import { walletSupport } from '../utils/wallet-support'
 import { PUBLIC_CLIENT_ENV } from '../../config/public-client-env.cjs'
@@ -35,6 +39,31 @@ describe('the main-balance network the host configures', () => {
     expect(() =>
       resolveMainWalletChain('lotus-v2-regtest', mainnetMessaging),
     ).toThrow(/monad-mainnet, a main network/)
+  })
+
+  it('refuses an EVM network that is not the messaging chain', () => {
+    // Another Monad network would replace the messaging row and leave messaging on no wallet.
+    expect(() =>
+      resolveMainWalletChain('monad-regtest', testnetMessaging),
+    ).toThrow(/must be the messaging chain, monad-testnet/)
+    expect(() =>
+      resolveMainWalletChain('ethereum-sepolia', testnetMessaging),
+    ).toThrow(UnsupportedBaseChainError)
+  })
+
+  it('names the networks Settings shows', () => {
+    expect(mainBalanceNetworkNames(undefined, 'monad-testnet')).toEqual({
+      main: getChainRegistryEntry('monad-testnet')!.name,
+    })
+    expect(
+      mainBalanceNetworkNames(
+        getChainRegistryEntry('lotus-v2-regtest'),
+        'monad-regtest',
+      ),
+    ).toEqual({
+      main: getChainRegistryEntry('lotus-v2-regtest')!.name,
+      messaging: getChainRegistryEntry('monad-regtest')!.name,
+    })
   })
 
   it('is a public build setting (Quasar exposes only the allowlist)', () => {
@@ -91,10 +120,9 @@ describe('wallet rows with a configured main-balance network', () => {
     })
   })
 
-  it("an EVM base network other than the messaging chain replaces its kind's row", () => {
-    const sepolia = getChainRegistryEntry('ethereum-sepolia')!
-    const rows = buildWalletConfigs(sepolia)
-    expect(rows[0]?.id).toBe('ethereum-sepolia')
-    expect(rows.map(row => row.id)).not.toContain('ethereum')
+  it('never takes an EVM network as the main row', () => {
+    expect(() =>
+      buildWalletConfigs(getChainRegistryEntry('ethereum-sepolia')!),
+    ).toThrow(/messaging chain/)
   })
 })

@@ -66,9 +66,9 @@ it("constructs and rediscovers frozen roots with ecash-wallet 6.2.1 and independ
         assert.equal((await wallet.getReceiveAddress()).raw, next);
         assert.equal((await restored.getReceiveAddress()).raw, next);
         assert.equal(await wallet.getBalance(), 0n);
-        // Two opens and two receive-address reads scan from 0; getBalance resumes the gap scan
-        // at the known indices. Two chains each.
-        assert.equal(discoveries, 10);
+        // Two opens and two receive-address reads scan both chains from 0 (one call per chain);
+        // getBalance sends one gap-window probe, which finds nothing new.
+        assert.equal(discoveries, 9);
         assert.equal(syncs, 5);
         assert.deepEqual(checkpoints, [['http://127.0.0.1:1', 661648], ['http://127.0.0.1:1', 661648]]);
         assert.equal(bytes.toString('hex'), vector.outputs['ecash-bch-wallet']);

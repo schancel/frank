@@ -4222,10 +4222,9 @@ mod tests {
                     assert_eq!(row.server_seq, n as u64);
                     assert_eq!(row.ciphertext, message(n).ciphertext);
                     assert_eq!(row.write_sig, message(n).write_sig);
-                    assert_eq!(
-                        store.accepted_receipt(&id, message(n)).unwrap(),
-                        Some(row.clone())
-                    );
+                    let accepted = store.accepted_receipt(&id, message(n)).unwrap().unwrap();
+                    assert_eq!(accepted.message, *row);
+                    assert_eq!(accepted.payment_tx_hash, payment(n).tx_hash);
                     let paid = store.payment_record(&payment(n).tx_hash).unwrap().unwrap();
                     assert_eq!(
                         (paid.group_id, paid.server_seq, paid.value_wei),

@@ -1015,7 +1015,8 @@ export const rawFrFR = {
     paymentFailed: 'Échec du timbre du message',
     paymentUnsent: 'Timbre du message non payé',
     amountNotPaid: '{amount}, non payé',
-    amountPaidTwice: '{amount}, payé deux fois (un autre de vos appareils a aussi payé)',
+    amountPaidTwice:
+      '{amount}, payé deux fois (un autre de vos appareils a aussi payé)',
     reasonUnreachable: 'Impossible de joindre le serveur.',
     reasonUnavailable: 'Ce relais ne propose pas la messagerie.',
     reasonRejected: 'Le relais a refusé le message.',

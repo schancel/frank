@@ -824,6 +824,45 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
       { active: false, xec: xecObs([output()]), evm: both('open') },
       'claiming/none',
     ],
+    // ...but finishes what it already authorized and exposed itself.
+    [
+      'inactive device: resumes its own exposed lock operation',
+      { active: false, op: 'exposed' },
+      'xecLockPending/fund-xec:resume',
+    ],
+    [
+      'inactive device: never starts a prepared or authorized lock',
+      { active: false, op: 'prepared' },
+      'xecLockPending/none',
+    ],
+    [
+      'inactive device: re-broadcasts its own stored refund',
+      {
+        active: false,
+        xec: xecObs([output()], T_A + 1),
+        evm: both('refunded'),
+        record: {
+          xecSpends: [
+            {
+              funding: FUNDING,
+              branch: 'refund',
+              rawTx: '00',
+              txid: 'ee'.repeat(32),
+            },
+          ],
+        },
+      },
+      'refunding/broadcast-xec-spend',
+    ],
+    [
+      'inactive device: never signs a new refund',
+      {
+        active: false,
+        xec: xecObs([output()], T_A + 1),
+        evm: both('refunded'),
+      },
+      'refunding/none',
+    ],
   ]
   it.each(cases)('%s', (_, c, expected) => {
     expect(summary(run('A', c))).toBe(expected)
@@ -1006,6 +1045,43 @@ describe('a double-funded XEC script: every exact output is a separate fund', ()
         }),
       ),
     ).toBe('claimed/none')
+  })
+
+  it('an inactive A, withdrawn, after T_A, never re-broadcasts a stored refund of the output kept for B', () => {
+    // The record holds a refund of the first output (signed before the withdraw landed). The
+    // active rule refunds only the extra output; the inactive device follows the same
+    // candidates: it has no stored spend of the second, so it does nothing.
+    const record = { xecSpends: [stored(first, 'refund')] }
+    const active = run('A', {
+      xec: two({}, {}, T_A + 1),
+      evm: both('withdrawn'),
+      record,
+    })
+    expect(active.action).toMatchObject({
+      kind: 'sign-xec-spend',
+      funding: second,
+    })
+    expect(
+      summary(
+        run('A', {
+          active: false,
+          xec: two({}, {}, T_A + 1),
+          evm: both('withdrawn'),
+          record,
+        }),
+      ),
+    ).toBe('claimed/none')
+    // With a stored refund of the extra output too, it re-broadcasts that one only.
+    expect(
+      run('A', {
+        active: false,
+        xec: two({}, {}, T_A + 1),
+        evm: both('withdrawn'),
+        record: {
+          xecSpends: [stored(first, 'refund'), stored(second, 'refund')],
+        },
+      }).action,
+    ).toEqual({ kind: 'broadcast-xec-spend', funding: second })
   })
 
   it('A, withdrawn, after T_A, B’s claim of one is not final: keeps the other back', () => {
@@ -1263,6 +1339,25 @@ describe('nextAction, B (MON depositor)', () => {
       'inactive device: never claims',
       { active: false, xec: xecObs([output()]), evm: withdrawn },
       'claimingXec/none',
+    ],
+    [
+      'inactive device: re-broadcasts its own stored claim',
+      {
+        active: false,
+        xec: xecObs([output()]),
+        evm: withdrawn,
+        record: {
+          xecSpends: [
+            {
+              funding: FUNDING,
+              branch: 'claim',
+              rawTx: '00',
+              txid: 'dd'.repeat(32),
+            },
+          ],
+        },
+      },
+      'claimingXec/broadcast-xec-spend',
     ],
   ]
   it.each(cases)('%s', (_, c, expected) => {

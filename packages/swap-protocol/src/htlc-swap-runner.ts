@@ -83,8 +83,9 @@ export interface HtlcSwapView {
   readonly conversationId: string
   readonly role: HtlcSwapRole | null
   /** `invalid`: the terms cannot be executed by this account (detail says why);
-   * `unsupported`: the swap is on networks this runner was not composed for. */
-  readonly phase: HtlcSwapPhase | 'invalid' | 'unsupported'
+   * `unsupported`: the swap is on networks this runner was not composed for; `checking`: no
+   * pass over this swap has finished yet (the last one failed, see `error`; it is retried). */
+  readonly phase: HtlcSwapPhase | 'invalid' | 'unsupported' | 'checking'
   readonly detail?: string
   readonly warnings: readonly HtlcSwapWarning[]
   readonly deadlines?: {
@@ -207,6 +208,8 @@ export class HtlcSwapRunner {
   private async pass(): Promise<void> {
     const negotiations = await this.options.negotiations.list()
     for (const negotiation of negotiations) {
+      // A stop during a pass ends it: nothing more is observed or done after `stop`.
+      if (this.stopped) return
       const swapId = bytesToHex(negotiation.context.swapId)
       let view: HtlcSwapView | undefined
       try {
@@ -218,7 +221,7 @@ export class HtlcSwapRunner {
           swapId,
           conversationId: bytesToHex(negotiation.context.conversationId),
           role: previous?.role ?? null,
-          phase: previous?.phase ?? 'invalid',
+          phase: previous?.phase ?? 'checking',
           warnings: previous?.warnings ?? [],
           ...(previous?.deadlines ? { deadlines: previous.deadlines } : {}),
           ...(previous?.lockId ? { lockId: previous.lockId } : {}),
@@ -389,7 +392,8 @@ export class HtlcSwapRunner {
     })
     let error: string | undefined
     try {
-      await this.act(context, terms, role, decision, record)
+      // The observations above took network round trips: a stop meanwhile acts on nothing.
+      if (!this.stopped) await this.act(context, terms, role, decision, record)
     } catch (reason) {
       this.options.onError?.(swapId, reason)
       error = message(reason)

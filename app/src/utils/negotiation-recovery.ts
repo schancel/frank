@@ -6,6 +6,7 @@ import {
 } from '@frank/wallet/chain'
 import { createBrowserNegotiationJournalStore } from '@frank/swap-protocol/src/storage/negotiation-browser'
 import { appNegotiationIncarnation } from '@frank/swap-protocol/src/host-identity'
+import type { NegotiationJournalInspection } from '@frank/swap-protocol/src/negotiation-journal'
 import {
   NegotiationRecovery,
   type NegotiationRecoverySnapshot,
@@ -27,18 +28,33 @@ export const negotiationRecoveryStatus = readonly({
 export const APP_IDLE_NEGOTIATION_SCAN_MS = 60_000
 let current: object | undefined
 /** Installed after directory admission; independent of chat storage and ordinary polling. */
+export interface AppNegotiationRecovery {
+  stop(): Promise<void>
+  /** This session's journals as last restored (fresh copies; empty once stopped). */
+  journals(): readonly NegotiationJournalInspection[]
+  /** Called after each published pass of this session's recovery. */
+  subscribe(listener: () => void): () => void
+}
 export function startAppNegotiationRecovery(input: {
   wallet: NativeWalletHandle
   revision: number
   account: unknown
-}): { stop(): Promise<void> } {
+}): AppNegotiationRecovery {
   const mine = {}
   current = mine
   inspectCurrent = undefined
   let reported: string | undefined
+  const listeners = new Set<() => void>()
+  const subscribe = (listener: () => void) => {
+    listeners.add(listener)
+    return () => void listeners.delete(listener)
+  }
+  const journals = () =>
+    current === mine && inspectCurrent ? inspectCurrent().journals : []
   const publish = (snapshot: NegotiationRecoverySnapshot) => {
     if (current !== mine) return
     status.value = snapshot
+    for (const listener of listeners) listener()
     // Say which stored record stopped restoration (for example an old v1 negotiation row and
     // its reset), once per distinct failure.
     if (
@@ -59,6 +75,8 @@ export function startAppNegotiationRecovery(input: {
   ) {
     publish({ state: 'unsupported', coverage: undefined, journals: [] })
     return {
+      journals,
+      subscribe,
       stop: async () => {
         if (current === mine) {
           current = undefined
@@ -112,7 +130,10 @@ export function startAppNegotiationRecovery(input: {
     publish({ state: 'storage-error', coverage: undefined, journals: [] })
   }
   return {
+    journals,
+    subscribe,
     stop: () => {
+      listeners.clear()
       if (current === mine) {
         current = undefined
         inspectCurrent = undefined

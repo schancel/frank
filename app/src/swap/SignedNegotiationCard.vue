@@ -10,7 +10,7 @@
         {{ $t(`signedSwap.states.${state}`) }}
       </p>
     </div>
-    <p class="snc-subtitle">{{ $t('signedSwap.negotiationOnly') }}</p>
+    <p class="snc-subtitle">{{ $t('signedSwap.negotiationOnly', units) }}</p>
     <p
       v-if="
         journal?.reduction.history.decision &&
@@ -38,13 +38,17 @@
         <span class="snc-leg-dot">·</span>
         <span class="snc-leg-chain">{{ evm.name }}</span>
       </p>
-      <p class="snc-expiry-row">
-        {{
-          new Date(Number(offer.terms.expiry) * 1000).toLocaleString(
-            undefined,
-            { timeZoneName: 'short' },
-          )
-        }}
+      <p class="snc-expiry-row" data-testid="swap-deadline-accept">
+        {{ $t('signedSwap.deadlines.acceptBy') }}:
+        {{ when(offer.terms.expiry) }}
+      </p>
+      <p class="snc-deadline-row" data-testid="swap-deadline-evm">
+        {{ $t('signedSwap.deadlines.lockExpires', { unit: evm.unit }) }}:
+        {{ when(offer.terms.evmExpiry) }}
+      </p>
+      <p class="snc-deadline-row" data-testid="swap-deadline-xec">
+        {{ $t('signedSwap.deadlines.lockExpires', { unit: xec.unit }) }}:
+        {{ when(offer.terms.xecRefundTime) }}
       </p>
     </div>
     <p v-if="error" role="alert" class="snc-error-banner">
@@ -92,17 +96,16 @@
       />
     </div>
     <p
-      v-if="executionRestoreFailed"
+      v-if="executionFailed"
       class="snc-error-banner"
-      data-testid="swap-execution-restore-failed"
+      data-testid="swap-execution-failed"
       role="alert"
     >
       {{
-        $t(
-          execState.restoreFailure === 'records-from-older-version'
-            ? 'chatMessageSwap.executionRecordsFromOlderVersion'
-            : 'chatMessageSwap.executionRestoreFailed',
-        )
+        $t(`signedSwap.execution.failures.${execState.failure}`, {
+          ...units,
+          database: execState.oldDatabase,
+        })
       }}
     </p>
     <div
@@ -112,96 +115,42 @@
     >
       <p
         class="snc-execution-status"
-        data-testid="swap-execution-status"
+        data-testid="swap-execution-phase"
         role="status"
       >
-        {{ $t(`chatMessageSwap.${executionStatusKey}`) }}
+        {{ phaseText }}
       </p>
       <p
-        v-if="executionTurnedOff"
-        class="snc-execution-status"
-        data-testid="swap-execution-turned-off"
+        v-if="view && view.phase === 'invalid' && view.detail"
+        class="snc-execution-detail"
+        data-testid="swap-execution-detail"
       >
-        {{ $t('chatMessageSwap.executionTurnedOff') }}
+        {{ view.detail }}
       </p>
-      <div
-        v-if="executionRecord"
-        class="snc-selected-inputs"
-        data-testid="swap-selected-inputs"
-      >
-        <p
-          v-for="inp in executionRecord.xecInputs"
-          :key="`${inp.txid}:${inp.vout}`"
-          class="snc-input-mono"
-        >
-          {{ `${inp.txid.slice(0, 12)}:${inp.vout} (${inp.valueSats})` }}
-        </p>
-        <p class="snc-input-mono">
-          {{
-            `${executionRecord.evmInput.address} #${executionRecord.evmInput.nonce}`
-          }}
-        </p>
-      </div>
       <p
-        v-if="executionRecord && executionRecord.reorgWarning"
-        class="snc-error-banner"
-        data-testid="swap-reorg-warning"
+        v-for="warning in view?.warnings ?? []"
+        :key="warning"
+        class="snc-warning-banner"
+        :data-testid="`swap-warning-${warning}`"
         role="alert"
       >
-        {{ $t('signedSwap.error') }}: {{ executionRecord.reorgWarning }}
+        {{ $t(`signedSwap.execution.warnings.${warning}`, units) }}
       </p>
       <p
-        v-if="executionRecord && executionRecord.unobservedChains"
-        class="snc-error-banner"
-        data-testid="swap-unobserved-chains"
-        role="alert"
+        v-if="view?.error"
+        class="snc-execution-detail"
+        data-testid="swap-execution-error"
+        :title="view.error"
       >
-        {{
-          $t('chatMessageSwap.executionObservationFailed', {
-            chains: executionRecord.unobservedChains.join(', '),
-          })
-        }}
+        {{ $t('signedSwap.execution.retrying') }}
       </p>
-      <div class="snc-action-row">
-        <q-btn
-          v-if="canCancelExecution"
-          flat
-          no-caps
-          class="snc-btn snc-btn--reject"
-          data-testid="swap-cancel-btn"
-          :label="$t('chatMessageSwap.cancel')"
-          :loading="execState.busy || executing"
-          :disable="execState.busy || executing"
-          @click="cancelExecution"
-        />
-        <q-btn
-          v-if="canClaimExecution"
-          unelevated
-          no-caps
-          class="snc-btn snc-btn--accept"
-          data-testid="swap-claim-btn"
-          :label="
-            $t('chatMessageSwap.claimFunds', {
-              amount: amount(offer!.terms.evmPrincipal, evm.nativeDecimals!),
-              asset: evm.unit,
-            })
-          "
-          :loading="execState.busy || executing"
-          :disable="execState.busy || executing"
-          @click="claimExecution"
-        />
-        <q-btn
-          v-if="canRefundExecution"
-          unelevated
-          no-caps
-          class="snc-btn snc-btn--warning"
-          data-testid="swap-refund-btn"
-          :label="$t('chatMessageSwap.refundDeposit')"
-          :loading="execState.busy || executing"
-          :disable="execState.busy || executing"
-          @click="refundExecution"
-        />
-      </div>
+      <p
+        v-if="observingOnly"
+        class="snc-execution-detail"
+        data-testid="swap-execution-other-device"
+      >
+        {{ $t('signedSwap.execution.otherDevice') }}
+      </p>
     </div>
   </section>
 </template>
@@ -222,14 +171,25 @@ import {
   negotiationUnavailable,
   negotiationErrorCode,
 } from './negotiation-commands'
-import {
-  swapExecutionState,
-  getSwapExecutionRecord,
-  claimSwapExecution,
-  refundSwapExecution,
-  cancelSwapExecution,
-  reconcileSwapExecution,
-} from './swap-execution-commands'
+import { swapExecutionState, swapExecutionView } from './swap-execution-state'
+/** Phases in which the swap has ended: nothing is left for any device to do. */
+const FINISHED_PHASES = new Set([
+  'rejected',
+  'expired',
+  'claimed',
+  'complete',
+  'lostToRefund',
+  'abandoned',
+  'refunded',
+  'invalid',
+  'unsupported',
+])
+/**
+ * One signed swap negotiation and, once it is accepted, the swap's progress. The card has no
+ * swap actions: the session's runner (`htlc-swap-execution.ts`) locks, claims and refunds on
+ * its own, whether or not this card is on screen; the card shows its snapshot and the deadlines
+ * from the signed offer (E, T_B, T_A).
+ */
 export default defineComponent({
   name: 'SignedNegotiationCard',
   props: {
@@ -248,27 +208,14 @@ export default defineComponent({
       decision: null as 'accept' | 'reject' | null,
       error: '',
       responding: false,
-      executing: false,
-      ticks: 0,
       now: BigInt(Math.floor(Date.now() / 1000)),
       timer: undefined as ReturnType<typeof setInterval> | undefined,
     }
   },
   mounted() {
+    // Only the clock of the expiry label; the swap itself is the runner's.
     this.timer = setInterval(() => {
       this.now = BigInt(Math.floor(Date.now() / 1000))
-      this.ticks += 1
-      if (
-        this.ticks % 5 === 0 &&
-        !this.executing &&
-        !this.execState.busy &&
-        this.swapIdHex &&
-        (this.executionRecord?.phase === 'funding' ||
-          this.executionRecord?.phase === 'claiming' ||
-          this.executionRecord?.phase === 'refund-pending')
-      ) {
-        void reconcileSwapExecution(this.swapIdHex).catch(() => undefined)
-      }
     }, 1000)
   },
   beforeUnmount() {
@@ -284,6 +231,9 @@ export default defineComponent({
       return getChainRegistryEntry(
         TESTNET_NEGOTIATION_POLICY.evmChainIdentifier,
       )!
+    },
+    units(): { xec: string; evm: string } {
+      return { xec: this.xec.unit, evm: this.evm.unit }
     },
     journal() {
       const value = this.item.value
@@ -326,98 +276,45 @@ export default defineComponent({
     swapIdHex(): string {
       return this.journal ? toHex(this.journal.context.swapId) : ''
     },
-    executionRecord() {
-      if (!this.swapIdHex) return undefined
-      return getSwapExecutionRecord(this.swapIdHex)
+    view() {
+      return this.swapIdHex ? swapExecutionView(this.swapIdHex) : undefined
     },
+    // The swap's progress is shown from the offer on: A's lock follows the accept automatically.
     showExecutionPanel(): boolean {
-      if (!this.execState.coordinator || !this.offer || !this.journal)
-        return false
       return (
-        this.state === 'accept' ||
-        (!!this.executionRecord &&
-          this.journal.reduction.history.decision === 'accept')
-      )
-    },
-    // This device's swap records could not be opened, so a swap funded earlier may have a
-    // claim or refund the card cannot show. Said on every accepted negotiation.
-    executionRestoreFailed(): boolean {
-      return (
-        this.execState.restore === 'failed' &&
         !!this.offer &&
         !!this.journal &&
-        this.journal.reduction.history.decision === 'accept'
+        !this.journal.reduction.violation &&
+        (!!this.view || this.execState.status === 'starting')
       )
     },
-    executionStatusKey(): string {
-      const phase = this.executionRecord?.phase
-      if (!phase && this.execState.restore === 'loading')
-        return 'executionRestoring'
-      if (!phase || phase === 'prepared' || phase === 'cancelled')
-        return 'statusUnfunded'
-      if (phase === 'funding' || phase === 'funded' || phase === 'claiming')
-        return 'statusLocked'
-      if (phase === 'complete') return 'statusWithdrawn'
-      if (phase === 'refund-pending' || phase === 'refunded')
-        return 'statusRefunded'
-      return 'statusExpired'
+    phaseText(): string {
+      const view = this.view
+      if (!view) return this.$t('signedSwap.execution.starting')
+      // A's and B's phases have names of their own; the shared ones read the same for both.
+      return this.$t(`signedSwap.execution.phases.${view.phase}`, this.units)
     },
-    // No new swap is prepared or funded: the live escrow lets either peer sweep both legs
-    // (review A3) until it is rebuilt on HTLC. Swaps funded earlier keep Claim and Refund.
-    executionTurnedOff(): boolean {
+    // This device's swaps cannot run (records unavailable, or retired records to delete): said on
+    // every offer, since an offer's lock follows its accept.
+    executionFailed(): boolean {
+      return !!this.execState.failure && !!this.offer
+    },
+    observingOnly(): boolean {
       return (
-        this.showExecutionPanel &&
-        this.execState.restore === 'ready' &&
-        (!this.executionRecord || this.executionRecord.phase === 'prepared')
-      )
-    },
-    canCancelExecution(): boolean {
-      return (
-        this.showExecutionPanel &&
-        this.executionRecord?.phase === 'prepared' &&
-        !this.executionRecord.fundingAuthorized
-      )
-    },
-    canClaimExecution(): boolean {
-      if (!this.showExecutionPanel || !this.executionRecord) return false
-      const phase = this.executionRecord.phase
-      return (
-        phase === 'funded' ||
-        (!!this.executionRecord.adaptorSecretHex &&
-          phase !== 'complete' &&
-          phase !== 'refunded' &&
-          phase !== 'cancelled')
-      )
-    },
-    canRefundExecution(): boolean {
-      if (!this.showExecutionPanel || !this.executionRecord) return false
-      const r = this.executionRecord
-      if (
-        r.phase === 'complete' ||
-        r.phase === 'refunded' ||
-        r.phase === 'cancelled' ||
-        !r.fundingAuthorized
-      )
-        return false
-      return (
-        r.phase === 'recovery-required' ||
-        r.phase === 'refund-pending' ||
-        // The own deposit's timelock: XEC for the initiator, EVM for the responder.
-        Number(this.now) >=
-          (r.role === 'initiator'
-            ? r.xecRefundTimestamp
-            : r.evmOpeningTimestamp + r.evmChallengeDuration)
+        !this.execState.activeDevice &&
+        !!this.view &&
+        !FINISHED_PHASES.has(this.view.phase)
       )
     },
     state(): string {
       if (negotiationUnavailable()) return negotiationUnavailable()
       if (!this.journal) return 'awaitingAdmission'
       if (this.journal.reduction.violation) return 'conflict'
-      if (this.offer && this.now >= this.offer.terms.expiry) return 'expired'
-      return (
-        this.journal.reduction.history.decision ??
-        (this.offer ? 'offered' : 'incomplete')
-      )
+      const decision = this.journal.reduction.history.decision
+      // E bounds the acceptance only: an accepted swap goes on past it.
+      if (this.offer && !decision && this.now >= this.offer.terms.expiry)
+        return 'expired'
+      return decision ?? (this.offer ? 'offered' : 'incomplete')
     },
     canRespond(): boolean {
       const own = accountSession.getCachedCurvePublicKey('secp256k1')
@@ -431,41 +328,10 @@ export default defineComponent({
   },
   methods: {
     amount: formatNegotiationAmount,
-    async cancelExecution() {
-      if (this.executing || !this.swapIdHex) return
-      this.error = ''
-      this.executing = true
-      try {
-        await cancelSwapExecution(this.swapIdHex)
-      } catch (e) {
-        this.error = negotiationErrorCode(e)
-      } finally {
-        this.executing = false
-      }
-    },
-    async claimExecution() {
-      if (this.executing || !this.swapIdHex) return
-      this.error = ''
-      this.executing = true
-      try {
-        await claimSwapExecution(this.swapIdHex)
-      } catch (e) {
-        this.error = negotiationErrorCode(e)
-      } finally {
-        this.executing = false
-      }
-    },
-    async refundExecution() {
-      if (this.executing || !this.swapIdHex) return
-      this.error = ''
-      this.executing = true
-      try {
-        await refundSwapExecution(this.swapIdHex, Number(this.now))
-      } catch (e) {
-        this.error = negotiationErrorCode(e)
-      } finally {
-        this.executing = false
-      }
+    when(seconds: bigint): string {
+      return new Date(Number(seconds) * 1000).toLocaleString(undefined, {
+        timeZoneName: 'short',
+      })
     },
     async respond() {
       if (
@@ -709,17 +575,25 @@ export default defineComponent({
   color: #38bdf8;
 }
 
-.snc-selected-inputs {
-  background: rgba(0, 0, 0, 0.25);
-  border-radius: 8px;
-  padding: 6px 8px;
-  margin-bottom: 8px;
+.snc-execution-detail {
+  margin: 0 0 6px;
+  font-size: 0.74rem;
+  color: #cbd5e1;
 }
 
-.snc-input-mono {
-  margin: 2px 0;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 0.72rem;
+.snc-deadline-row {
+  margin: 0;
+  font-size: 0.75rem;
   color: #cbd5e1;
+}
+
+.snc-warning-banner {
+  margin: 8px 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 0.78rem;
+  background: rgba(245, 158, 11, 0.18);
+  color: #fcd34d;
+  border: 1px solid rgba(245, 158, 11, 0.35);
 }
 </style>

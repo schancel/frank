@@ -344,6 +344,44 @@ describe('HtlcSwapRunner', () => {
     expect(await h.recordAt()).toBeUndefined()
   })
 
+  it('a stop while the chains are being read acts on nothing', async () => {
+    const n = await negotiation()
+    const h = harness(n, 'A')
+    const xec = (
+      h.runner as unknown as {
+        options: { xec: { observe: (t: unknown) => Promise<unknown> } }
+      }
+    ).options.xec
+    const observe = xec.observe
+    let stopping: Promise<void> | undefined
+    xec.observe = async t => {
+      stopping = h.runner.stop()
+      return observe(t)
+    }
+    await h.runner.tick()
+    await stopping
+    expect(h.log).toEqual([])
+    expect(await h.recordAt()).toBeUndefined()
+  })
+
+  it('a pass that fails before any view shows the swap as checking, not invalid', async () => {
+    const n = await negotiation()
+    const h = harness(n, 'A')
+    const xec = (
+      h.runner as unknown as {
+        options: { xec: { observe: () => Promise<unknown> } }
+      }
+    ).options.xec
+    xec.observe = async () => {
+      throw new Error('Chronik unreachable')
+    }
+    const [view] = await h.runner.tick()
+    expect(view).toMatchObject({
+      phase: 'checking',
+      error: 'Chronik unreachable',
+    })
+  })
+
   it('a record of other terms stops the swap', async () => {
     const n = await negotiation()
     const h = harness(n, 'A')

@@ -622,7 +622,10 @@ export type HtlcSwapDecisionInput = {
   /** Unix seconds of this device's clock. */
   readonly now: number
   readonly record?: HtlcSwapRecord
-  /** Only the account's active device starts anything; the others observe. */
+  /** Only the account's active device starts new work. Another device still finishes what it
+   * already authorized and exposed itself: it resumes its own exposed lock operation and
+   * re-broadcasts the spends in its own record (`stores/leader.ts`: finishing authorized work is
+   * never gated); everything else it only observes. */
   readonly activeDevice: boolean
 } & (
   | { readonly negotiation: 'offered'; readonly acceptBy: number }
@@ -696,8 +699,17 @@ function xecSpendAction(
   candidates: readonly XecHtlcOutputObservation[],
   record: HtlcSwapRecord | undefined,
   branch: XecHtlcBranch,
-  preimage?: Uint8Array | null,
+  preimage: Uint8Array | null | undefined,
+  /** False on an inactive device: it signs nothing new and only re-broadcasts a spend it
+   * already stored for one of these same candidates. */
+  maySign: boolean,
 ): HtlcSwapAction {
+  if (!maySign) {
+    const stored = candidates.find(o => storedXecSpendOf(record, o))
+    return stored
+      ? { kind: 'broadcast-xec-spend', funding: outpointOf(stored) }
+      : NONE
+  }
   const unsigned = candidates.find(o => !storedXecSpendOf(record, o))
   if (unsigned)
     return {
@@ -722,6 +734,14 @@ function xecSpendAction(
  * landed one output stays for B until B has claimed one.
  */
 export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
+  /** What an inactive device still does of `action`: only finishing its own exposed work. */
+  // The eCash spends already follow the same candidate rules on an inactive device
+  // (`xecSpendAction` with `maySign` false: only its own stored spend of a candidate).
+  const finishing = (action: HtlcSwapAction): HtlcSwapAction => {
+    if (action.kind === 'fund-xec') return action.resume ? action : NONE
+    if (action.kind === 'broadcast-xec-spend') return action
+    return NONE
+  }
   const decide = (
     phase: HtlcSwapPhase,
     action: HtlcSwapAction = NONE,
@@ -729,7 +749,7 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     funding?: { txid: string; vout: number },
   ): HtlcSwapDecision => ({
     phase,
-    action: input.activeDevice ? action : NONE,
+    action: input.activeDevice ? action : finishing(action),
     warnings,
     ...(funding ? { funding } : {}),
   })
@@ -779,7 +799,13 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
       return decide(
         'claimed',
         refundable.length > 0
-          ? xecSpendAction(refundable, record, 'refund')
+          ? xecSpendAction(
+              refundable,
+              record,
+              'refund',
+              undefined,
+              input.activeDevice,
+            )
           : owed,
         warnings,
         funding,
@@ -844,7 +870,13 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     if (mtpPassed && unspent.length > 0)
       return decide(
         peerClaimed ? 'claimedByPeer' : 'refunding',
-        xecSpendAction(unspent, record, 'refund'),
+        xecSpendAction(
+          unspent,
+          record,
+          'refund',
+          undefined,
+          input.activeDevice,
+        ),
         warnings,
         funding,
       )
@@ -909,7 +941,13 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     const signed = unspent.find(o => storedXecSpendOf(record, o))
     return decide(
       'claimingXec',
-      xecSpendAction([signed ?? unspent[0]!], record, 'claim', latest.preimage),
+      xecSpendAction(
+        [signed ?? unspent[0]!],
+        record,
+        'claim',
+        latest.preimage,
+        input.activeDevice,
+      ),
       warnings,
       funding,
     )

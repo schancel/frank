@@ -141,6 +141,47 @@ test('expiry preset populates future datetime and successful propose emits close
   expect(sendNegotiation.mock.calls[0][1]).toMatchObject({ action: 'offer' })
   w.unmount()
 })
+test('shows the MON (T_B) and XEC (T_A) lock deadlines while drafting and exactly as reviewed', async () => {
+  const { captureNegotiation, buildOfferIntent } = jest.requireMock(
+    '../../swap/negotiation-commands',
+  )
+  const local = (s: bigint) =>
+    new Date(Number(s) * 1000).toLocaleString(undefined, {
+      timeZoneName: 'short',
+    })
+  captureNegotiation.mockResolvedValue({ stampValueWei: '0' })
+  buildOfferIntent.mockImplementation(
+    async (_: unknown, terms: Record<string, bigint>) => ({
+      action: 'offer',
+      context: { swapId: new Uint8Array(32).fill(1) },
+      ...terms,
+      evmExpiry: terms.expiry + 111n,
+      xecRefundTime: terms.expiry + 222n,
+    }),
+  )
+  const w = mountForm()
+  expect(w.find('[data-testid="swap-draft-deadlines"]').exists()).toBe(false)
+  await w.find('[data-testid="swap-xec-amount"]').setValue('100')
+  await w.find('[data-testid="swap-evm-amount"]').setValue('1')
+  await w.find('[data-testid="swap-expiry-preset-1h"]').trigger('click')
+  const ms = new Date(
+    (w.vm as unknown as { expiryInput: string }).expiryInput,
+  ).getTime()
+  const E = BigInt(Math.floor(ms / 1000))
+  // Policy defaults: T_B = E + 12 h, T_A = T_B + 12 h.
+  const draft = w.find('[data-testid="swap-draft-deadlines"]').text()
+  expect(draft).toContain(local(E + 12n * 3600n))
+  expect(draft).toContain(local(E + 24n * 3600n))
+  await w.find('[data-testid="swap-review"]').trigger('click')
+  await flushPromises()
+  expect(w.find('[data-testid="swap-review-evm-expiry"]').text()).toContain(
+    local(E + 111n),
+  )
+  expect(
+    w.find('[data-testid="swap-review-xec-refund-time"]').text(),
+  ).toContain(local(E + 222n))
+  w.unmount()
+})
 test('caps the expiry so the MON lock fits the 30-day contract maximum', async () => {
   const { captureNegotiation } = jest.requireMock(
     '../../swap/negotiation-commands',

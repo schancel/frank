@@ -680,17 +680,15 @@ test.each([
         toHex(accepted.offer.xecRefundPublicKey),
       )
     } else expect(reduction.usableAcceptance).toBeNull()
-    expect(card.text()).toContain(
-      decision === 'accept'
-        ? 'Authenticated acceptance; principal execution is not authorized'
-        : 'Authenticated rejection',
+    expect(card.find('[role="status"]').text()).toBe(
+      decision === 'accept' ? 'Accepted' : 'Authenticated rejection',
     )
     if (decision === 'accept') {
+      // E bounds the acceptance only: an accepted swap is not shown as expired after it, and
+      // the card offers no swap action (the session's runner locks, claims and refunds).
       await card.setData({ now: 3000000000n })
-      expect(card.text()).toContain('Negotiation expired')
-      expect(card.text()).toContain(
-        'Authenticated acceptance; principal execution is not authorized',
-      )
+      expect(card.find('[role="status"]').text()).toBe('Accepted')
+      expect(card.text()).not.toContain('Negotiation expired')
       expect(card.findAll('button')).toHaveLength(0)
     }
   },

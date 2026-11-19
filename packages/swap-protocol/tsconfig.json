@@ -20,7 +20,6 @@
     "**/*.jest.spec.ts",
     "**/*.jest.test.ts",
     "src/storage/negotiation-browser.ts",
-    "src/storage/execution-browser.ts",
     "src/storage/htlc-swap-browser.ts",
     "src/storage/negotiation-native.ts",
     "src/storage/negotiation-native-level.d.ts",

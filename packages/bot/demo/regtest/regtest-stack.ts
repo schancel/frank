@@ -32,6 +32,9 @@
  * chain ID 20143; one long-running chain shared by every run, see monad-regtest.ts). With
  * `monad-regtest` the relay's message mailbox and EVM proxy run on it, so wallets can message and
  * pay stamps: monad-wallets.ts opens them.
+ * `lotus-v2-regtest` (a Lotus v2 `lotusd -regtest` with Chronik, LOTUSD_BIN; see lotus-regtest.ts) is a third:
+ * the Lotus v2 base wallet reads and sends through `${relayUrl}/chain-rpc/lotus-v2-regtest/chronik`.
+ * `regtest:serve` (serve.ts) keeps a stack running for the app (`yarn dev`).
  */
 import { execFile } from 'child_process'
 import { cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
@@ -42,6 +45,7 @@ import { DEMO_DEFAULT_BURN_ADDRESS } from '../demo-config'
 import { REGTEST_GROUP_WRITE_PAYEE } from './chain-reach'
 import { Supervisor } from '../supervisor'
 import { startEcashRegtest } from './ecash-regtest'
+import { startLotusRegtest } from './lotus-regtest'
 import { startMonadRegtest } from './monad-regtest'
 import { freePort, isListening, RegtestChain, sleep } from './regtest-chain'
 
@@ -227,8 +231,8 @@ export async function startRegtestStack(
   options: {
     env?: Record<string, string | undefined>
     /** Which networks to run (default eCash only). */
-    chains?: ReadonlyArray<'xec-regtest' | 'monad-regtest'>
-    /** How often eCash makes a block without being asked (default 3000 ms). */
+    chains?: ReadonlyArray<'xec-regtest' | 'monad-regtest' | 'lotus-v2-regtest'>
+    /** How often eCash and Lotus make a block without being asked (default 3000 ms). */
     blockIntervalMs?: number
     /** How many independent relays to run on the same networks (default 1). */
     relays?: number
@@ -301,6 +305,9 @@ export async function startRegtestStack(
     if (wanted.includes('monad-regtest')) chains.push(await startMonadRegtest({ env }))
     if (wanted.includes('xec-regtest')) {
       chains.push(await startEcashRegtest({ stateDir, blockIntervalMs: options.blockIntervalMs, env }))
+    }
+    if (wanted.includes('lotus-v2-regtest')) {
+      chains.push(await startLotusRegtest({ stateDir, blockIntervalMs: options.blockIntervalMs, env }))
     }
 
     const relayUrls: string[] = []

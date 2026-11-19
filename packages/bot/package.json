@@ -28,6 +28,8 @@
     "funds:sweep": "node --import tsx demo/funds.ts sweep",
     "regtest:fetch": "node --import tsx demo/regtest/bitcoin-abc.ts",
     "regtest:check": "node --import tsx demo/regtest/regtest-stack.livecheck.ts",
+    "regtest:serve": "node --import tsx demo/regtest/serve.ts",
+    "regtest:lotus-fund": "node --import tsx demo/regtest/serve.ts fund",
     "regtest:ecash-send": "node --import tsx demo/regtest/ecash-send.livecheck.ts",
     "regtest:ecash-htlc": "node --import tsx demo/regtest/ecash-htlc.livecheck.ts",
     "regtest:ecash-shared-seed": "node --import tsx demo/regtest/ecash-shared-seed.livecheck.ts",

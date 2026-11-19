@@ -156,35 +156,73 @@ export class EvmCoinListSync {
   /** Something outside the list may have spent from `account` (or paid into it): its coin is
    * dropped from selection until the chain has been read again. */
   markDirty(account: string): void {
-    this.supersedeReads(account)
-    this.ownSpendListed.delete(account.toLowerCase())
-    this.dirty.add(account.toLowerCase())
+    const key = account.toLowerCase()
+    this.supersedeReads(key)
+    this.dirty.add(key)
+    this.marks.set(key, (this.marks.get(key) ?? 0) + 1)
   }
 
-  /** Accounts whose latest spend is the wallet's own, already settled in the list from its
-   * receipt (`noteOwnSpendListed`): the claim that held them for it ends with nothing to read. */
-  private readonly ownSpendListed = new Set<string>()
+  /** Counts the dirty marks of each account (`markDirty`), whatever set them. */
+  private readonly marks = new Map<string, number>()
+  /** The dirty marks a read set because the account had a transaction in the mempool, while
+   * that was the account's one reason to be read again: the mark's count (`marks`) and the
+   * pending nonce read. */
+  private readonly mempoolMarks = new Map<
+    string,
+    { mark: number; pendingNonce: number }
+  >()
+
+  /** Accounts whose latest spend is the wallet's own, settled in the list from its receipt and
+   * a read of the account made with it (`noteOwnSpendListed`): the next nonce it listed. */
+  private readonly ownSpendListed = new Map<string, number>()
 
   /**
    * The list has just settled a spend of the wallet's own from `account` from that spend's
-   * receipt: `[account, nonce]` retired and the next nonce listed with what remains
-   * (`EvmCoinList.recordMined`). That is what a read of the account would have found, so the
-   * account is no longer due a read for what was pending meanwhile (its own transaction in the
-   * mempool), and the end of the claim that held it for that spend
-   * (`takeOwnSpendListed`) announces nothing. Any later mark (`markDirty`) undoes it.
+   * receipt and a read of the account made with it: `[account, nextNonce - 1]` retired and
+   * `[account, nextNonce]` listed at what the read showed (`EvmCoinList.recordMined`).
+   *
+   * A dirty mark that a read of this account set only because that spend was in the mempool
+   * (nothing pending past `nextNonce`, and no mark of any kind since) announced nothing more,
+   * and is cleared. Any other mark (another device's spend, a release, a deposit) stands, and the
+   * account is read again. The end of the claim that held the account for the spend then
+   * announces nothing (`takeOwnSpendListed`) while `[account, nextNonce]` is still its free,
+   * latest coin.
    */
-  noteOwnSpendListed(account: string): void {
+  noteOwnSpendListed(account: string, nextNonce: number): void {
     const key = account.toLowerCase()
-    this.supersedeReads(key)
-    this.dirty.delete(key)
-    this.ownSpendListed.add(key)
+    const mark = this.mempoolMarks.get(key)
+    if (
+      this.dirty.has(key) &&
+      mark !== undefined &&
+      mark.mark === (this.marks.get(key) ?? 0) &&
+      mark.pendingNonce <= nextNonce
+    ) {
+      this.dirty.delete(key)
+      this.mempoolMarks.delete(key)
+    }
+    if (this.dirty.has(key)) {
+      this.ownSpendListed.delete(key)
+      void this.refreshAccounts([key]).catch(() => undefined)
+      return
+    }
+    this.ownSpendListed.set(key, nextNonce)
   }
 
-  /** Whether `account`'s latest spend was the wallet's own, settled in the list
-   * (`noteOwnSpendListed`) with no mark since; true once. A claim on the account that ends
-   * then spent nothing the list does not know. */
+  /** Whether the claim on `account` that ends now held it only for a spend the list settled
+   * (`noteOwnSpendListed`): the account is not dirty and its latest coin is still the free coin
+   * listed then. Consumed by the call, whatever it answers. */
   takeOwnSpendListed(account: string): boolean {
-    return this.ownSpendListed.delete(account.toLowerCase())
+    const key = account.toLowerCase()
+    const nextNonce = this.ownSpendListed.get(key)
+    this.ownSpendListed.delete(key)
+    if (nextNonce === undefined || this.dirty.has(key)) return false
+    const latest = this.config.list.latestOf(key)
+    return (
+      latest !== undefined &&
+      latest.nonce === nextNonce &&
+      latest.state === 'unspent' &&
+      latest.holder === undefined
+    )
   }
 
   /** Something may now spend from `account` that the list will not settle: a later end of its
@@ -625,7 +663,20 @@ export class EvmCoinListSync {
         await this.mutate(() => list.recordGone(coin))
     // Something of this account is in the mempool: no coin until it is mined.
     if (pending > latest) {
+      // Remembered, so the receipt of the wallet's own transaction can lift this mark
+      // (`noteOwnSpendListed`): only while it is the account's one reason to be read again, not
+      // when the account was dirty for something else (another device's spend, say) already.
+      const prior = this.mempoolMarks.get(account)
+      const alone =
+        !this.dirty.has(account) ||
+        (prior !== undefined && prior.mark === (this.marks.get(account) ?? 0))
       this.markDirty(account)
+      if (alone)
+        this.mempoolMarks.set(account, {
+          mark: this.marks.get(account) ?? 0,
+          pendingNonce: Math.max(pending, prior?.pendingNonce ?? 0),
+        })
+      else this.mempoolMarks.delete(account)
       return
     }
     const live = list.latestOf(account)

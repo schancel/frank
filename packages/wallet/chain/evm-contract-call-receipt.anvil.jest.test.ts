@@ -181,7 +181,13 @@ suite('a contract call’s receipt settles its account’s coins on every device
 
   /** A native-coin lock of `LOCKED` wei from the main account, expiring `expiresIn` seconds after
    * the newest block: a lock already expired reverts on chain (`InvalidExpiry`), its value kept. */
-  async function lock(expiresIn: number) {
+  async function lock(
+    expiresIn: number,
+    /** Runs once the call is handed out, before the wallet looks for its receipt. With it, the
+     * node does not mine on its own meanwhile: `between` mines, and the host's watch then reads
+     * the receipt. */
+    between?: (sent: { nonce: number; txHash: string }) => Promise<void | 'stay-manual'>,
+  ) {
     const terms: EvmHtlcTerms = {
       recipient: Wallet.createRandom().address,
       refundAddress: main,
@@ -202,6 +208,7 @@ suite('a contract call’s receipt settles its account’s coins on every device
     // account's coin at this nonce.
     await alice.getSpendableBalance!()
     expect(evmWalletInternals(alice).coinList!.latestOf(main)).toMatchObject({ nonce, state: 'unspent' })
+    if (between) await chain.send('evm_setAutomine', [false])
     const handle = await alice.sendContractCall!({
       to: { raw: call.to },
       data: call.data,
@@ -210,6 +217,10 @@ suite('a contract call’s receipt settles its account’s coins on every device
       gasLimit: 300_000n,
       record,
     })
+    if (between) {
+      if ((await between({ nonce, txHash: handle.txHash })) !== 'stay-manual')
+        await chain.send('evm_setAutomine', [true])
+    }
     // The host's watch of the call it just sent: the wallet's one look at the chain for it.
     await alice.watchNativeOperation!(handle.operationId)
     const row = alice.getNativeOperations!().find(candidate => candidate.operationId === handle.operationId)!
@@ -361,6 +372,123 @@ suite('a contract call’s receipt settles its account’s coins on every device
       await deviceB.close()
       alice = await openDevice('device-a')
     }
+  })
+
+  it('money that reaches the account while the call is out is in its next coin: the coin is what the chain holds, not the old coin less the call', async () => {
+    const deposit = 3n * 10n ** 16n
+    const { nonce, receipt, fee } = await lock(3600, async () => {
+      // Someone pays the main account while the call is in the mempool; both are mined.
+      await dev.sendTransaction({ to: main, value: deposit })
+      await chain.send('evm_mine', [])
+    })
+    expect(receipt.status).toBe(1)
+    expect(await chain.getBalance(main)).toBe(FUNDED + deposit - LOCKED - fee)
+    await expectSettledFromReceipt(alice, nonce)
+    expect(evmWalletInternals(alice).coinList!.latestOf(main)!.valueWei).toBe(FUNDED + deposit - LOCKED - fee)
+  })
+
+  it('a spendable read while the call is in the mempool leaves nothing for a poll once its receipt is read', async () => {
+    const { nonce, receipt } = await lock(3600, async () => {
+      // The balance poll runs while the call is out: the node shows it pending, the account is
+      // dirty for it.
+      await alice.getSpendableBalance!()
+      expect(evmWalletInternals(alice).coinListSync!.isDirty(main)).toBe(true)
+      await chain.send('evm_mine', [])
+    })
+    expect(receipt.status).toBe(1)
+    await expectSettledFromReceipt(alice, nonce)
+  })
+
+  it('another device’s spend at the next nonce, told before the receipt is read, keeps that coin unselectable', async () => {
+    const internals = evmWalletInternals(alice)
+    let other = ''
+    const { nonce } = await lock(3600, async ({ nonce }) => {
+      // Device B spends the main account at the nonce after the call, and tells this device.
+      const key = internals.coinList!.get(main, nonce)!.privateKey
+      const signer = new Wallet(key)
+      other = await signer.signTransaction({
+        to: Wallet.createRandom().address,
+        value: 1_000n,
+        nonce: nonce + 1,
+        gasLimit: 21_000n,
+        gasPrice: GAS_PRICE,
+        chainId: 20143n,
+      })
+      const spend = Transaction.from(other)
+      const item: WalletSyncItem = {
+        type: 'wallet-sync',
+        direction: 'out',
+        chainIdentifier: 'monad-regtest',
+        txHash: spend.hash!,
+        rawTx: other,
+        spentInputs: [{ address: main, nonce: nonce + 1, valueWei: (1_000n + 21_000n * GAS_PRICE).toString() }],
+        createdOutputs: [{ address: spend.to!, valueWei: '1000' }],
+        timestamp: Date.now(),
+      }
+      expect(await consumeEvmSelfNotes(alice, selfNote(alice, [item]))).toMatchObject({ kind: 'consumed' })
+      // The read the note asks for, while the call is still in the mempool.
+      await internals.coinListSync!.refreshAccounts([main])
+      expect(internals.coinListSync!.isDirty(main)).toBe(true)
+      // The call is mined; device B's transfer reaches the node after that block and waits in its
+      // mempool.
+      await chain.send('evm_mine', [])
+      await chain.send('eth_sendRawTransaction', [other])
+      return 'stay-manual'
+    })
+    // The receipt is settled, but the account is not trusted: device B's transfer is still to
+    // come, and the coin at the next nonce is never offered.
+    expect(internals.coinList!.get(main, nonce)?.state).toBe('spent')
+    expect(internals.coinListSync!.isDirty(main)).toBe(true)
+    expect(await alice.transactionSetPreparer!.spendableNowWei()).toBe(0n)
+    await chain.send('evm_setAutomine', [true])
+    await chain.send('evm_mine', [])
+    // Once mined, a read lists what the account holds after both.
+    expect(await alice.getSpendableBalance!()).toBeGreaterThan(0n)
+    expect(internals.coinList!.latestOf(main)).toMatchObject({ nonce: nonce + 2, valueWei: await chain.getBalance(main) })
+  })
+
+  it('a call recorded again in another block, with more money at the account, has its next coin read again', async () => {
+    const internals = evmWalletInternals(alice)
+    const snapshot = await chain.send('evm_snapshot', [])
+    const { nonce, row } = await lock(3600, async () => {
+      await chain.send('evm_mine', [])
+    })
+    const raw = row.members[0]!.signed!.rawTransaction
+    await expectSettledFromReceipt(alice, nonce)
+    const first = internals.coinList!.latestOf(main)!.valueWei
+    // A reorganisation: the block is gone, and the call lands in another, after a deposit.
+    await chain.send('evm_revert', [snapshot])
+    await chain.send('evm_setAutomine', [false])
+    const deposit = 5n * 10n ** 16n
+    await chain.send('anvil_setBalance', [main, '0x' + (FUNDED + deposit).toString(16)])
+    await chain.send('evm_mine', [])
+    await chain.send('eth_sendRawTransaction', [raw])
+    await chain.send('evm_mine', [])
+    await chain.send('evm_setAutomine', [true])
+    const firstBlock = row.members[0]!.observation
+    // The wallet looks at the call again (its consolidator's look at an included member, which
+    // checks its block is still canonical; no balance poll) and finds it in its new block.
+    const observed = () =>
+      alice.getNativeOperations!().find(candidate => candidate.operationId === row.operationId)!
+        .members[0]!.observation
+    const owner = internals.nativeOperationOwner!
+    const look = () =>
+      (owner as unknown as {
+        config: { runLifetime: <T>(body: (lifetime: never) => Promise<T>) => Promise<T> }
+      }).config.runLifetime(lifetime => owner.observe(row.operationId, 0, lifetime))
+    for (let i = 0; i < 4 && JSON.stringify(observed()) === JSON.stringify(firstBlock); i++)
+      await look()
+    for (let i = 0; i < 4 && observed().state !== 'included-success'; i++)
+      await look()
+    expect(observed()).toMatchObject({ state: 'included-success' })
+    expect(JSON.stringify(observed())).not.toBe(JSON.stringify(firstBlock))
+    expect(await chain.getBalance(main)).toBe(first + deposit)
+    // The next coin listed from the first block is no longer trusted as it was: the account is
+    // being read again, or has been, and selection never offers the old figure.
+    const next = internals.coinList!.latestOf(main)!
+    expect(internals.coinListSync!.isDirty(main) || next.valueWei === first + deposit).toBe(true)
+    await internals.coinListSync!.refreshAccounts([main])
+    expect(internals.coinList!.latestOf(main)).toMatchObject({ nonce: nonce + 1, valueWei: first + deposit })
   })
 
   it('a reverted call’s fee whose first delivery fails is delivered by a later flush, once', async () => {

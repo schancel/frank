@@ -154,15 +154,17 @@ export interface EvmLegacyConsolidatorConfig {
   /** The chain showed a contract call's nonce taken by the call itself (landed or reverted) or
    * by its cancellation, with its receipt: what the source account paid at `nonce`
    * (`debitWei`: the value moved, none for a revert or a cancellation, plus the fee), in
-   * `block`. Composition hands it to the coin list, which retires `[account, nonce]` and lists
-   * the account's next nonce with what remains, as a native payment's receipt does. Called again
-   * for the same receipt changes nothing; one that rejects is logged, and the account's next
-   * chain read lists what it holds. */
+   * `block`, and the read of the account made with that receipt (`observed`: its nonce and
+   * balance at a block no earlier than `block`). Composition hands it to the coin list, which
+   * retires `[account, nonce]` and lists the account's next nonce with what the read shows, as
+   * a native payment's receipt does. Called again for the same receipt changes nothing; one that
+   * rejects is logged, and the account's next chain read lists what it holds. */
   onOwnSpendIncluded?: (spend: {
     account: string
     nonce: number
     block: number
     debitWei: bigint
+    observed: EvmNativeAccountObservation
   }) => Promise<void>
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
@@ -597,9 +599,10 @@ export class EvmLegacyConsolidator {
     ) {
       const row = journal.get(operationId)
       const landed = landedSigning(row.members[index]!)
-      if (row.kind === 'contract' && landed) {
+      if (row.kind === 'contract' && landed && account) {
         const tx = Transaction.from(landed.rawTransaction)
         await this.ownSpendIncluded({
+          observed: account,
           account: member.source.address,
           nonce: tx.nonce,
           block: observation.blockNumber,
@@ -693,6 +696,8 @@ export class EvmLegacyConsolidator {
       })
       // A transfer of nothing to the account itself: it paid the fee, no more.
       await this.ownSpendIncluded({
+        // The read that showed the call's nonce taken, at or after the cancellation's block.
+        observed: member.account!,
         account: member.source.address,
         nonce: cancel.nonce,
         block: receipt.blockNumber,

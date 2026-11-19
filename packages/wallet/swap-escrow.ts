@@ -268,6 +268,35 @@ export function htlcCallOf(
 }
 
 /**
+ * Which game-table step `data` is and the locks it acts on, for a call sent by `sender`: a
+ * player's buy-in `lock` (the id the contract gives it), a player's `refund` of its lock, or the
+ * arbiter's `batchDistribute` of the table's locks (in calldata order). Throws for calldata that
+ * is none of the three, or not canonical.
+ */
+export function htlcTableCallOf(
+  sender: string,
+  data: string
+): { action: "lock" | "refund" | "distribute"; lockIds: string[] } {
+  const call = evmHtlcInterface.parseTransaction({ data });
+  if (!call) throw new Error("Not a GenericHTLC call");
+  if (
+    evmHtlcInterface.encodeFunctionData(call.fragment, call.args).toLowerCase() !==
+    data.toLowerCase()
+  )
+    throw new Error("Not a canonical GenericHTLC call");
+  if (call.name === "batchDistribute") {
+    const lockIds = (call.args[0] as string[]).map(id => String(id).toLowerCase());
+    if (lockIds.length === 0) throw new Error("batchDistribute names no lock");
+    return { action: "distribute", lockIds };
+  }
+  if (call.name === "lock" || call.name === "refund") {
+    const step = htlcCallOf(sender, data);
+    return { action: step.action as "lock" | "refund", lockIds: [step.lockId] };
+  }
+  throw new Error(`GenericHTLC ${call.name} is not a table step`);
+}
+
+/**
  * Decodes what `locks(lockId)` returned. Null when there is no such lock. Throws for an
  * unknown state, for a lock whose recorded terms do not give `lockId`, and for a withdrawn
  * lock whose preimage does not hash to its hash lock (either way, not GenericHTLC v2).

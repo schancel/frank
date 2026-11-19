@@ -93,6 +93,10 @@ pub const PROTOCOL_NETWORK_TAGS: &[ProtocolNetworkTagEntry] = &[
         chain_id: "xpi-regtest",
     },
     ProtocolNetworkTagEntry {
+        network_tag: b"XP2R",
+        chain_id: "lotus-v2-regtest",
+    },
+    ProtocolNetworkTagEntry {
         network_tag: b"SOL1",
         chain_id: "solana-mainnet",
     },

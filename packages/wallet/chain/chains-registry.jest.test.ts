@@ -647,7 +647,7 @@ describe("chains-registry", () => {
 
     it("verifies protocol registry schema version and chain count", () => {
       expect(protocolRegistry.schema_version).toBe(1);
-      expect(protocolRegistry.chains.length).toBe(37);
+      expect(protocolRegistry.chains.length).toBe(38);
     });
 
     it("agrees with every supported protocol row, including Bitcoin-family probes and capability limits", () => {
@@ -689,6 +689,7 @@ describe("chains-registry", () => {
         "xec-testnet",
         "xec-regtest",
         "xec-mainnet",
+        "lotus-v2-regtest",
         "solana-devnet",
         "solana-testnet",
         "solana-mainnet",
@@ -941,6 +942,7 @@ describe("wallet support", () => {
       "solana-mainnet": { indexer: "json-rpc" },
       "xec-testnet": { indexer: "chronik" },
       "xec-regtest": { indexer: "chronik" },
+      "lotus-v2-regtest": { indexer: "chronik" },
       "btc-mainnet": { indexer: "electrum" },
       "btc-testnet": { indexer: "electrum" },
       "bch-mainnet": { indexer: "electrum" },

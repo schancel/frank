@@ -23,6 +23,7 @@ export type SupportedNetwork = "mainnet" | "testnet" | "regtest";
 export type SupportedChainKind =
   | "monad"
   | "ecash"
+  | "lotus"
   | "solana"
   | "ethereum"
   | "hyperliquid"
@@ -279,6 +280,19 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       nativeDecimals: 2,
       addressPrefix: "ecash",
       networkTag: "XEC1",
+    }),
+    // A local Lotus v2 node in regtest mode (packages/wallet/lotus-v2). Native v7 transactions,
+    // 1 XPI = 1,000,000 atoms. Each run is a new chain: no public endpoint, operator checkpoint.
+    "lotus-v2-regtest": Object.freeze({
+      wallet: Object.freeze({ indexer: "chronik" }),
+      kind: "lotus",
+      curve: "secp256k1",
+      keyType: 1,
+      name: "Lotus Regtest",
+      unit: "rXPI",
+      nativeDecimals: 6,
+      addressPrefix: "rxpi",
+      networkTag: "XP2R",
     }),
     "solana-devnet": Object.freeze({
       wallet: JSON_RPC_WALLET,

@@ -9,6 +9,7 @@ import { randomBytes } from "crypto";
 
 import { NativeTransactionRefusedError, NativeTransactionSubmissionError } from "../chain/chain-wallet";
 import { nodeSuiteReady } from "../node-binaries.testutil";
+import { createLotusV2Chain } from "./chain";
 import { chronikLotusV2Indexer, type LotusV2Indexer } from "./chronik";
 import { findLotusd, lotusdBinary, startLotusRegtest, type LotusRegtest } from "./lotusd-regtest.testutil";
 import { nativeTransactionSize } from "./native";
@@ -172,6 +173,26 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     const remaining = 2n * XPI - XPI - BigInt(nativeTransactionSize(1, 2));
     expect(await deviceOne.getBalance()).toBe(remaining);
     expect(await deviceTwo.getBalance()).toBe(remaining);
+  }, 60_000);
+
+  it("the chain adapter (what openRelayUtxoChain hands the app) reads, sends and reports status", async () => {
+    const chain = createLotusV2Chain({
+      chainIdentifier: "lotus-v2-regtest",
+      indexer,
+      checkpoint: node.checkpoint,
+      storeFor: () => memoryLotusV2WalletStore(),
+    });
+    const wallet = await chain.createWallet(Uint8Array.from(randomBytes(32)));
+    const bob = await fresh();
+    await node.fund((await wallet.getReceiveAddress()).raw, chain.fromDisplayAmount("3"));
+    expect(chain.toDisplayAmount(await chain.nativeTransfers.getBalance({ wallet }))).toBe("3");
+    const recipient = chain.parseAddress((await bob.wallet.getReceiveAddress()).raw)!;
+    const quote = await chain.nativeTransfers.estimateLegacyFee!({ wallet, recipient, value: XPI });
+    const sent = await chain.nativeTransfers.send({ wallet, recipient, value: XPI, maxFee: quote.totalFee });
+    expect(await chain.nativeTransfers.getTransactionStatus({ wallet, transaction: sent })).toBe("pending");
+    await node.mine(1);
+    expect(await chain.nativeTransfers.getTransactionStatus({ wallet, transaction: sent })).toBe("confirmed");
+    expect(await bob.wallet.getBalance()).toBe(XPI);
   }, 60_000);
 
   it("a recipient of another network is refused before anything is signed", async () => {

@@ -1,9 +1,9 @@
 /**
  * One way to open any Bitcoin-family wallet the registry says the app has, through a relay.
  *
- * The registry's `wallet.indexer` picks the adapter: Chronik is the eCash SDK wallet, Electrum is
- * `UtxoWallet`. Nothing is inferred from names or prefixes, and a chain without a wallet row is
- * refused.
+ * The registry picks the adapter: a Chronik row of kind `ecash` is the eCash SDK wallet, of kind
+ * `lotus` the Lotus v2 native wallet (regtest only), and Electrum is `UtxoWallet`. Nothing is
+ * inferred from names or prefixes, and a chain without a wallet row is refused.
  */
 import { BIP39_DERIVATION } from "../../domain-roots/src";
 import type { HistoricalBip39Seed } from "../../domain-roots/src";
@@ -15,7 +15,9 @@ import type {
 } from "./chain-wallet";
 import { getChainRegistryEntry } from "./chains-registry";
 import { createEcashChain } from "./ecash-chain";
+import { ECASH_ADDRESS_PREFIXES } from "../ecash-wallet";
 import type {
+  EcashNetworkId,
   EcashCheckpoint,
   EcashWalletFactory,
   EcashBip39WalletFactory,
@@ -26,6 +28,9 @@ import { createUtxoChain } from "./utxo-chain";
 import { browserUtxoWalletStore } from "../utxo-wallet";
 import type { UtxoStealthCustody } from "../utxo-stealth";
 import type { UtxoWalletStore } from "../utxo-wallet";
+import { createLotusV2Chain } from "../lotus-v2/chain";
+import { chronikLotusV2Indexer } from "../lotus-v2/chronik";
+import { browserLotusV2WalletStore, type LotusV2WalletStore } from "../lotus-v2/wallet";
 
 export interface RelayUtxoChain {
   readonly chain: Omit<NativeAssetChain, "createWallet">;
@@ -78,6 +83,8 @@ export function openRelayUtxoChain(params: {
   storeFor?: (chainIdentifier: string, firstAddress: string) => UtxoWalletStore;
   /** Where a Chronik wallet records a send before broadcasting it; browser storage when omitted. */
   nativeAttemptStore?: NativeTransactionAttemptStore;
+  /** Durable storage for one Lotus v2 wallet; browser storage when omitted. */
+  lotusStoreFor?: (chainIdentifier: string, firstAddress: string) => LotusV2WalletStore;
 }): RelayUtxoChain {
   const { chainIdentifier } = params;
   const entry = getChainRegistryEntry(chainIdentifier);
@@ -85,14 +92,60 @@ export function openRelayUtxoChain(params: {
     throw new Error(`No wallet is available for ${chainIdentifier}`);
   }
   const relay = params.relayBaseUrl.replace(/\/+$/, "");
+  // A Chronik row names its adapter by registry kind: `lotus` is the Lotus v2 native wallet
+  // (regtest only), `ecash` the eCash SDK wallet. Nothing is inferred from the identifier.
+  if (entry.wallet.indexer === "chronik" && entry.kind === "lotus") {
+    if (!params.checkpoint)
+      throw new Error(`${chainIdentifier} needs the operator checkpoint of its regtest node`);
+    const checkpoint = params.checkpoint;
+    let closed = false;
+    const requireOpen = () => {
+      if (closed) throw new Error("UTXO wallet is closed");
+    };
+    const chain = createLotusV2Chain({
+      chainIdentifier,
+      indexer: chronikLotusV2Indexer({
+        url: `${relay}/chain-rpc/${chainIdentifier}/chronik`,
+      }),
+      checkpoint,
+      storeFor: (firstAddress) =>
+        params.lotusStoreFor?.(chainIdentifier, firstAddress) ??
+        browserLotusV2WalletStore(`${chainIdentifier}:${firstAddress}`),
+    });
+    return {
+      chain,
+      assertActive: requireOpen,
+      createWallet: (root, options) => {
+        requireOpen();
+        if (
+          options?.stealthCustody ||
+          options?.ecashWalletFactory ||
+          options?.ecashBip39WalletFactory
+        )
+          throw new Error("Stealth custody and eCash factories are unsupported by the Lotus v2 adapter");
+        return withMaterial(root, async (material) => {
+          requireOpen();
+          const wallet = await chain.createWallet(
+            material instanceof Uint8Array ? material : material.seed
+          );
+          requireOpen();
+          return wallet;
+        });
+      },
+      close: async () => {
+        closed = true;
+      },
+    };
+  }
   if (entry.wallet.indexer === "chronik") {
+    // The eCash adapter's own reviewed network profiles (prefix, genesis) bound what it opens.
     if (
-      chainIdentifier !== "xec-testnet" &&
-      chainIdentifier !== "xec-mainnet" &&
-      chainIdentifier !== "xec-regtest"
+      entry.kind !== "ecash" ||
+      !Object.prototype.hasOwnProperty.call(ECASH_ADDRESS_PREFIXES, chainIdentifier)
     ) {
       throw new Error(`No Chronik wallet is available for ${chainIdentifier}`);
     }
+    const ecashNetworkId = chainIdentifier as EcashNetworkId;
     let closed = false;
     const requireOpen = () => {
       if (closed) throw new Error("UTXO wallet is closed");
@@ -105,7 +158,7 @@ export function openRelayUtxoChain(params: {
       ecashBip39WalletFactory?: EcashBip39WalletFactory;
     }) =>
       createEcashChain({
-        networkId: chainIdentifier,
+        networkId: ecashNetworkId,
         checkpoint: params.checkpoint,
         nativeAttemptStore: params.nativeAttemptStore,
         chronik,

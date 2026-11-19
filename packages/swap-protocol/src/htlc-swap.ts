@@ -88,6 +88,9 @@ export type XecLockOperationState =
   | 'submitted'
   | 'confirmed'
   | 'released'
+  /** A final transaction spent one of its inputs: its bytes can never land. Funding again
+   * signs the same lock from fresh inputs, under the same id and cutoff. */
+  | 'conflicted'
 
 export interface XecHtlcCapability {
   readonly chainIdentifier: string
@@ -99,13 +102,16 @@ export interface XecHtlcCapability {
   /**
    * Funds the HTLC with exactly `principalSats + XEC_HTLC_SPEND_FEE_SATS` through the native
    * operation `swap:<swapId>:xec-lock`. Idempotent: an existing operation is resumed (its same
-   * bytes re-submitted), never a second funding; a released one is refused.
+   * bytes re-submitted), never a second funding; a released one is refused. A conflicted one
+   * (its bytes can never land) is signed again from fresh inputs, unless the transaction that
+   * took its input itself pays the HTLC script: then nothing is signed and the result says
+   * `fundedElsewhere` with that transaction's id.
    */
   fund(input: {
     readonly swapId: string
     readonly terms: XecHtlcTerms
     readonly principalSats: bigint
-  }): Promise<{ readonly txid: string }>
+  }): Promise<{ readonly txid: string; readonly fundedElsewhere?: true }>
   /** Releases a `prepared` lock operation that was never exposed. */
   releaseLock(swapId: string): Promise<void>
   /** Signs the claim or refund spend: deterministic bytes, nothing broadcast. */
@@ -853,9 +859,19 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
           warnings,
         )
       if (op === 'released') return decide('abandoned', NONE, warnings)
-      if (op === undefined && xec.outputs.length > 0) {
+      // An output at the script that is not the exact lock: never fund (again) next to it.
+      if (
+        xec.outputs.length > 0 &&
+        (op === undefined || op === 'prepared' || op === 'conflicted')
+      ) {
         warnings.push('xec-foreign-output')
-        return decide('accepted', NONE, warnings)
+        if (op === 'prepared' && now > cut.xecFundBy)
+          return decide('abandoned', { kind: 'release-xec-lock' }, warnings)
+        return decide(
+          op === undefined ? 'accepted' : 'xecLockPending',
+          NONE,
+          warnings,
+        )
       }
       if (now > cut.xecFundBy)
         return decide(
@@ -863,8 +879,11 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
           op === 'prepared' ? { kind: 'release-xec-lock' } : NONE,
           warnings,
         )
+      // A conflicted lock never landed and never will: before the cutoff it is funded again.
       return decide(
-        op === 'prepared' || record?.fundingAuthorizedAt !== undefined
+        op === 'prepared' ||
+          op === 'conflicted' ||
+          record?.fundingAuthorizedAt !== undefined
           ? 'xecLockPending'
           : 'accepted',
         { kind: 'fund-xec', resume: false },

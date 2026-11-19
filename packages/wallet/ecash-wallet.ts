@@ -4,6 +4,7 @@ import {
 } from "./ecash-operation-store";
 import type {
   EcashNativeOperation,
+  EcashOperationConflict,
   EcashOperationStore,
   EcashOperationLedger,
   EcashOperationExposureBinding,
@@ -143,6 +144,65 @@ export function ecashCheckpoint(
     );
   }
   return ECASH_CHECKPOINTS[canonicalId];
+}
+
+/** When an eCash transaction counts as final: Avalanche (testnet, mainnet), or a number of
+ * confirmations (a single regtest node has no Avalanche quorum). */
+export type XecFinality =
+  | { readonly kind: "avalanche" }
+  | { readonly kind: "confirmations"; readonly depth: number };
+
+/** The finality rule of a network: Avalanche on mainnet and testnet; on regtest one confirmation
+ * unless the host gives another rule (one regtest node has no Avalanche quorum). */
+export function ecashFinality(
+  networkId: EcashNetworkId,
+  given?: XecFinality
+): XecFinality {
+  if (
+    given !== undefined &&
+    given.kind === "confirmations" &&
+    (!Number.isSafeInteger(given.depth) || given.depth < 1)
+  )
+    throw new Error("eCash confirmation finality needs a depth of at least 1");
+  const regtest = canonicalEcashNetworkId(networkId) === "xec-regtest";
+  if (given?.kind === "confirmations" && !regtest)
+    throw new Error(
+      "Confirmation-count finality is for xec-regtest only; eCash mainnet and testnet use Avalanche"
+    );
+  if (given !== undefined) return given;
+  return regtest
+    ? { kind: "confirmations", depth: 1 }
+    : { kind: "avalanche" };
+}
+
+/** Who spent an outpoint, if anyone has, and whether that spend is final. */
+export type EcashInputSpender = (input: {
+  readonly txid: string;
+  readonly vout: number;
+}) => Promise<{ txid: string; final: boolean } | undefined>;
+
+/** Chronik's view of who spent an outpoint (mempool or block) and whether that spend is final. */
+export function chronikInputSpender(
+  chronik: Pick<ChronikClient, "tx" | "blockchainInfo">,
+  finality: XecFinality
+): EcashInputSpender {
+  return async (input) => {
+    const source = await chronik.tx(input.txid);
+    const output = source.outputs[input.vout];
+    if (output === undefined)
+      throw new Error("eCash input is not an output of its transaction");
+    if (output.spentBy === undefined) return undefined;
+    const spending = await chronik.tx(output.spentBy.txid);
+    if (finality.kind === "avalanche")
+      return { txid: spending.txid, final: spending.isFinal === true };
+    if (spending.block === undefined)
+      return { txid: spending.txid, final: false };
+    const { tipHeight } = await chronik.blockchainInfo();
+    return {
+      txid: spending.txid,
+      final: tipHeight - spending.block.height + 1 >= finality.depth,
+    };
+  };
 }
 
 type EcashCheckpointClient = Pick<ChronikClient, "block">;
@@ -303,6 +363,10 @@ export interface EcashWalletOptions {
    * <reason>" error means the node answered and refused them; anything else means unknown.
    */
   rebroadcast?: (rawTransactions: ReadonlyArray<string>) => Promise<void>;
+  /** When a conflicting spend of an operation's input counts as final. See `ecashFinality`. */
+  finality?: XecFinality;
+  /** Who spent an outpoint. Defaults to Chronik under `finality`. */
+  inputSpender?: EcashInputSpender;
 }
 
 /**
@@ -334,7 +398,8 @@ export class EcashWallet implements NativeWalletHandle {
     private readonly rebroadcast: (
       rawTransactions: ReadonlyArray<string>
     ) => Promise<void>,
-    private readonly operationStore: EcashOperationStore
+    private readonly operationStore: EcashOperationStore,
+    private readonly inputSpender: EcashInputSpender
   ) {
     this.chainUtxoPool = chainUtxoPool;
     this.networkId = networkId;
@@ -464,7 +529,12 @@ export class EcashWallet implements NativeWalletHandle {
           for (const raw of rawTransactions)
             await params.chronik.broadcastTx(raw);
         }),
-      params.operationStore ?? defaultEcashOperationStore
+      params.operationStore ?? defaultEcashOperationStore,
+      params.inputSpender ??
+        chronikInputSpender(
+          params.chronik,
+          ecashFinality(params.networkId, params.finality)
+        )
     );
     const ledger = wallet.loadLedger();
     await wallet.restoreStealthReceipts();
@@ -746,11 +816,15 @@ export class EcashWallet implements NativeWalletHandle {
 
   private exclusions(ledger: EcashOperationLedger): EcashInputReference[] {
     // Confirmed inputs remain spent tombstones, preventing stale indexer snapshots from
-    // resurrecting them. Only a genuinely unexposed released operation frees its claims.
+    // resurrecting them. Only a genuinely unexposed released operation, or one that can never
+    // land because a final transaction spent one of its inputs, frees its claims.
     const claims = [
       ...(ledger.consumedInputs ?? []),
       ...ledger.operations
-        .filter((operation) => operation.state !== "released")
+        .filter(
+          (operation) =>
+            operation.state !== "released" && operation.state !== "conflicted"
+        )
         .flatMap((operation) =>
           operation.inputs.map(({ txid, vout }) => ({ txid, vout }))
         ),
@@ -929,37 +1003,103 @@ export class EcashWallet implements NativeWalletHandle {
           throw new Error("eCash operation id is already bound");
         return repeated;
       }
-      const construction = backend.buildNativeConstruction({
-        recipient,
-        value: value,
-        excludedInputs: this.exclusions(ledger),
-        changeIndexFloor: ledger.nextChangeIndex,
-      });
-      if (maxFee !== undefined && construction.fee > maxFee)
-        throw new NativeFeeExceededError(construction.fee);
-      const operation: EcashNativeOperation = {
-        operationId: operationId,
-        intent,
-        state: "prepared",
-        transactions: construction.transactions,
-        inputs: construction.selectedInputs.map((input) => ({
-          ...input,
-          satoshis: input.satoshis.toString(),
-        })),
-        fee: construction.fee.toString(),
-        nextChangeIndex: construction.nextChangeIndex,
-      };
-      backend.validateNativeOperation(operation);
+      const operation = this.construct(ledger, operationId, intent);
       this.operationStore.put(this.nativeAttemptKey, {
         ...ledger,
         nextChangeIndex: Math.max(
           ledger.nextChangeIndex,
-          construction.nextChangeIndex
+          operation.nextChangeIndex
         ),
         operations: [...ledger.operations, operation],
       });
-      backend.restoreChangeIndex(construction.nextChangeIndex);
+      backend.restoreChangeIndex(operation.nextChangeIndex);
       return operation;
+    });
+  }
+
+  /** Signs a fresh prepared transaction for `intent` from currently unclaimed inputs. Runs under
+   * the shared lock; the caller persists the result. */
+  private construct(
+    ledger: EcashOperationLedger,
+    operationId: string,
+    intent: EcashNativeOperation["intent"]
+  ): EcashNativeOperation {
+    const backend = this.preparationBackend();
+    const construction = backend.buildNativeConstruction({
+      recipient: intent.recipient,
+      value: BigInt(intent.value),
+      excludedInputs: this.exclusions(ledger),
+      changeIndexFloor: ledger.nextChangeIndex,
+    });
+    if (intent.maxFee !== undefined && construction.fee > BigInt(intent.maxFee))
+      throw new NativeFeeExceededError(construction.fee);
+    const operation: EcashNativeOperation = {
+      operationId,
+      intent,
+      state: "prepared",
+      transactions: construction.transactions,
+      inputs: construction.selectedInputs.map((input) => ({
+        ...input,
+        satoshis: input.satoshis.toString(),
+      })),
+      fee: construction.fee.toString(),
+      nextChangeIndex: construction.nextChangeIndex,
+    };
+    backend.validateNativeOperation(operation);
+    return operation;
+  }
+
+  /**
+   * Prepares a conflicted operation again: same id, same recipient, amount and fee ceiling, fresh
+   * inputs, new signed bytes (state "prepared", not exposed). Only a conflicted operation can be
+   * retried: its earlier transaction can never land, so this never pays twice. The earlier
+   * attempt is kept in `conflictedAttempts`. Repeating the call returns the same retry.
+   */
+  async retryConflictedNativeOperation(
+    operationId: string
+  ): Promise<EcashNativeOperation> {
+    const before = this.loadLedger().operations.find(
+      (operation) => operation.operationId === operationId
+    );
+    if (before === undefined) throw new Error("Unknown eCash operation");
+    if (before.state !== "conflicted") {
+      if (before.conflictedAttempts !== undefined) return before;
+      throw new Error("Only a conflicted eCash operation can be retried");
+    }
+    const backend = this.preparationBackend();
+    backend.restoreChangeIndex(this.loadLedger().nextChangeIndex);
+    await this.restoreStealthReceipts();
+    await this.backend.sync();
+    return this.exclusive(() => {
+      const ledger = this.loadLedger();
+      const current = ledger.operations.find(
+        (operation) => operation.operationId === operationId
+      );
+      if (current === undefined) throw new Error("Unknown eCash operation");
+      if (current.state !== "conflicted") {
+        if (current.conflictedAttempts !== undefined) return current;
+        throw new Error("Only a conflicted eCash operation can be retried");
+      }
+      const fresh = this.construct(ledger, operationId, current.intent);
+      const retried: EcashNativeOperation = {
+        ...fresh,
+        conflictedAttempts: [
+          ...(current.conflictedAttempts ?? []),
+          { txid: current.transactions[0].txid, conflict: current.conflict! },
+        ],
+      };
+      this.operationStore.put(this.nativeAttemptKey, {
+        ...ledger,
+        nextChangeIndex: Math.max(
+          ledger.nextChangeIndex,
+          retried.nextChangeIndex
+        ),
+        operations: ledger.operations.map((operation) =>
+          operation.operationId === operationId ? retried : operation
+        ),
+      });
+      backend.restoreChangeIndex(retried.nextChangeIndex);
+      return retried;
     });
   }
 
@@ -987,6 +1127,10 @@ export class EcashWallet implements NativeWalletHandle {
         throw new Error("eCash exposure binding does not match operation");
       if (operation.state === "released")
         throw new Error("Released eCash operation cannot be exposed");
+      if (operation.state === "conflicted")
+        throw new Error(
+          "Conflicted eCash operation can never land; retry it with fresh inputs first"
+        );
       if (operation.exposure !== undefined) {
         if (
           operation.exposure.kind !== "external-payload" ||
@@ -1012,7 +1156,9 @@ export class EcashWallet implements NativeWalletHandle {
 
   releaseNativeOperation(operationId: string): Promise<EcashNativeOperation> {
     return this.updateOperation(operationId, (operation) => {
-      if (operation.state === "released") return operation;
+      // A conflicted operation already holds no inputs and stays a record of what happened.
+      if (operation.state === "released" || operation.state === "conflicted")
+        return operation;
       if (operation.state !== "prepared")
         throw new Error("Exposed eCash input claims cannot be released");
       return { ...operation, state: "released" };
@@ -1023,6 +1169,10 @@ export class EcashWallet implements NativeWalletHandle {
     return this.updateOperation(operationId, (operation) => {
       if (operation.state === "released")
         throw new Error("Released eCash operation cannot be submitted");
+      if (operation.state === "conflicted")
+        throw new Error(
+          "Conflicted eCash operation can never land; retry it with fresh inputs first"
+        );
       if (operation.state !== "prepared") return operation;
       return {
         ...operation,
@@ -1039,7 +1189,7 @@ export class EcashWallet implements NativeWalletHandle {
     try {
       await this.rebroadcast(transaction.rawTransactions!);
       await this.updateOperation(operationId, (current) =>
-        current.state === "confirmed"
+        current.state === "confirmed" || current.state === "conflicted"
           ? current
           : { ...current, state: "submitted" }
       );
@@ -1060,19 +1210,43 @@ export class EcashWallet implements NativeWalletHandle {
     if (
       operation.state === "prepared" ||
       operation.state === "released" ||
-      operation.state === "confirmed"
+      operation.state === "confirmed" ||
+      operation.state === "conflicted"
     )
       return operation;
     const status = await this.getTransactionStatus(this.transaction(operation));
-    if (status !== "confirmed" && status !== "pending") return operation;
+    if (status === "confirmed" || status === "pending")
+      return this.updateOperation(operationId, (current) =>
+        current.state === "confirmed" || current.state === "conflicted"
+          ? current
+          : {
+              ...current,
+              state: status === "confirmed" ? "confirmed" : "submitted",
+            }
+      );
+    // The indexer does not know this transaction. A refused broadcast or an unknown status proves
+    // nothing; only a final spend of one of its inputs by another transaction does: then these
+    // signed bytes can never land. A conflicting spend still in the mempool is waited on.
+    const conflict = await this.finalConflict(operation);
+    if (conflict === undefined) return operation;
     return this.updateOperation(operationId, (current) =>
-      current.state === "confirmed"
-        ? current
-        : {
-            ...current,
-            state: status === "confirmed" ? "confirmed" : "submitted",
-          }
+      (current.state === "exposed" || current.state === "submitted") &&
+      current.transactions[0].txid === operation.transactions[0].txid
+        ? { ...current, state: "conflicted", conflict }
+        : current
     );
+  }
+
+  private async finalConflict(
+    operation: EcashNativeOperation
+  ): Promise<EcashOperationConflict | undefined> {
+    const own = operation.transactions[0].txid;
+    for (const { txid, vout } of operation.inputs) {
+      const spender = await this.inputSpender({ txid, vout });
+      if (spender !== undefined && spender.txid !== own && spender.final)
+        return { input: { txid, vout }, spentBy: spender.txid };
+    }
+    return undefined;
   }
 
   async getReceiveAddress(): Promise<ChainAddress> {
@@ -1258,7 +1432,12 @@ export class EcashWallet implements NativeWalletHandle {
           const reconciled = await this.reconcileNativeOperation(
             operation.operationId
           );
-          if (reconciled.state !== "confirmed")
+          // A conflicted operation is settled: it can never land, and its record says why. Its
+          // owner decides whether to retry the intent with fresh inputs.
+          if (
+            reconciled.state !== "confirmed" &&
+            reconciled.state !== "conflicted"
+          )
             await this.submitNativeOperation(operation.operationId);
         } catch (error) {
           failures.push(error);

@@ -37,6 +37,7 @@ async function make(options = {}) {
     checkpointClientFactory: () => ({ block: async () => ({ blockInfo: { hash: chronik.checkpoint } }) }),
     rebroadcast: async raws => { sent.push([...raws]); if (options.transport) await options.transport(raws); },
     getTransactionStatus: options.status ?? (async () => 'unknown'),
+    inputSpender: options.spender ?? (async () => undefined),
   };
   const wallet = options.legacyMnemonic
     ? await EcashWallet.fromLegacyMnemonic({ ...common, mnemonic: options.legacyMnemonic })
@@ -407,6 +408,77 @@ it(
   assert.equal(op.state, 'prepared'); assert.equal(legacy.sent.length, 0);
   await legacy.wallet.submitNativeOperation(op.operationId);
   assert.deepEqual(legacy.sent, [[op.transactions[0].rawTransaction]]);
+`),
+  35_000
+);
+
+it(
+  "reconciles an operation whose input another device spent finally as conflicted, releases its other inputs and retries the same intent",
+  () =>
+    run(`
+  const store = new InMemoryEcashOperationStore();
+  /** Outpoint -> who spent it, as the indexer reports it. */
+  const spenders = new Map();
+  const spender = async ({ txid, vout }) => spenders.get(txid + ':' + vout);
+  let refuse = false;
+  const device1 = await make({ spender });
+  const device2 = await make({ store, spender, transport: async () => { if (refuse) throw new Error('Failed getting /broadcast-txs: missing inputs'); } });
+  // Device 1 signs a spend of the first coin; device 2 does not see it and needs two coins.
+  const first = await device1.wallet.prepareNativeOperation(params('device-1'));
+  const second = await device2.wallet.prepareNativeOperation({ ...params('device-2'), value: 15000n });
+  assert.equal(second.inputs.length, 2);
+  const shared = second.inputs.find(input => input.txid === first.inputs[0].txid && input.vout === first.inputs[0].vout);
+  assert.ok(shared, 'both devices picked the same coin');
+  const other = second.inputs.find(input => input !== shared);
+  refuse = true;
+  await assert.rejects(device2.wallet.submitNativeOperation(second.operationId), /submission/i);
+  assert.equal(device2.wallet.getEcashOperations()[0].state, 'exposed');
+  assert.equal(await device2.wallet.getBalance(), 60000n, 'both inputs stay held while the op is unresolved');
+  // A refused broadcast alone never fails the operation; nor does a conflict still in the mempool.
+  await device2.wallet.reconcileNativeOperation(second.operationId);
+  assert.equal(device2.wallet.getEcashOperations()[0].state, 'exposed');
+  spenders.set(shared.txid + ':' + shared.vout, { txid: first.transactions[0].txid, final: false });
+  await device2.wallet.reconcileNativeOperation(second.operationId);
+  assert.equal(device2.wallet.getEcashOperations()[0].state, 'exposed');
+  await assert.rejects(device2.wallet.finishInterruptedSend(), AggregateError);
+  // Its own transaction spending the input is no conflict.
+  spenders.set(shared.txid + ':' + shared.vout, { txid: second.transactions[0].txid, final: true });
+  await device2.wallet.reconcileNativeOperation(second.operationId);
+  assert.equal(device2.wallet.getEcashOperations()[0].state, 'exposed');
+  // Device 1's spend is final: device 2's bytes can never land.
+  spenders.set(shared.txid + ':' + shared.vout, { txid: first.transactions[0].txid, final: true });
+  const conflicted = await device2.wallet.reconcileNativeOperation(second.operationId);
+  assert.equal(conflicted.state, 'conflicted');
+  assert.deepEqual(conflicted.conflict, { input: { txid: shared.txid, vout: shared.vout }, spentBy: first.transactions[0].txid });
+  // The indexer no longer lists the spent coin; the other input is free again.
+  device2.chronik.coins.splice(device2.chronik.coins.findIndex(coin => coin.outpoint.txid === shared.txid && coin.outpoint.outIdx === shared.vout), 1);
+  assert.equal(await device2.wallet.getBalance(), 70000n, 'the other input is released');
+  const sentBefore = device2.sent.length;
+  await device2.wallet.finishInterruptedSend();
+  assert.equal(device2.sent.length, sentBefore, 'a conflicted operation is never broadcast again');
+  await assert.rejects(device2.wallet.submitNativeOperation(second.operationId), /never land/);
+  assert.equal((await device2.wallet.releaseNativeOperation(second.operationId)).state, 'conflicted');
+  await assert.rejects(device2.wallet.prepareNativeOperation(params('other')).then(op => device2.wallet.retryConflictedNativeOperation(op.operationId)), /Only a conflicted/);
+  // Restart keeps the terminal state and its evidence.
+  const reopened = await make({ store, spender, chronik: device2.chronik });
+  const kept = reopened.wallet.getEcashOperations().find(op => op.operationId === second.operationId);
+  assert.equal(kept.state, 'conflicted');
+  assert.deepEqual(kept.conflict, conflicted.conflict);
+  // The owner retries the same intent: fresh inputs, same id, earlier attempt kept.
+  refuse = false;
+  const retried = await reopened.wallet.retryConflictedNativeOperation(second.operationId);
+  assert.equal(retried.state, 'prepared');
+  assert.deepEqual(retried.intent, second.intent);
+  assert.notEqual(retried.transactions[0].txid, second.transactions[0].txid);
+  assert.ok(!retried.inputs.some(input => input.txid === shared.txid && input.vout === shared.vout));
+  assert.deepEqual(retried.conflictedAttempts, [{ txid: second.transactions[0].txid, conflict: conflicted.conflict }]);
+  assert.equal((await reopened.wallet.retryConflictedNativeOperation(second.operationId)).transactions[0].txid, retried.transactions[0].txid, 'repeating the retry returns it');
+  await reopened.wallet.submitNativeOperation(second.operationId);
+  assert.equal(reopened.wallet.getEcashOperations().find(op => op.operationId === second.operationId).state, 'submitted');
+  // A malformed conflict record is refused.
+  const ledger = store.get(device2.key);
+  const tampered = { ...ledger, operations: ledger.operations.map(op => op.operationId === 'other' ? { ...op, state: 'conflicted', exposure: { kind: 'native-rpc' }, conflict: { input: { txid: 'ab'.repeat(32), vout: 0 }, spentBy: 'cd'.repeat(32) } } : op) };
+  assert.throws(() => store.put(device2.key, tampered), /conflict/);
 `),
   35_000
 );

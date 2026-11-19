@@ -528,6 +528,45 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
     ],
     ['released: never funds again', { op: 'released' }, 'abandoned/none'],
     [
+      'conflicted (another final spend took an input), before the cutoff: funds again',
+      { op: 'conflicted' },
+      'xecLockPending/fund-xec:new',
+    ],
+    [
+      'conflicted, past the cutoff: abandons',
+      { op: 'conflicted', now: fundBy + 1 },
+      'abandoned/none',
+    ],
+    [
+      'conflicted, and the exact lock is at the script (another device funded it): no funding',
+      { op: 'conflicted', xec: xecObs([output({ final: false })]) },
+      'xecLockPending/none',
+    ],
+    [
+      'conflicted, a foreign output at the script: does not fund again',
+      { op: 'conflicted', xec: xecObs([output({ valueSats: 999n })]) },
+      'xecLockPending/none',
+    ],
+    [
+      'prepared, a foreign output at the script: does not fund',
+      { op: 'prepared', xec: xecObs([output({ valueSats: 999n })]) },
+      'xecLockPending/none',
+    ],
+    [
+      'prepared, a foreign output at the script, past the cutoff: releases',
+      {
+        op: 'prepared',
+        now: fundBy + 1,
+        xec: xecObs([output({ valueSats: 999n })]),
+      },
+      'abandoned/release-xec-lock',
+    ],
+    [
+      'inactive device: never funds a conflicted lock again',
+      { active: false, op: 'conflicted' },
+      'xecLockPending/none',
+    ],
+    [
       'a foreign output at the script: does not fund',
       { xec: xecObs([output({ valueSats: 999n })]) },
       'accepted/none',

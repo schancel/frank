@@ -103,3 +103,52 @@ export type {
   LotusV2Spend,
   LotusV2TemplateSpend,
 } from './lotus-v2/sign.js'
+export {
+  LOTUS_V2_APPROVED_COST_SCHEDULE,
+  lotusV2InvocationCost,
+  lotusV2StaticCost,
+  lotusV2TransactionCost,
+} from './lotus-v2/cost.js'
+export type {
+  LotusV2CostSchedule,
+  LotusV2PendingCostItem,
+  LotusV2StaticCost,
+} from './lotus-v2/cost.js'
+export {
+  LOTUS_V2_DUST_LIMIT,
+  LOTUS_V2_FRANK_FEE_MARGIN_BASIS_POINTS,
+  LOTUS_V2_FRANK_FEE_RULE,
+  LOTUS_V2_MIN_FEE_PER_KB,
+  LOTUS_V2_REGTEST_NODE_FEE_RULE,
+  LOTUS_V2_SPEC_FEE_RULE,
+  LotusV2FeeError,
+  lotusV2ByteFee,
+  lotusV2Concentration,
+  lotusV2CuShare,
+  lotusV2IndexedByteFee,
+  lotusV2Isqrt,
+  lotusV2RequiredFee,
+  lotusV2TokenOutputBurn,
+} from './lotus-v2/fee.js'
+export type {
+  LotusV2ByteFloorRule,
+  LotusV2CuShare,
+  LotusV2FeeBreakdown,
+  LotusV2FeeChainState,
+  LotusV2FeeIndex,
+  LotusV2FeeRule,
+  LotusV2IndexAnchors,
+  LotusV2IndexedCuShareRule,
+} from './lotus-v2/fee.js'
+export {
+  LotusV2FeeCeilingError,
+  LotusV2InsufficientFundsError,
+  buildLotusV2Transaction,
+  lotusV2PriceShape,
+} from './lotus-v2/build.js'
+export type {
+  LotusV2BuiltTransaction,
+  LotusV2ChangeDestination,
+  LotusV2InputShape,
+  LotusV2OutputShape,
+} from './lotus-v2/build.js'

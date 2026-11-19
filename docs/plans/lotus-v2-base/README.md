@@ -81,13 +81,131 @@ Bytes(scriptPubKey)`, value in `MoneyRange`, script at most 10,000 bytes) wherev
   (BIP340 under `public_key[1..33]`, an invalid signature rejects). P2SH script evaluation (the
   legacy interpreter with ECDSA/legacy Schnorr) is an explicit `unsupported` result: only its
   signing messages are checked, against the lotusd vectors.
-- Not implemented (explicit, not silent): VM execution, accounting and fee rules (the fee rule
-  is wallet policy and is changing upstream, see below), UTXO/state commitments, block headers.
+- Static cost and fees (`cost.ts`, `fee.ts`, `build.ts`), designed below under "Fees".
+- Not implemented (explicit, not silent): VM execution, UTXO/state commitments, block headers.
 
-Fees: lotusd's current rule is 1 atom per signed byte (regtest profile: "the specification's
-original 1000 atoms/kB and 546 atoms"). The spec's pending rule (subsidy-indexed cu term plus a
-byte fee) replaces it before genesis, so the wallet keeps the fee rule as its own replaceable
-policy (`LOTUS_V2_FEE_PER_BYTE`), not a nakamoto consensus fact.
+### Fees (design, 2026-11-19)
+
+Spec: Lotus `docs/lotus-v2/consensus.md` C14a (token burn), C14b (indexed byte fee), C16 (half
+of the non-token fee burned), C24/C25 (cu, `C_tx`, block burn floor) and P05
+(`decisions/resources-and-parameters.md`: cost schedule, subsidy index, static cost algebra,
+"Relay and wallet fee policy"). Approved but uncommitted in the Lotus working tree when this
+was written.
+
+API (`@frank/nakamoto/lotus-v2`, bigint atoms and cu throughout):
+
+- `lotusV2StaticCost(chain, tx, coins)` returns `{size, linearCost, transactionCost,
+invocationCosts, pending}`. `L(tx)` and `C_tx` come from the transaction bytes, the scripts
+  its witnesses reveal and `coins[i]`, the output each spend input spends. No script runs. The
+  invocation charge is the P05 size pass (`lotusV2InvocationCost(script, argumentSizes)`),
+  implemented for pushes, constants, stack shuffles, PICK/ROLL, CAT, SIZE, EQUAL(VERIFY),
+  NUMEQUALVERIFY, VERIFY, SHA256/HASH256/BLAKE3, CHECKSIG(VERIFY), IF/NOTIF/ELSE/ENDIF and the
+  lock checks (everything Frank's keyhash and HTLC programs use). Any other
+  opcode, a loop or an automatic-success script is an explicit `LotusV2UnsupportedError`.
+- `lotusV2ByteFee(size)`, `lotusV2IndexedByteFee(size, index, anchors)`,
+  `lotusV2TokenOutputBurn(n)`, `lotusV2Concentration(C, S)`, `lotusV2CuShare(C_tx, state,
+anchors)`, `lotusV2TransactionCost(L)`.
+- `LotusV2FeeRule` has two kinds:
+  - `byte-floor`: what lotusd v0.34.1-ea95b1631f2c enforces today, per transaction, as
+    `max(ByteFee(size), 2 * DUST_LIMIT * token outputs)`, unindexed (`OrdinaryFeeFloor`;
+    mempool `bad-txns-fee-floor`). `LOTUS_V2_REGTEST_NODE_FEE_RULE` (1,000 atoms/kB, 546).
+  - `indexed-cu-share`, rule (c): `LOTUS_V2_SPEC_FEE_RULE` is the spec exactly (approved
+    schedule, launch anchors `T_g`/`W_g`, no margin). `LOTUS_V2_FRANK_FEE_RULE` adds
+    `LOTUS_V2_FRANK_FEE_MARGIN_BASIS_POINTS` (2%) to the cu share. The margin, a cushion
+    for E drifting between estimate and inclusion, is Frank's wallet policy, not the spec's,
+    and the rule carries it as `marginBasisPoints`.
+- `lotusV2RequiredFee({chain, tx, rule, coins?, state?})` returns `{byteFloor, tokenBurn,
+consensusFloor, linearShare, qShare, margin, total, cost?, pending}`. The spec's cu share
+  is `linearShare + qShare` (linear part and concentration part). Rule (c) computes
+  `total = max(IndexedByteFee, tokenBurn + linearShare + qShare + margin)`.
+- `lotusV2PriceShape({chain, inputs, outputs, rule, state?, lock?})` prices without signing,
+  for coin selection. Inputs are given by kind (`keyhash`, optionally token-bearing and with a
+  signing mode; `template` with its coin, program and proof; `legacy-p2pkh`), outputs by kind
+  (`keyhash`, optionally token-bearing; or an exact output). Placeholder witnesses of the exact
+  lengths make its size and `C_tx`, and so its breakdown, equal to the signed transaction's.
+- `buildLotusV2Transaction({chain, inputs, outputs, change?, rule, state?, maxFee, lock?})`
+  signs a transaction paying exactly `total` and returns `{signed, fee, breakdown, change?,
+droppedChange}`. One pass suffices: an output value is a fixed `u64` and a signature's length
+  is fixed by its mode, so the fee depends only on whether a change output exists. The builder
+  prices the shape with change. If what remains is below `DUST_LIMIT`, it prices the shape
+  without change and the remainder goes to the fee. It then signs once. Signing verifies every
+  signature against the finished transaction before it returns bytes, and the builder checks
+  that the signed transaction prices exactly as its shape did. It refuses a fee above `maxFee`
+  (`LotusV2FeeCeilingError`, which counts dropped change), missing funds
+  (`LotusV2InsufficientFundsError`, whose `required` is the outputs plus the fee of the
+  transaction without change) and native outputs below dust.
+
+The wallet picks the rule by configuration. It pays `LOTUS_V2_REGTEST_NODE_FEE_RULE` while the
+node enforces the old rule, then switches to rule (c) by passing another rule object; nothing
+else changes. The wallet's send path is not switched yet; the wallet branch owns
+`packages/wallet/lotus-v2/` and calls the builder for keyhash sends. An HTLC funding output is
+an ordinary output of a wallet send. An HTLC claim or refund is signed by the HTLC template
+code, so its transaction calls `lotusV2RequiredFee` on itself (or `lotusV2PriceShape` with a
+`template` input beforehand). The builder can also sign one, since a claim or refund is a
+template spend with a proof; the fee tests do exactly that.
+
+Chain state (`LotusV2FeeChainState`): `ema` (E of the tip's `MonetaryState`); `byteFeeIndex`
+(subsidy and parent work of block `a = max(1, h - COINBASE_MATURITY)`); `cuIndex` (the target
+block's own index, from the tip's state; defaults to `byteFeeIndex`); `blockCostCu` (cost already
+ahead of the transaction in the block; default 0). The caller supplies all of it. No RPC returns
+E, the indices or the required fee yet (queued upstream: required fee for a tx hex at given E
+and I), and `testv2transaction` checks no fees ("fees, finality and mempool policy are not
+checked"). `COINBASE_MATURITY` has no V2 value yet, so the lagged index's height is the caller's.
+
+Rulings from the Lotus V2 coordinator (`lotus-86`, 2026-11-19):
+
+1. CLTV/CSV had no size-pass row, so the reference charged them through the Unknown fallback.
+   An HTLC refund came to 675 cu. P05 and `vm_cost.py` now pop `N(kind)` and `N(bound)` and
+   push nothing (Lotus 088d8984b4), so the refund is 280 cu. Frank follows the corrected
+   reference.
+2. The reference's P05 size pass defines `C_tx` (keyhash program 256 cu). The compiler's coarser
+   `estimateInvocationCu` gave 258 and is being changed to match.
+3. Two indices: `cuIndex` = the next block's own `I_n = S_n W_g / (T_g W_(n-1))`, `byteFeeIndex`
+   lagged `COINBASE_MATURITY` blocks. Defaulting `cuIndex` to `byteFeeIndex` is an acceptable
+   fallback.
+4. `cuShare = 2 * ceil(ceil(C_tx * M / 2^32) * sqrt(I_n)) + 2 * (Q_up(base + C_tx) -
+Q_floor(base))`, with `base` defaulting to 0. `total = max(IndexedByteFee, tokenBurn +
+cuShare)`: the token burn is burned in full outside the 50% split. P05's wallet policy
+   paragraph now states it in integers.
+
+Pending in the spec (flagged in `pending` on every result that depends on it, not silently
+assumed): the state-key weight (151 cu, a placeholder until measured); the legacy-bridge
+charge (P05 prices no bridge verification, so the shared vectors take one BIP340 check, 210
+cu); `COINBASE_MATURITY`'s V2 value; stage-two indexing of dust/rent/bounty (fixed atoms
+here); the staker price shift (not in genesis). Known gap awaiting a ruling: the cu share prices
+`C_tx` only, while the block floor also charges each transaction's framing (`2F + 7` cu in
+`C_envelope`). A transaction alone in a block therefore leaves a little underclaim
+(`block_alone.extra_underclaim_atoms` per shared vector); the policy formula stays normative
+until ruled.
+
+Evidence:
+
+- `packages/nakamoto/test/lotus-v2-fee.jest.test.ts` runs every shared Lotus vector
+  (`fixtures/lotus-v2/fee_vectors.json`, copied unchanged from
+  `tools/lotus-v2-reference/vectors/fee_vectors.json` at Lotus 3f72f1cca3 "reference: keyhash
+  payments in the fee vectors", sha256 `e6c21bd1…a91716`; 33 vectors, the count read from the
+  file). It checks invocation charges, `L`, `C_tx`, byte fee, linear and Q share, token burn
+  and total. The builder reproduces every payment vector of both programs (`keyhash-payment-*`
+  and `payment-*`) byte for byte, and `lotusV2PriceShape` prices each the same unsigned.
+- The same suite checks reference-generated vectors for what the shared file lacks:
+  - a mode-1 signature;
+  - token outputs from keyhash coins;
+  - Frank's HTLC claim (341 cu) and refund (297 cu), whose SIZE/NUMEQUALVERIFY checks no
+    shared vector uses.
+    They live in `fixtures/lotus-v2/fee-vectors-frank.json`, produced by
+    `scripts/lotus-v2-fee-vectors.py` from Lotus d53861d489, read-only, with file hashes
+    recorded inside. The inputs come from `test/lotus-v2-fee-cases.ts`, whose HTLC bytes were
+    compared once, by hand, with `htlc.ts` at Frank ec5300b68 (not an automated check). It
+    also covers unit cases, shape pricing by kind, and builder cases: dust drop, ceiling,
+    funds, a bad signature, and HTLC claim/refund.
+- `packages/wallet/lotus-v2/fee.regtest.jest.test.ts` runs against real regtest lotusd
+  v0.34.1-ea95b1631f2c (`LOTUSD_BIN=<lotus>/daemon/.build/v2-current/lotusd
+FRANK_REQUIRE_NODES=1`). The byte-floor fee the builder computes is accepted. The same
+  transaction paying one atom less is refused with `bad-txns-fee-floor` by
+  `testmempoolaccept` and `sendrawtransaction`, while `testv2transaction` still reports its
+  scripts valid. A multi-input send with dropped sub-dust change is accepted. A rule (c)
+  keyhash 1-in/2-out send priced from the shared vector's inputs pays exactly that vector's
+  recommended fee (12,298 atoms) and is accepted.
 
 ### Stage 2 status and evidence (2026-11-19)
 

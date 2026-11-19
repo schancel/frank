@@ -1180,13 +1180,17 @@ export default defineComponent({
                 : { amountOut: result.amountOut.toString() }),
               feeWei: result.totalFeeWei.toString(),
             }
+          : result.status === 'cancelled'
+          ? {
+              // The cancellation's own fee, as every other device reads it from the chain.
+              status: 'cancelled',
+              feeWei: result.feeWei.toString(),
+              reason: 'cancelled',
+            }
           : {
               status: 'failed',
               feeWei: result.totalFeeWei.toString(),
-              reason:
-                result.status === 'cancelled'
-                  ? 'cancelled'
-                  : result.reason ?? 'reverted',
+              reason: result.reason ?? 'reverted',
             },
       )
     }

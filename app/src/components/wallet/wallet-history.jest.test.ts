@@ -16,6 +16,7 @@ import {
   feeOnly,
   type WalletHistoryRow,
 } from './wallet-history'
+import type { SwapActivityRow } from 'src/swap/useSwapActivity'
 
 describe('loadWalletHistory', () => {
   it('reads active and every page of completed history, once each, without effects', async () => {
@@ -281,10 +282,11 @@ describe('buildWalletHistoryGroups', () => {
     const load = (
       operations: EvmNativeOperationStatus[],
       noted: NotedSendStatus[],
+      swaps: SwapActivityRow[] = [],
     ) =>
       buildWalletHistoryGroups({
         chainIdentifier: 'monad-regtest',
-        swaps: [],
+        swaps,
         load: {
           status: 'available',
           stampStages: [],
@@ -344,6 +346,36 @@ describe('buildWalletHistoryGroups', () => {
     expect(row.kind === 'noted' && row.valueWei).toBe('0')
     expect(row.kind === 'noted' && row.feeWei).toBe(fee)
     expect(row.kind === 'noted' && row.state).toBe('included')
+
+    // With the swap's record (which rides in the cancellation's note and names it), every
+    // device shows the one swap row, "Cancelled", with the cancellation's fee: the cancellation
+    // is no second row of its own. Before the chain has been read for the swap row, the fee is
+    // the one the cancellation's note recorded.
+    const swap: SwapActivityRow = {
+      id: 'swap-id',
+      timestamp: 11000,
+      chainIdentifier: 'monad-regtest',
+      txHash: call,
+      cancelTxHash: cancel,
+      fromAmount: '0.000000000000001',
+      fromAsset: 'MON',
+      toAmount: '0',
+      toAsset: 'USDC',
+      route: 'Uniswap v4',
+      status: 'cancelled',
+    }
+    for (const rows of [
+      load([given], [note], [{ ...swap, feeWei: fee }]),
+      load([given], [], [{ ...swap, feeWei: fee }]),
+      load([], [note], [{ ...swap, feeWei: fee }]),
+      // Device B, its outcome not read yet: the note's fee.
+      load([], [note], [swap]),
+    ]) {
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.kind).toBe('swap')
+      expect(rows[0]!.kind === 'swap' && rows[0]!.swap.status).toBe('cancelled')
+      expect(rows[0]!.kind === 'swap' && rows[0]!.swap.feeWei).toBe(fee)
+    }
   })
 
   it("shows another device's sends once per message, dated by their payment's block, and this device's own once", () => {

@@ -264,7 +264,8 @@ export interface SwapOfferItem {
 
 /**
  * The record of one swap this account made, carried in the note the account sends itself
- * when the swap's transaction is included. It says what was signed: where, on which exchange,
+ * when the swap's transaction is included, or, for a swap given up past its deadline, when its
+ * cancellation is (`cancelTxHash`). It says what was signed: where, on which exchange,
  * which transaction, what went in, what was quoted and the least that could come out, and the
  * fees. It does not say what the swap did: that is read from the chain by `txHash`.
  * Amounts are in each asset's smallest unit.
@@ -290,6 +291,20 @@ export interface SwapRecordItem {
   networkFee: string
   /** The exchange's own description of the route, as JSON; needed to read the outcome. */
   route?: string
+  /**
+   * Present when the swap never landed and never can: its deadline passed before it was in a
+   * block, and the wallet gave it up with its cancellation, a transfer of nothing from `account`
+   * to itself at the swap's nonce, which the chain included. The record then rides in the note
+   * that reports the cancellation, so every device of the account lists the swap as cancelled.
+   * What the cancellation cost is read from the chain by this hash; the chain must show it from
+   * `account` to itself, of nothing, at the swap's `nonce`.
+   */
+  cancelTxHash?: string
+  /**
+   * The nonce the swap's transaction was signed at (EVM). A cancellation is believed only at
+   * this nonce of `account`: it is what binds `cancelTxHash` to this swap.
+   */
+  nonce?: number
   timestamp: number
 }
 

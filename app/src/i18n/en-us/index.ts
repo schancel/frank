@@ -2382,6 +2382,7 @@ export const rawEnUS = {
       confirmed: 'Confirmed',
       pending: 'Pending',
       failed: 'Not completed',
+      cancelled: 'Cancelled',
     },
   },
   solanaSwap: {

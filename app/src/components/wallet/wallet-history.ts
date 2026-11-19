@@ -549,10 +549,19 @@ export function buildWalletHistoryGroups(input: {
         : []
       const operation = matches.length === 1 ? matches[0] : undefined
       if (operation) attached.add(operation.operationId)
+      // A cancelled swap's fee: what the chain showed of its cancellation, or, until that is
+      // read, the fee its cancellation's note recorded (the note is not a row of its own).
+      const cancel = swap.cancelTxHash?.toLowerCase()
+      const notedFee = cancel
+        ? (load.status === 'available' ? load.noted : []).find(
+            send => send.txHash.toLowerCase() === cancel,
+          )?.inclusion?.feeWei
+        : undefined
+      const feeWei = swap.feeWei ?? notedFee
       return {
         kind: 'swap',
         id: `swap:${swap.id}`,
-        swap,
+        swap: feeWei === undefined ? swap : { ...swap, feeWei },
         operation,
         timeMs: swap.timestamp,
       }
@@ -661,8 +670,12 @@ export function buildWalletHistoryGroups(input: {
       for (const member of operation.members)
         if (member.transactionHash)
           shown.add(member.transactionHash.toLowerCase())
-    for (const swap of input.swaps)
+    // A swap given up past its deadline is its own row too, with its cancellation: the note of
+    // that cancellation ("Expired swap cancelled") is not a second row for it.
+    for (const swap of input.swaps) {
       if (swap.txHash) shown.add(swap.txHash.toLowerCase())
+      if (swap.cancelTxHash) shown.add(swap.cancelTxHash.toLowerCase())
+    }
     // One send of the account is one row on every device: its transactions are grouped by the
     // operation and message their notes name (`notedSendGroupKeys`), as the sending device's
     // journal groups them.

@@ -102,10 +102,24 @@
                 {{ $t(statusLabel(entry)) }}
               </q-badge>
             </div>
-            <q-item-label v-if="entry.kind === 'swap'" caption class="q-mt-xs">
-              {{ entry.swap.route }} ·
-              {{ formatSwapTime(entry.swap.timestamp) }}
-            </q-item-label>
+            <template v-if="entry.kind === 'swap'">
+              <q-item-label caption class="q-mt-xs">
+                {{ entry.swap.route }} ·
+                {{ formatSwapTime(entry.swap.timestamp) }}
+              </q-item-label>
+              <p
+                v-if="entry.swap.status === 'cancelled' && entry.swap.feeWei"
+                class="text-caption q-mt-xs q-mb-none"
+                data-testid="wallet-activity-fee"
+              >
+                {{
+                  $t('walletHistory.fee', {
+                    amount: nativeAmount(entry.swap.feeWei),
+                    unit: nativeUnit,
+                  })
+                }}
+              </p>
+            </template>
             <template v-else-if="entry.kind === 'received'">
               <q-item-label caption class="q-mt-xs">
                 {{

@@ -2457,6 +2457,7 @@ export const rawFrFR = {
       confirmed: 'Confirmé',
       pending: 'En attente',
       failed: 'Non réalisé',
+      cancelled: 'Annulé',
     },
   },
   solanaSwap: {

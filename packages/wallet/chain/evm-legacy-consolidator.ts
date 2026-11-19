@@ -246,14 +246,24 @@ export function htlcRecordItemOf(
   }
 }
 
-/** The swap-record item of an included swap call that carried a record, else undefined. */
+/**
+ * The swap-record item of a swap call that carried a record, else undefined. A call given up
+ * past its deadline whose cancellation the chain included (and not the call itself) names that
+ * cancellation (`cancelTxHash`): the swap never landed and never can.
+ */
 export function swapRecordItemOf(
   row: EvmNativeOperation,
 ): SwapRecordItem | undefined {
-  const signed = row.members[0]?.signed
+  const member = row.members[0]
+  const signed = member?.signed
   const { record } = row
   if (row.kind !== 'contract' || record?.kind !== 'swap' || !signed)
     return undefined
+  const cancellation = member.cancellation
+  const cancelTxHash =
+    cancellation?.included && nativeMemberSuperseded(member)
+      ? cancellation.transactionHash
+      : undefined
   const asset = (a: EvmSwapCallRecord['assetIn']) => ({
     symbol: a.symbol,
     ...(a.address === null ? {} : { address: a.address }),
@@ -278,6 +288,8 @@ export function swapRecordItemOf(
     interfaceFee: record.interfaceFeeAmount,
     networkFee: record.networkFeeWei,
     ...(route !== undefined && route.length <= 1024 ? { route } : {}),
+    ...(cancelTxHash === undefined ? {} : { cancelTxHash }),
+    nonce: Transaction.from(member.unsignedTransaction).nonce,
     timestamp: Date.now(),
   }
 }
@@ -1573,8 +1585,9 @@ export class EvmLegacyConsolidator {
         }
         // A given-up call's cancellation took its nonce: a transfer of nothing from the account
         // to itself whose fee the account paid. Its other devices are told of it as of any
-        // included send: the signed bytes, and the fee in the spent input's debit. No record
-        // item rides with it: the call it gives up did nothing.
+        // included send: the signed bytes, and the fee in the spent input's debit. A swap's
+        // record rides with it, naming the cancellation (`cancelTxHash`), so every device lists
+        // the swap as cancelled; it is the only note of the swap, whose own call never landed.
         const cancellation = member.cancellation
         if (
           !row.cancelled &&
@@ -1609,7 +1622,7 @@ export class EvmLegacyConsolidator {
                 stage: EVM_CANCELLATION_STAGE,
               },
             },
-            undefined,
+            row.record?.kind === 'swap' ? swapRecordItemOf(row) : undefined,
             'cancellation',
           )
         }

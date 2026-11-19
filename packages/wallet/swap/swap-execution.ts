@@ -7,7 +7,7 @@
 
 import type { UniswapV4Deployment } from '../chain/dex-deployments'
 import type { EvmSwapCallRecord } from '../storage/evm-native-operation-journal'
-import type { EvmDexPlan } from './evm-dex'
+import { SwapRecordMismatchError, type EvmDexPlan } from './evm-dex'
 import {
   chargedGasPrice,
   estimateCallFee,
@@ -96,7 +96,8 @@ export interface SwapWallet {
 /**
  * The record a swap's contract send carries: what goes in, what was quoted and the least that
  * may come out, the fees, the route. The wallet writes it to its journal with the call, before
- * anything is signed, and its note to self carries it once the call is included. The chain is
+ * anything is signed, and its note to self carries it once the call is included (or, for a call
+ * given up past its deadline, once its cancellation is). The chain is
  * the wallet's own; the transaction id is the wallet's to add; what the swap then did is read
  * from the chain and is not part of the record.
  */
@@ -159,6 +160,39 @@ export type SwapResult =
     }
   /** Handed to the network and not yet seen in a block. It may still land. */
   | { status: 'pending'; txHash: string; operationId: string }
+
+/**
+ * What the chain says of a recorded swap's cancellation (`SwapRecordItem.cancelTxHash`), for a
+ * device of the account that did not make it. Sends nothing. `cancelled` once the chain shows
+ * the cancellation in a block as what the wallet sends: a successful transfer of nothing from
+ * `account` to itself at the swap's `nonce` (so it is this swap's, not any other self-transfer);
+ * its fee is what the cancellation charged. `pending` while the node
+ * returns no receipt (it is asked again later). Throws `SwapRecordMismatchError` when the chain
+ * shows anything else under that hash: the record is not believed over the chain.
+ */
+export async function observeSwapCancellation(
+  reader: Pick<SwapExecutionReader, 'getTransactionReceipt' | 'getTransaction'>,
+  input: { cancelTxHash: string; account: string; nonce: number },
+): Promise<{ status: 'cancelled'; feeWei: bigint } | { status: 'pending' }> {
+  const receipt = await reader.getTransactionReceipt(input.cancelTxHash)
+  if (!receipt) return { status: 'pending' }
+  const same = (a: string | null | undefined) =>
+    typeof a === 'string' && a.toLowerCase() === input.account.toLowerCase()
+  const tx = (await reader.getTransaction(input.cancelTxHash)) as {
+    value?: bigint
+    nonce?: number
+  } | null
+  if (
+    receipt.status !== 1 ||
+    !same(receipt.from) ||
+    !same(receipt.to) ||
+    !tx ||
+    tx.value !== 0n ||
+    tx.nonce !== input.nonce
+  )
+    throw new SwapRecordMismatchError()
+  return { status: 'cancelled', feeWei: receipt.gasUsed * receipt.gasPrice }
+}
 
 export interface SwapTiming {
   /** How long to watch for a transaction's inclusion before reporting it pending. */

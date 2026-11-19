@@ -2499,6 +2499,16 @@ export class EvmNativeOperationJournal {
         )
       )
         return false
+      // A cancellation recorded in a block: a read of the account from before that block (a
+      // node behind) says nothing of what took the nonce, and is not recorded over the read
+      // that showed it taken.
+      if (
+        m.cancellation?.included &&
+        !stillIncluded &&
+        frozenAccount !== null &&
+        frozenAccount.blockNumber < m.cancellation.included.blockNumber
+      )
+        return false
       if (
         m.transactionSet &&
         (JSON.stringify(m.observation) !== JSON.stringify(frozenObservation) ||
@@ -2523,15 +2533,14 @@ export class EvmNativeOperationJournal {
       )
         m.syncApplied = false
       // The call itself in a block, or the call's nonce seen free by a read at or after the
-      // cancellation's block: its cancellation, seen included before, is not in a block after all
-      // (a reorganisation). Only one of them can hold the nonce. Its receipt is read again once
-      // the nonce is seen taken. A read from before that block (a node behind) proves nothing.
+      // cancellation's block (an earlier read is refused above): its cancellation, seen included
+      // before, is not in a block after all (a reorganisation). Only one of them can hold the
+      // nonce. Its receipt is read again once the nonce is seen taken.
       if (
         m.cancellation?.included &&
         (stillIncluded ||
           (frozenObservation.state !== 'unknown' &&
             frozenAccount !== null &&
-            frozenAccount.blockNumber >= m.cancellation.included.blockNumber &&
             !nativeMemberSuperseded(m)))
       ) {
         m.cancellation = {

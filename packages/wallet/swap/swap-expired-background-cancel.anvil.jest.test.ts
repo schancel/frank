@@ -753,6 +753,61 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     }
   })
 
+  it('a node behind the cancellation’s block, showing the nonce free, does not undo the recorded cancellation', async () => {
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    const poll = async () => {
+      offset += 20 * 60_000
+      await alice.reobserveNativeOperations!()
+    }
+    try {
+      const swap = await submitLostSwap()
+      await passDeadline(swap.deadline)
+      await poll()
+      await chain.send('evm_mine', [])
+      await chain.send('evm_setAutomine', [true])
+      await expectFreed(swap.nonce)
+      const recorded = rowOf(swap.handle.operationId).members[0]!
+      const included = recorded.cancellation!.included!
+      expect(included).toBeDefined()
+      expect(recorded.account!.nonce).toBeGreaterThan(swap.nonce)
+      // The node answers as of the block before the cancellation's: the call's nonce is free
+      // there, and the node knows neither transaction.
+      const behind = '0x' + (included.blockNumber - 1).toString(16)
+      expect(await chain.getTransactionCount(main, included.blockNumber - 1)).toBe(swap.nonce)
+      const send = JsonRpcProvider.prototype.send
+      let reads = 0
+      const lagging = jest
+        .spyOn(JsonRpcProvider.prototype, 'send')
+        .mockImplementation(async function (this: JsonRpcProvider, method, params) {
+          const args = params as unknown[]
+          if (method === 'eth_getBlockByNumber' && args[0] === 'latest') {
+            reads++
+            return send.call(this, method, [behind, ...args.slice(1)])
+          }
+          if (method === 'eth_blockNumber') return behind
+          return send.call(this, method, params)
+        })
+      try {
+        await poll()
+        await poll()
+        await poll()
+      } finally {
+        lagging.mockRestore()
+      }
+      // The re-check did read the account through the lagging node.
+      expect(reads).toBeGreaterThan(0)
+      const after = rowOf(swap.handle.operationId).members[0]!
+      expect(after.cancellation!.included).toEqual(included)
+      expect(after.account).toEqual(recorded.account)
+      expect(after.observation).toEqual(recorded.observation)
+      await expectFreed(swap.nonce)
+    } finally {
+      clock.mockRestore()
+    }
+  })
+
   it('a cancellation whose receipt could not be read at first has its fee recorded by a later background pass', async () => {
     const notes: WalletSyncItem[] = []
     f.config.emitWalletSync = async item => {

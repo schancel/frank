@@ -660,10 +660,9 @@ suite('a contract call’s receipt settles its account’s coins on every device
       // note goes out after it.
       release()
       await flushing
-      for (let i = 0; i < 20 && !member().syncApplied; i++) {
-        await alice.flushNativeSync!()
+      // Nothing else asks for it (no flush, no poll): the first delivery's own end sends it.
+      for (let i = 0; i < 40 && !member().syncApplied; i++)
         await new Promise(resolve => setTimeout(resolve, 50))
-      }
       expect(member().syncApplied).toBe(true)
       const sent = notes.filter(items => (items[0] as WalletSyncItem).txHash === first.hash)
       expect(sent).toHaveLength(2)

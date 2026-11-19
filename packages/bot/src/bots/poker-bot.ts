@@ -226,14 +226,7 @@ export class PokerBot implements FrankBotDefinition {
   private buildPokerItem(
     table: PokerGameState,
     recipientAddress?: string,
-  ): PokerItem & {
-    serverCommit?: string;
-    serverSeed?: string;
-    playerCommits?: Record<string, string>;
-    playerSeeds?: Record<string, string>;
-    holeCardCommits?: Record<string, string>;
-    holeCardSalts?: Record<string, string>;
-  } {
+  ): PokerItem {
     const active = table.players[table.activePlayerIndex];
     const localPlayer = recipientAddress
       ? table.players.find(p => p.address.toLowerCase() === recipientAddress.toLowerCase())
@@ -360,18 +353,6 @@ export class PokerBot implements FrankBotDefinition {
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
 
-        // Announce table to public discovery topic
-        await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
-          gameName: "Texas Hold'em Poker",
-          gameType: "poker",
-          tableId,
-          hostAddress: sender,
-          buyInAmount: `${ctx.formatAmount(POKER_DEFAULT_BUY_IN_WEI)} (1000 chips, blinds 10/20)`,
-          currentPlayers: table.players.length,
-          maxPlayers: table.maxPlayers,
-          botAddress: ctx.address,
-        });
-
         const item = this.buildPokerItem(table, sender);
         await msgCtx.reply([
           {
@@ -380,6 +361,21 @@ export class PokerBot implements FrankBotDefinition {
           },
           item,
         ]);
+
+        // Announced on the public discovery topic beside the handler: the post pays on chain and
+        // may be slow or fail, and neither this reply nor the player's next message waits for it.
+        ctx.runInBackground(`Announcing table ${tableId}`, () =>
+          this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
+            gameName: "Texas Hold'em Poker",
+            gameType: "poker",
+            tableId,
+            hostAddress: sender,
+            buyInAmount: `${ctx.formatAmount(POKER_DEFAULT_BUY_IN_WEI)} (1000 chips, blinds 10/20)`,
+            currentPlayers: table.players.length,
+            maxPlayers: table.maxPlayers,
+            botAddress: ctx.address,
+          })
+        );
         return;
       }
 

@@ -216,6 +216,7 @@ suite("joining a poker table from the player's wallet: lock, join, play, payout,
       state,
       sendMessage: jest.fn(),
       publishTopicMessage: undefined,
+      runInBackground: (_what: string, task: () => Promise<unknown>) => void task(),
       contractCalls: botContractCallsOf(bot.wallet, () => htlc),
       tableSecrets: tableSecretCapabilityOf(bot.wallet),
     } as unknown as BotContext;

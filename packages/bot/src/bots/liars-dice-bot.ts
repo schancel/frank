@@ -220,10 +220,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
     game: LiarsDiceGameState,
     action: LiarsDiceItem["action"],
     recipientAddress?: string,
-  ): LiarsDiceItem & {
-    cupCommits?: Record<string, string>;
-    cupSalts?: Record<string, string>;
-  } {
+  ): LiarsDiceItem {
     const active = getActivePlayer(game);
     const isRevealed = game.status === "showdown" || game.status === "resolved";
     const revealedCups: Record<string, number[]> = {};
@@ -369,18 +366,6 @@ export class LiarsDiceBot implements FrankBotDefinition {
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
 
-        // Announce table to public discovery topic
-        await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
-          gameName: "Liar's Dice",
-          gameType: "liars-dice",
-          tableId,
-          hostAddress: sender,
-          buyInAmount: ctx.formatAmount(buyInWei),
-          currentPlayers: game.players.length,
-          maxPlayers: game.maxPlayers,
-          botAddress: ctx.address,
-        });
-
         const item = this.buildLiarsDiceItem(game, "create", sender);
         await msgCtx.reply([
           {
@@ -389,6 +374,21 @@ export class LiarsDiceBot implements FrankBotDefinition {
           },
           item,
         ]);
+
+        // Announced on the public discovery topic beside the handler: the post pays on chain and
+        // may be slow or fail, and neither this reply nor the player's next message waits for it.
+        ctx.runInBackground(`Announcing table ${tableId}`, () =>
+          this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
+            gameName: "Liar's Dice",
+            gameType: "liars-dice",
+            tableId,
+            hostAddress: sender,
+            buyInAmount: ctx.formatAmount(buyInWei),
+            currentPlayers: game.players.length,
+            maxPlayers: game.maxPlayers,
+            botAddress: ctx.address,
+          })
+        );
         return;
       }
 

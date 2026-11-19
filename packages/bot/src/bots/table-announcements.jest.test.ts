@@ -187,12 +187,15 @@ describe("Game Table Announcements for Topic Discovery", () => {
   describe("Integration with PokerBot and LiarsDiceBot table creation", () => {
     it("PokerBot publishes an announcement to 'games' topic upon /poker create", async () => {
       const bot = new PokerBot({ escrows: seatingEscrowBook("poker").book });
+      const background: Promise<unknown>[] = [];
       const mockPublish = jest.fn(async () => ({ payloadDigest: "0xpokerdigest" }));
       const mockBotCtx: Partial<BotContext> = {
         address: "0xPokerBotAddress",
         ...amountsOf("monad-testnet"),
         publishTopicMessage: mockPublish,
         state: { get: jest.fn(), put: jest.fn() } as any,
+        // The announcement is a side task beside the handler; the test waits for it.
+        runInBackground: (_what, task) => void background.push(task()),
       };
 
       const reply = jest.fn();
@@ -206,6 +209,7 @@ describe("Game Table Announcements for Topic Discovery", () => {
       );
 
       expect(reply).toHaveBeenCalledTimes(1);
+      await Promise.all(background);
       expect(mockPublish).toHaveBeenCalledTimes(1);
       const publishArg = mockPublish.mock.calls[0][0];
       expect(publishArg.topic).toBe(DEFAULT_GAMES_TOPIC);
@@ -215,12 +219,15 @@ describe("Game Table Announcements for Topic Discovery", () => {
 
     it("LiarsDiceBot publishes an announcement to 'games' topic upon /table create", async () => {
       const bot = new LiarsDiceBot({ escrows: seatingEscrowBook("liars-dice").book });
+      const background: Promise<unknown>[] = [];
       const mockPublish = jest.fn(async () => ({ payloadDigest: "0xdicedigest" }));
       const mockBotCtx: Partial<BotContext> = {
         address: "0xLiarsDiceBotAddress",
         ...amountsOf("monad-testnet"),
         publishTopicMessage: mockPublish,
         state: { get: jest.fn(), put: jest.fn() } as any,
+        // The announcement is a side task beside the handler; the test waits for it.
+        runInBackground: (_what, task) => void background.push(task()),
       };
 
       const reply = jest.fn();
@@ -234,6 +241,7 @@ describe("Game Table Announcements for Topic Discovery", () => {
       );
 
       expect(reply).toHaveBeenCalledTimes(1);
+      await Promise.all(background);
       expect(mockPublish).toHaveBeenCalledTimes(1);
       const publishArg = mockPublish.mock.calls[0][0];
       expect(publishArg.topic).toBe(DEFAULT_GAMES_TOPIC);

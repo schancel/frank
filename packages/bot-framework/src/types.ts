@@ -248,6 +248,11 @@ export interface BotContext {
     entries: ForumMessageEntry[];
     voteWeightWei?: bigint;
   }): Promise<{ payloadDigest: string }>;
+
+  /** Runs `task` beside the handler instead of inside it: the handler (and the peer's next
+   * message) does not wait for it, and the host's stop does. Its failure is logged with `what`,
+   * never thrown. For work a reply must not wait for, such as a paid topic announcement. */
+  runInBackground(what: string, task: () => Promise<unknown>): void;
 }
 
 /** A text reply the host stores before it is first sent and then delivers itself: it is sent

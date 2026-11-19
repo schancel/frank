@@ -254,6 +254,13 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       ],
       winnerAddress: B,
       stealthAddress: B,
+      serverCommit: H,
+      serverSeed: "c5".repeat(32),
+      playerCommits: { [A]: H },
+      playerSeeds: { [A]: "a5".repeat(32) },
+      holeCardCommits: { [A]: H },
+      holeCardSalts: { [A]: "d5".repeat(32) },
+      handNumber: 1,
     },
     cases: [
       ...each("tableId", [0], BAD_IDS),
@@ -298,6 +305,15 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       // A value the retired field accepted: only an unknown-key refusal rejects it.
       ["retired key 17 (settlement tx hash)", [17], TX],
       ...each("stealthAddress", [18], BAD_ADDRESSES),
+      ...each("serverCommit", [21], BAD_HASHES),
+      ...each("serverSeed", [22], BAD_SECRETS),
+      ["playerCommits: 17 entries", [23], addresses(17).map((a) => [a, H])],
+      ...each("playerCommits key", [23, 0, 0], BAD_ADDRESSES),
+      ...each("playerCommits value", [23, 0, 1], BAD_HASHES),
+      ...each("playerSeeds value", [24, 0, 1], BAD_SECRETS),
+      ...each("holeCardCommits value", [25, 0, 1], BAD_HASHES),
+      ...each("holeCardSalts value", [26, 0, 1], BAD_SECRETS),
+      ...each("handNumber", [27], [-1, 1_000_001]),
     ],
   },
   {
@@ -333,6 +349,8 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       winnerAddress: B,
       potWei: "100",
       stealthAddress: B,
+      cupCommits: { [A]: H },
+      cupSalts: { [A]: "d5".repeat(32) },
     },
     cases: [
       ...each("tableId", [0], BAD_IDS),
@@ -373,6 +391,10 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
       // A value the retired field accepted: only an unknown-key refusal rejects it.
       ["retired key 21 (settlement tx hash)", [21], TX],
       ...each("stealthAddress", [22], BAD_ADDRESSES),
+      ["cupCommits: 17 entries", [25], addresses(17).map((a) => [a, H])],
+      ...each("cupCommits key", [25, 0, 0], BAD_ADDRESSES),
+      ...each("cupCommits value", [25, 0, 1], BAD_HASHES),
+      ...each("cupSalts value", [26, 0, 1], BAD_SECRETS),
     ],
   },
   {

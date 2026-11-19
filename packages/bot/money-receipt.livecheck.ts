@@ -52,6 +52,10 @@ async function main() {
     const ctx: BotContext = {
       ...chainAmounts(bob.chain),
       botId: "receipt-proof",
+      // The receipt check starts no side task.
+      runInBackground: () => {
+        throw new Error("not used by the receipt check");
+      },
       address: bob.address,
       subject: bob.handle.identity.compressedPubKey.toString("hex"),
       relayBaseUrl: stack.relayUrl,

@@ -635,6 +635,10 @@ export interface LiarsDiceItem {
   playerCommits?: Record<string, string>
   /** Revealed player secrets at showdown (player address -> seed). */
   playerSeeds?: Record<string, string>
+  /** Each player's dice cup commitment for this round (player address -> hash). */
+  cupCommits?: Record<string, string>
+  /** Revealed cup salts at showdown (player address -> salt). */
+  cupSalts?: Record<string, string>
   /** Secret dice for the local player (during bidding, decrypted/known only to local player). */
   myDice?: number[]
   /** Revealed dice cups for all players at showdown (player address -> array of dice faces 1..6). */
@@ -722,6 +726,20 @@ export interface PokerItem {
   escrow?: TableEscrowItemTerms
   /** `join` only, from the player: the buy-in lock it opened. */
   buyInLock?: TableBuyInLockItem
+  /** The dealer's hash commitment to this hand's server seed. */
+  serverCommit?: string
+  /** The server seed, revealed at showdown and settlement. */
+  serverSeed?: string
+  /** Player seed commitments for this hand (player address -> hash). */
+  playerCommits?: Record<string, string>
+  /** Revealed player seeds (player address -> seed). */
+  playerSeeds?: Record<string, string>
+  /** Each player's hole-card commitment (player address -> hash). */
+  holeCardCommits?: Record<string, string>
+  /** Revealed hole-card salts (player address -> salt). */
+  holeCardSalts?: Record<string, string>
+  /** The hand this item describes (the table's hand count: 0 before the first deal). */
+  handNumber?: number
 }
 
 export type WalletSyncDirection = 'in' | 'out'

@@ -236,6 +236,7 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
       state: store,
       sendMessage: jest.fn(),
       publishTopicMessage: undefined,
+      runInBackground: (_what: string, task: () => Promise<unknown>) => void task(),
       contractCalls: botContractCallsOf(wallet, () => htlc),
       tableSecrets: tableSecretCapabilityOf(wallet),
     } as unknown as BotContext;

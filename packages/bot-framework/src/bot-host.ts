@@ -293,6 +293,9 @@ interface ActiveBotInstance {
   pushPausedUntilMs: number;
   /** This bot's mailbox read until a poll uses its result: it may outlive the poll that started it. */
   mailboxRead?: Promise<MailboxRead>;
+  /** This bot's questions to the wallet (`askWallet`), while they run: beside the mailbox read,
+   * and they may outlive the poll that started them. Never rejects. */
+  walletQuestions?: Promise<void>;
   /** The record last reported as not translatable yet, so the warning is not repeated. */
   incompleteWarned?: number;
   lastAuthRecoveryMs?: number;
@@ -730,6 +733,8 @@ export class FrankBotHost {
         }
       );
 
+      // Handler tasks and side tasks of this bot (`runInBackground`): stop waits for all of them.
+      const tasks = new Set<Promise<unknown>>();
       const context: BotContext = {
         botId: definition.id,
         address: botAddress,
@@ -965,6 +970,19 @@ export class FrankBotHost {
           return wallet.getSpendableBalance();
         },
 
+        runInBackground: (what, task) => {
+          const side = Promise.resolve()
+            .then(task)
+            .catch((error) =>
+              console.warn(
+                `[bot-host] [${definition.id}] ${what} failed:`,
+                error instanceof Error ? error.message : error
+              )
+            );
+          tasks.add(side);
+          void side.finally(() => tasks.delete(side));
+        },
+
         publishTopicMessage: async ({ topic, entries, voteWeightWei }) => {
           return this.chain.topics.post({
             wallet,
@@ -1020,7 +1038,7 @@ export class FrankBotHost {
         wallet,
         state,
         operations,
-        tasks: new Set(),
+        tasks,
         directory,
         uninstallDirectory,
         loopGuard,
@@ -1151,12 +1169,15 @@ export class FrankBotHost {
 
   /** One poll pass of every bot. Each bot polls on its own: a relay call that hangs or fails for
    * one bot holds only that bot. Single flight per bot: a tick that finds a bot's pass still
-   * running joins it instead of starting a second one. Resolves when every pass has ended. */
+   * running joins it instead of starting a second one. Resolves when every pass has ended, and
+   * the wallet questions each started beside its mailbox read with it (the tick, `pollDueBots`,
+   * never waits for those). */
   private pollAllBots(): Promise<void> {
     return Promise.all(
-      [...this.instances.entries()].map(([id, instance]) =>
-        this.pollBot(id, instance)
-      )
+      [...this.instances.entries()].map(async ([id, instance]) => {
+        await this.pollBot(id, instance);
+        await instance.walletQuestions;
+      })
     ).then(() => undefined);
   }
 
@@ -1455,6 +1476,114 @@ export class FrankBotHost {
     );
   }
 
+  /** One poll's questions to the wallet, beside the poll's mailbox read (see `pollOnce`):
+   * stored replies the wallet already holds an attempt for are asked about (the wallet sends the
+   * same bytes again and says what became of them, rows behind the mailbox cursor included);
+   * with none, the wallet retries every unresolved payment it holds. Idle, it may then merge
+   * small coins. */
+  private async askWallet(
+    id: string,
+    instance: ActiveBotInstance
+  ): Promise<void> {
+    let asked = false;
+    // Whether a question to the wallet failed: then nothing is funded ahead.
+    let held = false;
+    const now = Date.now();
+    for (const row of instance.operations.listStarted()) {
+      if (this.closing) return;
+      if (instance.inFlightDigests.has(row.digest)) continue;
+      const outbound = row.reply?.digest;
+      // Not with the wallet yet: sent by the retry pass (`retryReplies`).
+      if (!row.reply || !outbound) continue;
+      asked = true;
+      let status: string;
+      try {
+        status =
+          (
+            await bounded(
+              this.chain.directMessages.reconcileAttempts({
+                wallet: instance.wallet,
+                payloadDigests: [outbound],
+              }),
+              "Asking the wallet about a reply",
+              this.options.callTimeoutMs
+            )
+          )[outbound] ?? "unknown";
+      } catch (error) {
+        held = true;
+        instance.operations.assertOpen(); // a failed journal write faults admission, not just recovery
+        console.warn(
+          `[bot-host] [${id}] The wallet could not be asked about the reply to ${row.peerAddress}; asked again on the next poll:`,
+          error instanceof Error ? error.message : error
+        );
+        // Not known this poll. The bound below still applies: a question that keeps failing
+        // must not keep its conversation waiting for ever.
+        status = "unknown";
+      }
+      if (status === "delivered")
+        void this.track(instance, row, () =>
+          this.finish(instance, row.digest, true)
+        );
+      else if (status === "dead")
+        void this.track(instance, row, () =>
+          this.giveUp(instance, row.digest, "the relay ended its delivery")
+        );
+      else if (now - row.reply.since >= this.options.replyGiveUpMs)
+        void this.track(instance, row, () =>
+          this.giveUp(
+            instance,
+            row.digest,
+            "it was paid for but not delivered in time; the wallet keeps its payment and may still deliver it"
+          )
+        );
+    }
+    if (this.closing) return;
+    // A paid reply this host has no incomplete row for any more is still the wallet's to
+    // finish. The wallet retries every unresolved payment it holds whichever ones it is asked
+    // about, so when no row asked, ask about none: the same exact bytes are sent again, never
+    // a new payment, and with nothing unresolved the wallet makes no request. Not while a
+    // handler is sending: its send moves its own message on. Never at registration.
+    if (!asked && instance.inFlightDigests.size === 0) {
+      try {
+        await bounded(
+          this.chain.directMessages.reconcileAttempts({
+            wallet: instance.wallet,
+            payloadDigests: [],
+          }),
+          "Retrying the wallet's earlier payments",
+          this.options.callTimeoutMs
+        );
+        this.walletRetryWarned.delete(id);
+      } catch (error) {
+        held = true;
+        if (!this.walletRetryWarned.has(id)) {
+          this.walletRetryWarned.add(id);
+          console.warn(
+            `[bot-host] [${id}] Earlier reply payments could not be retried; preserve state:`,
+            error instanceof Error ? error.message : error
+          );
+        }
+      }
+      if (this.closing) return;
+    }
+    // Idle (no reply being handled or asked about): the wallet may merge the small coins
+    // stamps and payouts left (owner, 2026-10-26). Not awaited; its failure is not this
+    // poll's, and the next idle poll tries again. A handle without it has nothing to do.
+    if (!asked && !held && instance.inFlightDigests.size === 0)
+      try {
+        void instance.wallet
+          .maintainCoins?.()
+          .catch((error) =>
+            console.warn(
+              `[bot-host] [${id}] Background coin maintenance failed:`,
+              error instanceof Error ? error.message : error
+            )
+          );
+      } catch {
+        /* Nothing to do. */
+      }
+  }
+
   private async pollOnce(
     id: string,
     instance: ActiveBotInstance
@@ -1465,96 +1594,32 @@ export class FrankBotHost {
         if (instance.operations.isFaulted) await this.recoverJournal(id, instance);
         instance.operations.assertOpen();
         this.topUp(id, instance);
-        // Stored replies the wallet already holds an attempt for: the wallet sends the same
-        // bytes again and says what became of them. Rows behind the mailbox cursor included.
-        let asked = false;
-        // Whether a question to the wallet failed in this poll: then nothing is funded ahead.
-        let held = false;
         const now = Date.now();
         for (const row of instance.operations.listStarted()) {
           if (this.closing) return;
-          if (instance.inFlightDigests.has(row.digest)) continue;
-          if (!row.reply) {
-            // Started, no handler running and nothing owed: a restart interrupted its handler.
+          // Started, no handler running and nothing owed: a restart interrupted its handler.
+          if (!row.reply && !instance.inFlightDigests.has(row.digest))
             void this.track(instance, row, () =>
               this.finishInterrupted(instance, row.digest)
             );
-            continue;
-          }
-          const outbound = row.reply.digest;
-          // Not with the wallet yet: sent by the retry pass below.
-          if (!outbound) continue;
-          asked = true;
-          let status: string;
-          try {
-            status =
-              (
-                await bounded(
-                  this.chain.directMessages.reconcileAttempts({
-                    wallet: instance.wallet,
-                    payloadDigests: [outbound],
-                  }),
-                  "Asking the wallet about a reply",
-          this.options.callTimeoutMs
-                )
-              )[outbound] ?? "unknown";
-          } catch (error) {
-            held = true;
-            instance.operations.assertOpen(); // a failed journal write faults admission, not just recovery
-            console.warn(
-              `[bot-host] [${id}] The wallet could not be asked about the reply to ${row.peerAddress}; asked again on the next poll:`,
+        }
+        // The wallet's questions (its earlier replies' fate, and its retry of every unresolved
+        // payment) run beside the mailbox read, never ahead of it: a slow chain or relay must not
+        // keep new messages from being read and answered. Single flight: one still running when
+        // the next poll comes is not started again beside it.
+        if (!instance.walletQuestions) {
+          const questions = this.askWallet(id, instance).catch((error) => {
+            // A failed journal write is mended by the next poll (`recoverJournal`).
+            (instance.operations.isFaulted ? console.error : console.warn)(
+              `[bot-host] [${id}] The wallet's questions of this poll stopped:`,
               error instanceof Error ? error.message : error
             );
-            // Not known this poll. The bound below still applies: a question that keeps failing
-            // must not keep its conversation waiting for ever.
-            status = "unknown";
-          }
-          if (status === "delivered")
-            void this.track(instance, row, () =>
-              this.finish(instance, row.digest, true)
-            );
-          else if (status === "dead")
-            void this.track(instance, row, () =>
-              this.giveUp(instance, row.digest, "the relay ended its delivery")
-            );
-          else if (now - row.reply.since >= this.options.replyGiveUpMs)
-            void this.track(instance, row, () =>
-              this.giveUp(
-                instance,
-                row.digest,
-                "it was paid for but not delivered in time; the wallet keeps its payment and may still deliver it"
-              )
-            );
-        }
-        if (this.closing) return;
-        // A paid reply this host has no incomplete row for any more is still the wallet's to
-        // finish. The wallet retries every unresolved payment it holds whichever ones it is asked
-        // about, so when no row asked, ask about none: the same exact bytes are sent again, never
-        // a new payment, and with nothing unresolved the wallet makes no request. Not while a
-        // handler is sending: its send settles the wallet's earlier payments first, and this
-        // poll would only wait behind it. Never at registration.
-        if (!asked && instance.inFlightDigests.size === 0) {
-          try {
-            await bounded(
-              this.chain.directMessages.reconcileAttempts({
-                wallet: instance.wallet,
-                payloadDigests: [],
-              }),
-              "Retrying the wallet's earlier payments",
-          this.options.callTimeoutMs
-            );
-            this.walletRetryWarned.delete(id);
-          } catch (error) {
-            held = true;
-            if (!this.walletRetryWarned.has(id)) {
-              this.walletRetryWarned.add(id);
-              console.warn(
-                `[bot-host] [${id}] Earlier reply payments could not be retried; preserve state:`,
-                error instanceof Error ? error.message : error
-              );
-            }
-          }
-          if (this.closing) return;
+          });
+          instance.walletQuestions = questions;
+          void questions.finally(() => {
+            if (instance.walletQuestions === questions)
+              instance.walletQuestions = undefined;
+          });
         }
         // Native transfers this wallet broadcast and nothing has seen confirm: the wallet looks
         // again, within its own request bound (none when nothing is pending). Not awaited, and
@@ -1566,22 +1631,6 @@ export class FrankBotHost {
         } catch {
           /* Nothing to do. */
         }
-        // Idle (no reply being handled or asked about): the wallet may merge the small coins
-        // stamps and payouts left (owner, 2026-10-26). Not awaited; its failure is not this
-        // poll's, and the next idle poll tries again. A handle without it has nothing to do.
-        if (!asked && !held && instance.inFlightDigests.size === 0)
-          try {
-            void instance.wallet
-              .maintainCoins?.()
-              .catch((error) =>
-                console.warn(
-                  `[bot-host] [${id}] Background coin maintenance failed:`,
-                  error instanceof Error ? error.message : error
-                )
-              );
-          } catch {
-            /* Nothing to do. */
-          }
         // A read that outlived an earlier poll's bound is joined, or its result used, not
         // started again beside it: abandoned reads would pile up and starve every bot of CPU.
         instance.mailboxRead ??= this.readMailbox(instance).catch((error) => {
@@ -2728,7 +2777,11 @@ export class FrankBotHost {
         attempt(`${id}: negotiation.stop`, () => instance.negotiation?.stop())
       ));
       await Promise.allSettled(
-        [...this.instances.values()].flatMap(instance => [instance.polling, instance.mailboxRead])
+        [...this.instances.values()].flatMap(instance => [
+          instance.polling,
+          instance.mailboxRead,
+          instance.walletQuestions,
+        ])
       );
       for (const [id, instance] of this.instances) {
         while (instance.tasks.size)

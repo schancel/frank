@@ -1031,7 +1031,41 @@ pub(crate) fn parse_forum_content(
     {
         let p = format!("{}[{i}]", at(path, k::ENTRIES));
         let kind = u64_in(map_field(entry, mf::forum_entry::KIND), &p, 0, u64::MAX)?;
-        if kind != u64::from(mf::forum_entry_kind::POST) {
+        if kind == u64::from(mf::forum_entry_kind::GAME) {
+            use mf::forum_game_entry as game;
+            let e = shaped(Some(entry), &p, &game::SHAPE, allow)?;
+            let text = |key, max| {
+                if e.has(key) {
+                    tstr(e.get(key), &at(&p, key), 0, max).map(Some)
+                } else {
+                    Ok(None)
+                }
+            };
+            let count = |key| {
+                if e.has(key) {
+                    u64_in(e.get(key), &at(&p, key), 0, 1000).map(Some)
+                } else {
+                    Ok(None)
+                }
+            };
+            entries.push(ForumEntry::Game {
+                game_type: tstr(e.get(game::GAME_TYPE), &at(&p, game::GAME_TYPE), 1, 64)?,
+                table_id: tstr(e.get(game::TABLE_ID), &at(&p, game::TABLE_ID), 1, 128)?,
+                host_address: tstr(
+                    e.get(game::HOST_ADDRESS),
+                    &at(&p, game::HOST_ADDRESS),
+                    1,
+                    128,
+                )?,
+                buy_in_amount: text(game::BUY_IN_AMOUNT, 64)?,
+                current_players: count(game::CURRENT_PLAYERS)?,
+                max_players: count(game::MAX_PLAYERS)?,
+                bot_address: text(game::BOT_ADDRESS, 128)?,
+                title: text(game::TITLE, 512)?,
+                message: text(game::MESSAGE, MAX_TEXT_STRING_BYTES)?,
+                unknown: e.unknown,
+            });
+        } else if kind != u64::from(mf::forum_entry_kind::POST) {
             if !allow {
                 return Err(bad(&p, "unallocated Forum entry kind"));
             }

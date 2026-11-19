@@ -61,11 +61,12 @@ suite('HTLC swap runner on xec-regtest and anvil', () => {
       /lostToRefund/,
       /two devices of A: only the active device funds/,
       /two devices of A: the device taking over withdraws from the chain state alone, once/,
-      /a double-funded script: B claims each exact output/,
+      /a double-funded script: B claims exactly one output/,
+      /the extra output: A refunds it after T_A/,
       /withdrawn A refunds only the extra output/,
       /B back online: claims the output A left for it/,
     ])
       expect(checks.some(line => expected.test(line))).toBe(true)
-    expect(output).toMatch(/HTLC swap runner regtest: OK \(16 checks\)/)
+    expect(output).toMatch(/HTLC swap runner regtest: OK \(17 checks\)/)
   }, 600_000)
 })

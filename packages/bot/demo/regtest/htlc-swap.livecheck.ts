@@ -29,7 +29,8 @@
  *      outside the runner leaves B `lostToRefund`;
  *   5. two devices of A's account: only the active one funds; the other, with no record of the
  *      swap, takes over and withdraws from the journal and the chains alone;
- *   6. a second exact funding output at the script, B online: B claims both;
+ *   6. a second exact funding output at the script, B online: B claims exactly one, A
+ *      refunds the extra after T_A;
  *   7. a second exact funding output, B offline past T_A: A (withdrawn) refunds one and leaves
  *      the other for B, which B claims when it is back.
  */
@@ -494,7 +495,7 @@ export async function htlcSwapCheck(xec: EcashRegtest, anvilBin: string): Promis
     }
 
     alice.active = one
-    // ======================= 6. double funding, B online: B claims both =======================
+    // ============ 6. double funding, B online: B claims one, A refunds the extra ============
     {
       const s = await negotiate()
       expectPhase(await tick(alice, s), 'accepted', 'fund-xec')
@@ -503,21 +504,28 @@ export async function htlcSwapCheck(xec: EcashRegtest, anvilBin: string): Promis
       await evmMine()
       expectPhase(await tick(alice, s), 'claiming', 'withdraw-evm')
       expectPhase(await tick(alice, s), 'claimed', 'none')
-      const before = await xecBalanceOf(bobDevice.xecPrimary)
+      const bobBefore = await xecBalanceOf(bobDevice.xecPrimary)
       expectPhase(await tick(bob, s, bobDevice, { reopen: true }), 'claimingXec', 'sign-xec-spend')
-      expectPhase(await tick(bob, s, bobDevice, { reopen: true }), 'claimingXec', 'sign-xec-spend')
+      // B is owed one principal: its claim in the mempool, it claims nothing more.
       expectPhase(await tick(bob, s, bobDevice, { reopen: true }), 'claimingXec', 'none')
       await xec.mine(1)
       expectPhase(await tick(bob, s), 'complete', 'none')
       const record = JSON.parse((await bobDevice.call<string>('record', { swapId: s.swapId }))!)
-      assert.equal(record.xecSpends.length, 2)
-      const outputs = await scriptOutputs(s)
-      assert.deepEqual(
-        outputs.map(o => o.spentBy?.txid).sort(),
-        record.xecSpends.map((x: { txid: string }) => x.txid).sort(),
-      )
-      assert.equal((await xecBalanceOf(bobDevice.xecPrimary)) - before, 2n * XEC_PRINCIPAL)
-      step('a double-funded script: B claims each exact output, one signed spend per outpoint')
+      assert.equal(record.xecSpends.length, 1)
+      assert.equal((await xecBalanceOf(bobDevice.xecPrimary)) - bobBefore, XEC_PRINCIPAL)
+      assert.equal((await scriptOutputs(s)).filter(o => o.spentBy === undefined).length, 1)
+      step('a double-funded script: B claims exactly one output')
+      // Before T_A the extra output stays; after it, A refunds it (B's claim is final).
+      expectPhase(await tick(alice, s), 'claimed', 'none')
+      await advanceTo(s.T_A + 1, { xecMtp: true })
+      const aliceBefore = await xecBalanceOf(one.xecPrimary)
+      expectPhase(await tick(alice, s, one, { reopen: true }), 'claimed', 'sign-xec-spend')
+      await xec.mine(1)
+      expectPhase(await tick(alice, s, one, { reopen: true }), 'claimed', 'none')
+      expectPhase(await tick(bob, s), 'complete', 'none')
+      assert.equal((await scriptOutputs(s)).filter(o => o.spentBy === undefined).length, 0)
+      assert.equal((await xecBalanceOf(one.xecPrimary)) - aliceBefore, XEC_PRINCIPAL)
+      step('the extra output: A refunds it after T_A')
     }
 
     // ============ 7. double funding, B offline past T_A: A refunds only the extra ============

@@ -148,6 +148,9 @@ export interface EvmHtlcOwnCall {
   readonly action: 'lock' | 'withdraw' | 'refund'
   readonly operationId: string
   readonly state: EvmHtlcCallState
+  /** Whether the call was ever signed: a call journaled but never signed (a crash before
+   * signing, a cancelled plan) cannot have shown its calldata to anyone. */
+  readonly signed: boolean
 }
 
 export interface EvmHtlcLockTerms {
@@ -671,7 +674,8 @@ function calls(
 ) {
   const mine = observations.evmCalls.filter(c => c.action === action)
   return {
-    any: mine.length > 0,
+    /** A call that was signed: its calldata may have reached the network. */
+    signed: mine.some(c => c.signed),
     pending: mine.some(c => c.state === 'pending'),
     landed: mine.some(c => c.state === 'landed'),
     reverts: mine.filter(c => c.state === 'reverted').length,
@@ -764,10 +768,11 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     if (!withdrawn && evm.mainBalanceWei < evm.callCostWei)
       warnings.push('claim-gas-low')
     if (withdrawn) {
-      // A never refunds what B is owed: until B has claimed an output, the first unspent one
-      // stays for B. Any other exact output is A's own extra funding, refundable after T_A.
+      // A never refunds what B is owed: until a claim of B's is final, the first unspent one
+      // stays for B (a claim still in the mempool can lose to a refund of its output). Any
+      // other exact output is A's own extra funding, refundable after T_A.
       const refundable = mtpPassed
-        ? claimed.length > 0
+        ? claimed.some(o => o.spentBy!.final)
           ? unspent
           : unspent.slice(1)
         : []
@@ -785,7 +790,7 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     // Once a withdraw was sent (it may have reverted, been given up or still be pending) or B
     // claimed, the preimage may be public: A then withdraws for as long as the lock can pay,
     // whatever the margin or earlier reverts.
-    const secretPublic = peerClaimed || withdraw.any
+    const secretPublic = peerClaimed || withdraw.signed
     const withdrawDeadline = secretPublic
       ? terms.evmExpiry - 1
       : cut.evmWithdrawBy
@@ -897,14 +902,18 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
       )
     return decide('evmLocked', NONE, warnings, funding)
   }
-  // Withdrawn: A revealed the preimage on chain; B claims every exact output it can with it.
-  if (unspent.length > 0)
+  // Withdrawn: A revealed the preimage on chain. B is owed exactly one principal: it claims one
+  // output, the one A keeps back for it (the first unspent exact output), or the one it already
+  // signed a claim for. Any extra output is A's to refund after T_A.
+  if (claimed.length === 0 && unspent.length > 0) {
+    const signed = unspent.find(o => storedXecSpendOf(record, o))
     return decide(
       'claimingXec',
-      xecSpendAction(unspent, record, 'claim', latest.preimage),
+      xecSpendAction([signed ?? unspent[0]!], record, 'claim', latest.preimage),
       warnings,
       funding,
     )
+  }
   if (claimed.length > 0) {
     const final = claimed.every(o => o.spentBy!.final)
     return decide(

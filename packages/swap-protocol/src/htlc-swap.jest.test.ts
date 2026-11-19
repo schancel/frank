@@ -147,7 +147,13 @@ const both = (state: 'open' | 'withdrawn' | 'refunded') => ({
 const call = (
   action: EvmHtlcOwnCall['action'],
   state: EvmHtlcOwnCall['state'],
-): EvmHtlcOwnCall => ({ action, state, operationId: `${action}-${state}` })
+  signed = true,
+): EvmHtlcOwnCall => ({
+  action,
+  state,
+  signed,
+  operationId: `${action}-${state}`,
+})
 
 interface Case {
   readonly now?: number
@@ -585,6 +591,25 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
       'claiming/withdraw-evm',
     ],
     [
+      'withdraw journaled but never signed (crash before signing): the M_evm margin still applies',
+      {
+        now: withdrawBy + 1,
+        xec: xecObs([output()]),
+        evm: both('open'),
+        calls: [call('withdraw', 'ended', false)],
+      },
+      'awaitRefund/none',
+    ],
+    [
+      'withdraw journaled but never signed, before the cutoff: withdraws with deadline T_B − M_evm',
+      {
+        xec: xecObs([output()]),
+        evm: both('open'),
+        calls: [call('withdraw', 'ended', false)],
+      },
+      'claiming/withdraw-evm',
+    ],
+    [
       'withdraw sent before: keeps withdrawing past T_B − M_evm until T_B',
       {
         now: T_B - 1,
@@ -851,6 +876,15 @@ describe('call deadlines are the runner cutoffs', () => {
       }).action,
     ).toEqual({ kind: 'withdraw-evm', deadline: T_B - 1 })
   })
+  it('a withdraw journaled but never signed does not make the preimage public', () => {
+    expect(
+      run('A', {
+        xec: xecObs([output()]),
+        evm: both('open'),
+        calls: [call('withdraw', 'ended', false)],
+      }).action,
+    ).toEqual({ kind: 'withdraw-evm', deadline: T_B - 5 })
+  })
   it('B locks with deadline T_B − evmLockMargin', () => {
     expect(run('B', { xec: xecObs([output()]) }).action).toEqual({
       kind: 'lock-evm',
@@ -878,31 +912,49 @@ describe('a double-funded XEC script: every exact output is a separate fund', ()
     mtp = E,
   ) => xecObs([output({ ...first, ...a }), output({ ...second, ...b })], mtp)
 
-  it('B claims each unspent exact output, one after another', () => {
+  it('B claims exactly one output: the one A keeps back for it, or the one it already signed', () => {
     const withdrawn = both('withdrawn')
     expect(run('B', { xec: two(), evm: withdrawn }).action).toMatchObject({
       kind: 'sign-xec-spend',
       funding: first,
     })
+    // Its claim of the first is written: re-broadcast that, never sign the second.
     expect(
       run('B', {
         xec: two(),
         evm: withdrawn,
         record: { xecSpends: [stored(first, 'claim')] },
       }).action,
-    ).toMatchObject({ kind: 'sign-xec-spend', funding: second })
+    ).toEqual({ kind: 'broadcast-xec-spend', funding: first })
+    // A signed claim of the second output (the first was the lowest elsewhere) stays B's one.
     expect(
       run('B', {
         xec: two(),
         evm: withdrawn,
-        record: {
-          xecSpends: [stored(first, 'claim'), stored(second, 'claim')],
-        },
+        record: { xecSpends: [stored(second, 'claim')] },
       }).action,
-    ).toEqual({ kind: 'broadcast-xec-spend', funding: first })
+    ).toEqual({ kind: 'broadcast-xec-spend', funding: second })
+    // Claimed one (not final yet): nothing more to claim, the other output is A's.
+    expect(
+      summary(
+        run('B', {
+          xec: two({
+            spentBy: { txid: 'c1'.repeat(32), branch: 'claim', final: false },
+          }),
+          evm: withdrawn,
+        }),
+      ),
+    ).toBe('claimingXec/none')
+    expect(
+      summary(
+        run('B', { xec: two(claimedBy('c1'.repeat(32))), evm: withdrawn }),
+      ),
+    ).toBe('complete/none')
+    // The output B signed for was refunded first: it claims another unspent one.
     const d = run('B', {
-      xec: two(claimedBy('c1'.repeat(32))),
+      xec: two(refundedBy('r1'.repeat(32))),
       evm: withdrawn,
+      record: { xecSpends: [stored(first, 'claim')] },
     })
     expect(summary(d)).toBe('claimingXec/sign-xec-spend:claim')
     expect(d.action).toMatchObject({ funding: second })
@@ -956,7 +1008,26 @@ describe('a double-funded XEC script: every exact output is a separate fund', ()
     ).toBe('claimed/none')
   })
 
-  it('A, withdrawn, after T_A, B claimed one: refunds every other unspent output', () => {
+  it('A, withdrawn, after T_A, B’s claim of one is not final: keeps the other back', () => {
+    // A mempool claim can still lose to a refund of its own output; until it is final, the
+    // remaining unspent output stays for B.
+    expect(
+      summary(
+        run('A', {
+          xec: two(
+            {
+              spentBy: { txid: 'c1'.repeat(32), branch: 'claim', final: false },
+            },
+            {},
+            T_A + 1,
+          ),
+          evm: both('withdrawn'),
+        }),
+      ),
+    ).toBe('claimed/none')
+  })
+
+  it('A, withdrawn, after T_A, B claimed one (final): refunds every other unspent output', () => {
     const d = run('A', {
       xec: two(claimedBy('c1'.repeat(32)), {}, T_A + 1),
       evm: both('withdrawn'),

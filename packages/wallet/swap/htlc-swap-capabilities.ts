@@ -312,6 +312,8 @@ export function createEvmHtlcSwapCapability(params: {
             .action,
           operationId: row.operationId,
           state: callState(row),
+          // Signed bytes may have reached the network, even if the call was later given up.
+          signed: row.members.some((member) => member.signed != null),
         }));
     },
 

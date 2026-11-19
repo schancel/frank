@@ -2,7 +2,7 @@
   "format": "directory-admission-v1",
   "source": {
     "path": "docs/protocol/proposals/suite1-directory/vectors.json",
-    "sha256": "bcea68422ddafeb91091d794b8cb694bbb6e374b0196fa8c10fbec57b59b1d0b"
+    "sha256": "27d78eab8efb18b9944659cfa67257b6c77848d682f416f64a91731ad930afe5"
   },
   "network": "monad-testnet",
   "subject": "0279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798",

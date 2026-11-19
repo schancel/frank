@@ -74,6 +74,7 @@ test.each([
       expect(labels.execution.phases).toHaveProperty(key)
     for (const key of [
       'claim-gas-low',
+      'lock-funds-low',
       'xec-double-funded',
       'xec-foreign-output',
     ])
@@ -87,5 +88,19 @@ test.each([
       expect(labels.execution.failures).toHaveProperty([key])
     for (const key of ['acceptBy', 'lockExpires'])
       expect(labels.deadlines).toHaveProperty(key)
+  },
+)
+
+test.each([
+  ['en', en.signedSwap],
+  ['fr', fr.signedSwap],
+])(
+  '%s lock-funds-low names the shortfall, the unit and the cutoff',
+  (_name, messages) => {
+    const text = (messages as typeof en.signedSwap).execution.warnings[
+      'lock-funds-low'
+    ]
+    for (const param of ['{amount}', '{evm}', '{by}'])
+      expect(text).toContain(param)
   },
 )

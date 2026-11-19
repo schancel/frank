@@ -268,8 +268,10 @@ trying until T_B.
 - `awaitXecLock`: waiting for A's exact, final, unspent funding output.
 - `locking`: write `fundingAuthorizedAt`, then lock MON. The runner reads `locks(lockId)` first; a
   lock that already exists counts as locked. Past the lock cutoff with no lock: `abandoned`.
-  B gets no gas warning (`claim-gas-low` is A's only): a lock the main account cannot pay for
-  fails and is retried on each tick until the cutoff, and the swap is then abandoned.
+  While the lock is still to be sent (in `awaitXecLock` too) and the EVM main account holds less
+  than the lock amount plus one HTLC call's gas, the card shows `lock-funds-low` with the
+  shortfall and the lock cutoff. It is a warning only: the lock is still tried on each tick, and
+  nothing is moved to the main account. Without the funds by the cutoff the swap is `abandoned`.
 - `evmLocked`: the lock is open and block time < T_B.
 - `refunding` → `refunded`: block time ≥ T_B and the lock still open: refund MON.
 - `claimingXec`: the lock is withdrawn. B reads the preimage from `locks(lockId)`, checks that it
@@ -376,7 +378,10 @@ T_A. It has no Lock, Claim, Refund or Cancel button.
   once the secret may be public; the remaining window is a withdraw that never lands at all.
 - The runner acts only while Frank is open on the active device, so claims and refunds happen
   only then. There are no wallet block events; it runs on ticks and pokes.
-- B gets no warning when its EVM main account lacks gas for the MON lock.
+- Fixed: [#2092](https://github.com/schancel/frank/issues/2092), B got no warning when its EVM
+  main account could not pay the MON lock (now `lock-funds-low`).
+- Only the withdraw (A) and the lock (B) are prechecked. No warning covers the gas for B's MON
+  refund or for either side's `claimOwed`.
 - A claim held by a device that is gone keeps the other devices observing until the user acts on
   one of them.
 - B's MON lock and A's withdraw are sent from the EVM main account. MON held only in other

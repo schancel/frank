@@ -34,7 +34,7 @@ contract and claims XEC. Nothing is sent between the parties after the accept.
 - `nextAction(input)` is pure. From the negotiation state, the swap record, both chains'
   observations, the device clock and whether this is the active device, it returns one phase, at
   most one action (`fund-xec`, `release-xec-lock`, `lock-evm`, `withdraw-evm`, `refund-evm`,
-  `sign-xec-spend`, `broadcast-xec-spend`, `claim-owed`) and warnings (`claim-gas-low`,
+  `sign-xec-spend`, `broadcast-xec-spend`, `claim-owed`) and warnings (`claim-gas-low`, `lock-funds-low`,
   `xec-double-funded`, `xec-foreign-output`). An inactive device gets only the actions that finish
   its own exposed work: resuming an exposed XEC lock and re-broadcasting a spend it stored.
 - `HtlcSwapRunner` (`start`, `poke`, `tick`, `stop`, `subscribe`, `snapshot`) ticks over every

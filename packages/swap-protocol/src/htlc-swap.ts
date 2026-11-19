@@ -596,7 +596,11 @@ export type HtlcSwapAction =
   | { readonly kind: 'claim-owed' }
 
 export type HtlcSwapWarning =
+  /** A: the EVM main account holds less than one HTLC call's gas, for the withdraw. */
   | 'claim-gas-low'
+  /** B: the EVM main account holds less than the lock amount plus one HTLC call's gas while the
+   * MON lock is still to be sent (`lockFunds` says how much more, and by when). */
+  | 'lock-funds-low'
   | 'xec-double-funded'
   /** Something other than an exact funding already pays the HTLC script: A does not fund. */
   | 'xec-foreign-output'
@@ -607,6 +611,12 @@ export interface HtlcSwapDecision {
   readonly warnings: readonly HtlcSwapWarning[]
   /** The funding output the decision is about, when there is one. */
   readonly funding?: { readonly txid: string; readonly vout: number }
+  /** With `lock-funds-low`: what the main account lacks for B's lock (amount plus gas), and the
+   * lock cutoff it must be there by. A precheck only: nothing is moved there automatically. */
+  readonly lockFunds?: {
+    readonly shortfallWei: bigint
+    readonly lockBy: number
+  }
 }
 
 export interface HtlcSwapObservations {
@@ -747,11 +757,13 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     action: HtlcSwapAction = NONE,
     warnings: HtlcSwapWarning[] = [],
     funding?: { txid: string; vout: number },
+    lockFunds?: { shortfallWei: bigint; lockBy: number },
   ): HtlcSwapDecision => ({
     phase,
     action: input.activeDevice ? action : finishing(action),
     warnings,
     ...(funding ? { funding } : {}),
+    ...(lockFunds ? { lockFunds } : {}),
   })
   if (input.negotiation === 'rejected') return decide('rejected')
   if (input.negotiation === 'offered')
@@ -906,19 +918,28 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     if (lock.pending || (lock.landed && now <= terms.evmExpiry))
       return decide('locking', NONE, warnings, funding)
     if (now > cut.evmLockBy) return decide('abandoned', NONE, warnings, funding)
-    if (
-      output &&
-      output.final &&
-      !output.spentBy &&
-      lock.reverts < HTLC_CALL_MAX_REVERTS
-    )
+    // B's lock is still to be sent from the EVM main account (A's lock may not have arrived
+    // yet): warn, never fund, while that account cannot pay the amount plus the call's gas.
+    // Not once the lock can no longer be sent (reverts exhausted, A's output already spent).
+    let lockFunds: { shortfallWei: bigint; lockBy: number } | undefined
+    const lockDue = lock.reverts < HTLC_CALL_MAX_REVERTS && !output?.spentBy
+    const lockCostWei = terms.evm.terms.amount + evm.callCostWei
+    if (lockDue && evm.mainBalanceWei < lockCostWei) {
+      warnings.push('lock-funds-low')
+      lockFunds = {
+        shortfallWei: lockCostWei - evm.mainBalanceWei,
+        lockBy: cut.evmLockBy,
+      }
+    }
+    if (lockDue && output && output.final)
       return decide(
         'locking',
         { kind: 'lock-evm', deadline: cut.evmLockBy },
         warnings,
         funding,
+        lockFunds,
       )
-    return decide('awaitXecLock', NONE, warnings, funding)
+    return decide('awaitXecLock', NONE, warnings, funding, lockFunds)
   }
   if (latest.state === 'refunded')
     return decide('refunded', owed, warnings, funding)

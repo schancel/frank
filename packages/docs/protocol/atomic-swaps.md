@@ -117,6 +117,6 @@ A cutoff counts as passed when either the device clock or the latest Monad block
 - No owner QA on testnet with tXEC yet.
 - A withdraw stuck in the mempool past its cutoff can leak the secret while A goes on to refund ([#2087](https://github.com/schancel/frank/issues/2087), open).
 - The runner acts only while Frank is open on the active device, so claims and refunds happen only then. There are no block events; it ticks on a timer.
-- B's MON lock and A's withdraw are sent from the EVM main account, which must hold the gas. Frank does not move funds there for you. A is warned when the gas is short (`claim-gas-low`); B is not: its lock fails and is retried on each tick until the lock cutoff, and the swap is then abandoned.
+- B's MON lock and A's withdraw are sent from the EVM main account, which must hold the gas. Frank does not move funds there for you. A is warned when the withdraw gas is short (`claim-gas-low`). B is warned, with the amount it lacks and the lock cutoff, when the main account cannot pay the lock amount plus gas (`lock-funds-low`, [#2092](https://github.com/schancel/frank/issues/2092)); the lock is retried on each tick until the cutoff, and the swap is then abandoned. No warning covers the gas for B's refund or for `claimOwed`.
 - Fixed: a second device could not fund from eCash change made by the first device ([#2084](https://github.com/schancel/frank/issues/2084), fixed by #2090).
 - Solana's `generic-htlc` program is not part of this swap and is unchanged.

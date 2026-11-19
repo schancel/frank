@@ -134,7 +134,7 @@
         :data-testid="`swap-warning-${warning}`"
         role="alert"
       >
-        {{ $t(`signedSwap.execution.warnings.${warning}`, units) }}
+        {{ warningText(warning) }}
       </p>
       <p
         v-if="view?.error"
@@ -328,6 +328,22 @@ export default defineComponent({
   },
   methods: {
     amount: formatNegotiationAmount,
+    // A warning's copy; B's lock-funds warning names the shortfall and the lock cutoff.
+    warningText(warning: string): string {
+      const lockFunds = this.view?.lockFunds
+      return this.$t(`signedSwap.execution.warnings.${warning}`, {
+        ...this.units,
+        ...(warning === 'lock-funds-low' && lockFunds
+          ? {
+              amount: this.amount(
+                lockFunds.shortfallWei,
+                this.evm.nativeDecimals!,
+              ),
+              by: this.when(BigInt(lockFunds.lockBy)),
+            }
+          : {}),
+      })
+    },
     when(seconds: bigint): string {
       return new Date(Number(seconds) * 1000).toLocaleString(undefined, {
         timeZoneName: 'short',

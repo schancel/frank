@@ -88,6 +88,11 @@ export interface HtlcSwapView {
   readonly phase: HtlcSwapPhase | 'invalid' | 'unsupported' | 'checking'
   readonly detail?: string
   readonly warnings: readonly HtlcSwapWarning[]
+  /** With `lock-funds-low`: how much more the EVM main account needs, and by when. */
+  readonly lockFunds?: {
+    readonly shortfallWei: bigint
+    readonly lockBy: number
+  }
   readonly deadlines?: {
     readonly acceptBy: number
     readonly evmExpiry: number
@@ -223,6 +228,7 @@ export class HtlcSwapRunner {
           role: previous?.role ?? null,
           phase: previous?.phase ?? 'checking',
           warnings: previous?.warnings ?? [],
+          ...(previous?.lockFunds ? { lockFunds: previous.lockFunds } : {}),
           ...(previous?.deadlines ? { deadlines: previous.deadlines } : {}),
           ...(previous?.lockId ? { lockId: previous.lockId } : {}),
           error: message(error),
@@ -404,6 +410,7 @@ export class HtlcSwapRunner {
       role,
       phase: decision.phase,
       warnings: decision.warnings,
+      ...(decision.lockFunds ? { lockFunds: decision.lockFunds } : {}),
       deadlines,
       lockId: terms.evm.lockId,
       ...(decision.funding ? { funding: decision.funding } : {}),

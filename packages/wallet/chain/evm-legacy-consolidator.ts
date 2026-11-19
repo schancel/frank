@@ -151,6 +151,21 @@ export interface EvmLegacyConsolidatorConfig {
     /** What this transaction was, when its contract call carried a record. */
     record?: ContractCallRecordItem,
   ) => Promise<void>
+  /** The chain showed a contract call's nonce taken by the call itself (landed or reverted) or
+   * by its cancellation, with its receipt: what the source account paid at `nonce`
+   * (`debitWei`: the value moved, none for a revert or a cancellation, plus the fee), in
+   * `block`, and the read of the account made with that receipt (`observed`: its nonce and
+   * balance at a block no earlier than `block`). Composition hands it to the coin list, which
+   * retires `[account, nonce]` and lists the account's next nonce with what the read shows, as
+   * a native payment's receipt does. Called again for the same receipt changes nothing; one that
+   * rejects is logged, and the account's next chain read lists what it holds. */
+  onOwnSpendIncluded?: (spend: {
+    account: string
+    nonce: number
+    block: number
+    debitWei: bigint
+    observed: EvmNativeAccountObservation
+  }) => Promise<void>
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
   now?: () => number
@@ -577,7 +592,42 @@ export class EvmLegacyConsolidator {
       account,
       contradiction,
     )
-    if (recorded) await this.observeCancellation(operationId, index, lifetime, wanted)
+    if (!recorded) return
+    if (
+      observation.state === 'included-success' ||
+      observation.state === 'included-revert'
+    ) {
+      const row = journal.get(operationId)
+      const landed = landedSigning(row.members[index]!)
+      if (row.kind === 'contract' && landed && account) {
+        const tx = Transaction.from(landed.rawTransaction)
+        await this.ownSpendIncluded({
+          observed: account,
+          account: member.source.address,
+          nonce: tx.nonce,
+          block: observation.blockNumber,
+          debitWei:
+            (observation.state === 'included-success' ? tx.value : 0n) +
+            BigInt(observation.feeWei),
+        })
+      }
+      return
+    }
+    await this.observeCancellation(operationId, index, lifetime, wanted)
+  }
+  /** `onOwnSpendIncluded`, never rejecting: the coin list is a view the account's next read
+   * rebuilds. */
+  private async ownSpendIncluded(
+    spend: Parameters<NonNullable<EvmLegacyConsolidatorConfig['onOwnSpendIncluded']>>[0],
+  ): Promise<void> {
+    try {
+      await this.config.onOwnSpendIncluded?.(spend)
+    } catch (error) {
+      console.warn(
+        `[evm-native] could not list ${spend.account}'s next coin after its nonce ${spend.nonce}; its next read lists it:`,
+        error,
+      )
+    }
   }
   /**
    * A given-up call whose nonce the chain shows taken, with no receipt of its own: when the
@@ -637,11 +687,21 @@ export class EvmLegacyConsolidator {
         receipt.blockNumber > member.account!.blockNumber
       )
         return
+      const feeWei = receipt.gasUsed * receipt.gasPrice
       await journal.recordCancellationIncluded(operationId, index, {
         blockHash: receipt.blockHash.toLowerCase(),
         blockNumber: receipt.blockNumber,
         transactionIndex: receipt.index,
-        feeWei: (receipt.gasUsed * receipt.gasPrice).toString(),
+        feeWei: feeWei.toString(),
+      })
+      // A transfer of nothing to the account itself: it paid the fee, no more.
+      await this.ownSpendIncluded({
+        // The read that showed the call's nonce taken, at or after the cancellation's block.
+        observed: member.account!,
+        account: member.source.address,
+        nonce: cancel.nonce,
+        block: receipt.blockNumber,
+        debitWei: feeWei,
       })
     } catch {
       /* Unavailable evidence records nothing. */
@@ -1462,10 +1522,16 @@ export class EvmLegacyConsolidator {
       for (let i = 0; i < row.members.length; i++) {
         const member = row.members[i]!
         const id = row.operationId
+        // A contract call that reverted moved nothing, but its account paid the fee: its other
+        // devices are told of that spend as of any included send, its value left out of the
+        // debit and of the output. No record item rides with it: the call did nothing.
+        const reverted =
+          row.kind === 'contract' &&
+          member.observation.state === 'included-revert'
         if (
           !row.cancelled &&
           member.signed &&
-          member.observation.state === 'included-success' &&
+          (member.observation.state === 'included-success' || reverted) &&
           !member.syncApplied
         ) {
           if (
@@ -1478,6 +1544,8 @@ export class EvmLegacyConsolidator {
           // The signing the chain included: an earlier one, when the node took that after all.
           const landed = landedSigning(member)!
           const tx = Transaction.from(landed.rawTransaction)
+          const moved = reverted ? 0n : tx.value
+          const { feeWei } = member.observation as { feeWei: string }
           this.transport(
             id,
             i,
@@ -1491,18 +1559,16 @@ export class EvmLegacyConsolidator {
                 {
                   address: member.source.address,
                   nonce: tx.nonce,
-                  valueWei: (
-                    tx.value + BigInt(member.observation.feeWei)
-                  ).toString(),
+                  valueWei: (moved + BigInt(feeWei)).toString(),
                 },
               ],
               createdOutputs: [
-                { address: tx.to!, valueWei: tx.value.toString() },
+                { address: tx.to!, valueWei: moved.toString() },
               ],
               timestamp: Date.now(),
               operation: syncOperationOf(row, member),
             },
-            contractCallRecordItemOf(row),
+            reverted ? undefined : contractCallRecordItemOf(row),
           )
         }
         // A given-up call's cancellation took its nonce: a transfer of nothing from the account
@@ -1558,7 +1624,9 @@ export class EvmLegacyConsolidator {
     for (const id of this.transportFailed) {
       const row = journal.list().find(candidate => candidate.operationId === id)
       if (!row || row.members.every(member =>
-        (member.observation.state !== 'included-success' || member.syncApplied) &&
+        ((member.observation.state !== 'included-success' &&
+          !(row.kind === 'contract' && member.observation.state === 'included-revert')) ||
+          member.syncApplied) &&
         (!member.cancellation?.included || member.cancellation.syncApplied === true)))
         this.transportFailed.delete(id)
     }

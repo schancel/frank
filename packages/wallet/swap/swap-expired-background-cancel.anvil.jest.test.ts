@@ -42,6 +42,7 @@ import { createEvmChain } from '../chain/evm-chain'
 import { withDefaultMessageItems } from '../chain/message-items.testutil'
 import type { DirectMessageReceived } from '../chain/active-chain'
 import { consumeEvmSelfNotes } from '../evm-received-coin-manager'
+import { evmWalletInternals } from '../evm-wallet'
 import {
   EVM_CANCELLATION_STAGE,
   summarizeEvmNativeOperation,
@@ -290,6 +291,8 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     const fundedB = await deviceB.getSpendableBalance!()
     await deviceB.close()
     alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    // What device A shows before the swap: its coin list holds the main account's coin.
+    await alice.getSpendableBalance!()
 
     const swap = await submitLostSwap()
     await passDeadline(swap.deadline)
@@ -304,6 +307,18 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
 
     // Device A sees its cancellation in a block and records the fee it charged.
     await expectFreed(swap.nonce)
+    // Its coin list settles the cancellation from that receipt, as a payment's (#2075): the
+    // coin at the swap's nonce is spent, and the next one holds what the chain shows, with no
+    // read of the account and nothing left for a poll to do.
+    const listA = evmWalletInternals(alice).coinList!
+    expect(listA.get(main, swap.nonce)?.state).toBe('spent')
+    expect(listA.latestOf(main)).toMatchObject({
+      nonce: swap.nonce + 1,
+      state: 'unspent',
+      valueWei: await chain.getBalance(main),
+    })
+    expect(evmWalletInternals(alice).coinListSync!.isDirty(main)).toBe(false)
+    expect(await alice.transactionSetPreparer!.spendableNowWei()).toBeGreaterThan(0n)
     expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included?.feeWei).toBe(
       fee.toString(),
     )

@@ -310,8 +310,16 @@ export function installEvmWalletCoinList(params: {
     },
   })
   pool.onChange(change => {
-    if (change.kind === 'record') sync.markDirty(change.record.address)
-    else if (
+    if (change.kind === 'record') {
+      sync.markDirty(change.record.address)
+      return
+    }
+    // The claim ends after a spend of the wallet's own the list settled from its receipt (a
+    // contract call): the list holds what the account does. Asked on every release, so a
+    // settled spend never excuses a later one.
+    const settled = sync.takeOwnSpendListed(change.address)
+    if (
+      !settled &&
       !coinList
         .all()
         .some(

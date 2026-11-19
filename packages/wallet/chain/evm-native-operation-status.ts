@@ -36,6 +36,18 @@ export type EvmSendPurpose =
  * identity: what the account's other devices name it from. */
 export const EVM_CANCELLATION_STAGE = "cancellation";
 
+/** Whether the account's other devices are told of this member once the chain shows it: an
+ * included send, or a contract call that reverted (the fee it paid). */
+function toldToOtherDevices(
+  row: EvmNativeOperation,
+  member: EvmNativeOperation["members"][number]
+): boolean {
+  return (
+    member.observation.state === "included-success" ||
+    (row.kind === "contract" && member.observation.state === "included-revert")
+  );
+}
+
 /** The prefix of a shared transaction set's preparation identity. */
 const TRANSACTION_SET_PREFIX = "evm-transaction-set:";
 
@@ -276,14 +288,12 @@ export function summarizeEvmNativeOperation(
         : observed.length
         ? "partial"
         : "unknown",
-    sharing: !row.members.some(
-      (member) => member.observation.state === "included-success"
-    )
+    // What the account's other devices are told of: an included send, and a contract call's
+    // revert (its fee; `applySync`).
+    sharing: !row.members.some((member) => toldToOtherDevices(row, member))
       ? "none"
       : row.members.every(
-          (member) =>
-            member.observation.state !== "included-success" ||
-            member.syncApplied
+          (member) => !toldToOtherDevices(row, member) || member.syncApplied
         )
       ? "shared"
       : syncFailed

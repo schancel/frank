@@ -1018,6 +1018,8 @@ export const rawEnUS = {
       'Its payment is below the minimum of {amount} {unit}: ten times what the network charges to move it. Nothing was paid.',
     reasonFeeExceeded:
       'Sending it would cost more in network fees than you approved. Nothing was paid; its funds are available again.',
+    reasonRefusedUnpaid:
+      'The relay refused it before anything was paid. Retry sends it again.',
     reasonPaymentTaken:
       'Another device of this account spent the same funds at the same moment. Nothing was paid and nothing was sent; its funds are available again. Send it again.',
     reasonStampRecoveryFeeRequired:

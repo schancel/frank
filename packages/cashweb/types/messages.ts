@@ -1069,6 +1069,10 @@ export type OutgoingFailureReason =
    * with its stamp) stood on before the relay stored it. Nothing was paid or sent and its funds
    * are available again; the user sends it again. */
   | 'payment-taken'
+  /** The relay refused its first handoff before anything of it left the wallet, because a
+   * payment of it could never land (`DirectMessageEnd` `refused-unpaid`). Nothing was paid and
+   * nothing of it can land; the user's Retry pays the same message afresh. */
+  | 'refused-unpaid'
   /** Contact value already paid; only the original message's stamp needs fee review. */
   | 'stamp-recovery-fee-required'
   /** The funds this message needs are held by an earlier message whose payment cannot finish by

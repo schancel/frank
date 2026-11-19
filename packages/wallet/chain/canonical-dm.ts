@@ -715,8 +715,6 @@ export const REFUSED_BEFORE_EXPOSURE: ReadonlySet<string> = new Set([
   'stale_nonce',
   'insufficient_total',
 ])
-/** How often one send pays its message again from other coins after such a refusal. */
-const MAX_REFUSAL_REPLANS = 2
 
 /**
  * Before the relay has a message, the wallet puts its own self-sends of the set on the chain

@@ -509,6 +509,8 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
               ? 'funds-in-pending-send'
               : end?.reason === 'payment-taken'
               ? 'payment-taken'
+              : end?.reason === 'refused-unpaid'
+              ? 'refused-unpaid'
               : 'rejected'
           assertCurrent()
           // Ended by the wallet because its money was still in an earlier send, before anything

@@ -7,6 +7,7 @@ import { UnsupportedContactPaymentRecordError } from '@frank/wallet/chain'
 import { directMessageNotAttempted } from '@frank/wallet/chain/active-chain'
 import {
   failedBeforePayment,
+  outgoingFailureReasonText,
   unretryableFailure,
 } from '../utils/outgoing-failure'
 import enUS from '../i18n/en-us'
@@ -63,5 +64,27 @@ describe('classifySendFailure', () => {
     expect(failure.reason).not.toBe('payment-older-version')
     expect(failure.keepDigest).toBe('cd'.repeat(32))
     expect(failedBeforePayment({ failureReason: failure.reason })).toBe(false)
+  })
+})
+
+// #1744: refused by the relay before anything of it left the wallet. Nothing was paid, so the
+// bubble shows no stamp beside it, and it says so in its own words, with Retry offered.
+describe('refused-unpaid', () => {
+  it('says nothing was paid and that Retry sends it again', () => {
+    expect(failedBeforePayment({ failureReason: 'refused-unpaid' })).toBe(true)
+    expect(unretryableFailure('refused-unpaid')).toBe(false)
+    const words = enUS as unknown as Record<string, Record<string, string>>
+    const text = outgoingFailureReasonText(
+      'refused-unpaid',
+      undefined,
+      key => {
+        const [group, name] = key.split('.')
+        return words[group]![name]!
+      },
+      { toDisplayAmount: wei => wei.toString(), unit: 'MON' },
+    )
+    expect(text).toBe(
+      'The relay refused it before anything was paid. Retry sends it again.',
+    )
   })
 })

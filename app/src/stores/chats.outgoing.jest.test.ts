@@ -1324,6 +1324,10 @@ describe('outgoing direct messages (#269, #270)', () => {
       })
       try {
         await chats.reconcileOutgoing({ wallet })
+        expect(only(chats)[0].delivery).toMatchObject({
+          attemptDigest: HASH,
+          failureReason: 'refused-unpaid',
+        })
         await chats.reconcileOutgoing({ wallet })
         expect(send).toHaveBeenCalledTimes(1)
         expect(only(chats)[0].status).toBe('error')

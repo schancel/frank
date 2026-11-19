@@ -1,5 +1,6 @@
 /** App composition lends feature orchestration a revocable signer and ordinary messaging only. */
 import { shallowReactive } from 'vue'
+import { sha256 } from '@noble/hashes/sha256.js'
 import { fromHex, toHex } from '@frank/codec'
 import { hmacSha256 } from '@frank/crypto-box'
 import {
@@ -7,7 +8,12 @@ import {
   uuidv5Bytes,
 } from '@frank/cashweb/relay/conversation-id'
 import { activeChain, type WalletHandle } from '@frank/wallet/chain'
-import { conversationIdSaltOf } from '@frank/wallet/chain/evm-chain'
+import {
+  conversationIdSaltOf,
+  htlcMainAccountOf,
+  swapSecretCapabilityOf,
+} from '@frank/wallet/chain/evm-chain'
+import type { EcashWallet } from '@frank/wallet/ecash-wallet'
 import {
   authorizeNegotiation,
   type LocalNegotiationIntent,
@@ -16,9 +22,15 @@ import {
 } from '@frank/swap-protocol/src/outgoing-negotiation'
 import {
   TESTNET_NEGOTIATION_POLICY,
+  decodeNegotiationEventStandalone,
+  defaultNegotiationDeadlinesFor,
+  deriveOfferSwapId,
+  validateOfferFields,
   type NegotiationContext,
 } from '@frank/swap-protocol/src/negotiation'
+import type { SwapResult } from '@frank/swap-protocol/src'
 import { accountSession } from '../accounts/session'
+import { openUtxoWallet } from '../accounts/utxo-wallets'
 import { store } from '../adapters/level-message-store'
 import { useChatStore } from '../stores/chats'
 import { captureDirectoryPeer } from '../utils/directory-peer'
@@ -66,9 +78,11 @@ export function negotiationUnavailable(): string {
     ? ''
     : recovery?.state ?? 'restoring'
 }
+/** The conversation, ordered parties [self, peer] and policy of a new offer; no swapId yet. */
+export type OfferBase = Omit<NegotiationContext, 'swapId'>
 export interface CapturedNegotiation {
   readonly auth: NegotiationAuthorization
-  readonly context: NegotiationContext
+  readonly offerBase: OfferBase
   readonly address: string
   readonly wallet: WalletHandle
   readonly stampValueWei: string
@@ -76,9 +90,7 @@ export interface CapturedNegotiation {
 export async function captureNegotiation(input: {
   address: string
   conversationId: string
-  swapId: Uint8Array
   stampValue: bigint
-  responseContext?: NegotiationContext
 }): Promise<CapturedNegotiation> {
   if (negotiationUnavailable()) throw new Error(negotiationUnavailable())
   const signer = await accountSession.createIdentityDigestSigner()
@@ -108,6 +120,9 @@ export async function captureNegotiation(input: {
       if (unavailable) throw new Error(unavailable)
     },
     intentKey: transcript => toHex(hmacSha256(transcript, salt)),
+    // `frank/swap-offer-id/v1` transcripts carry their own label, so they never collide with
+    // the intent-key or message-ID transcripts keyed by the same private salt.
+    offerSwapId: transcript => hmacSha256(transcript, salt),
     messageId: transcript =>
       formatConversationId(uuidv5Bytes(salt, toHex(transcript))),
     assertAdmittedOffer(context, offerBytes, decision) {
@@ -134,18 +149,141 @@ export async function captureNegotiation(input: {
     signDigest: signer.signDigest,
   }
   auth.assertCurrent()
-  const context: NegotiationContext = input.responseContext ?? {
-    swapId: new Uint8Array(input.swapId),
-    conversationId: fromHex(input.conversationId.replace(/-/g, '')),
-    parties: [signer.publicKey, peer.publicKey],
-    policy: TESTNET_NEGOTIATION_POLICY,
-  }
   return {
     auth,
-    context,
+    offerBase: {
+      conversationId: fromHex(input.conversationId.replace(/-/g, '')),
+      parties: [signer.publicKey, peer.publicKey],
+      policy: TESTNET_NEGOTIATION_POLICY,
+    },
     address: input.address,
     wallet: wallet as WalletHandle,
     stampValueWei: input.stampValue.toString(),
+  }
+}
+const unwrap = <T>(value: SwapResult<T>): T => {
+  if (!value.ok) throw new Error(value.error.detail ?? value.error.code)
+  return value.value
+}
+const addressBytes = (address: string): Uint8Array => {
+  if (!/^0x[0-9a-fA-F]{40}$/.test(address)) throw new Error('Invalid address')
+  return fromHex(address.slice(2).toLowerCase())
+}
+/** This network's GenericHTLC: the contract the wallet sends HTLC calls to (deployment record). */
+function htlcContract(): Uint8Array {
+  if (
+    activeChain.chainIdentifier !==
+      TESTNET_NEGOTIATION_POLICY.evmChainIdentifier ||
+    !activeChain.getHtlcAddress
+  )
+    throw new Error('unsupported')
+  return addressBytes(activeChain.getHtlcAddress())
+}
+function evmMainAccount(wallet: WalletHandle): Uint8Array {
+  const main = htlcMainAccountOf(wallet)
+  if (!main) throw new Error('Private account identity unavailable')
+  return addressBytes(main)
+}
+/** This account's per-swap eCash key; custody derives it and never hands out the secret. */
+async function xecHtlcPublicKey(
+  captured: CapturedNegotiation,
+  swapId: Uint8Array,
+  role: 'claim' | 'refund',
+): Promise<Uint8Array> {
+  const { wallet } = await openUtxoWallet(
+    TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
+  )
+  captured.auth.assertCurrent()
+  return (
+    wallet as unknown as Pick<EcashWallet, 'htlcPublicKey'>
+  ).htlcPublicKey(toHex(swapId), role)
+}
+/**
+ * A's complete v2 offer: the default deadlines for the chosen acceptance deadline E, A's main
+ * account as the MON recipient, this network's GenericHTLC, a swapId A derives from those facts
+ * under its private account salt, the hash lock of A's swap secret for that swapId and A's
+ * per-swap eCash refund key. Every device of the account builds the same offer.
+ */
+export async function buildOfferIntent(
+  captured: CapturedNegotiation,
+  input: { xecPrincipal: bigint; evmPrincipal: bigint; expiry: bigint },
+): Promise<Extract<LocalNegotiationIntent, { action: 'offer' }>> {
+  captured.auth.assertCurrent()
+  const base = captured.offerBase
+  const deadlines = unwrap(
+    defaultNegotiationDeadlinesFor(base.policy, input.expiry),
+  )
+  const evmRecipient = evmMainAccount(captured.wallet)
+  const evmHtlcContract = htlcContract()
+  const swapId = unwrap(
+    deriveOfferSwapId(
+      {
+        ...base,
+        xecPrincipal: input.xecPrincipal,
+        evmPrincipal: input.evmPrincipal,
+        ...deadlines,
+        evmRecipient,
+        evmHtlcContract,
+      },
+      captured.auth.offerSwapId,
+    ),
+  )
+  const secrets = swapSecretCapabilityOf(captured.wallet)
+  if (!secrets) throw new Error('Private account identity unavailable')
+  // The swapId is A's own (derived above), so asking for its secret is allowed (PR 4 notes).
+  const preimage = secrets.swapPreimage({
+    policyName: base.policy.name,
+    swapId,
+  })
+  const hashLock = sha256(preimage)
+  preimage.fill(0)
+  const xecRefundPublicKey = await xecHtlcPublicKey(captured, swapId, 'refund')
+  captured.auth.assertCurrent()
+  const intent = {
+    action: 'offer' as const,
+    context: { ...base, swapId },
+    xecPrincipal: input.xecPrincipal,
+    evmPrincipal: input.evmPrincipal,
+    ...deadlines,
+    hashLock,
+    xecRefundPublicKey,
+    evmRecipient,
+    evmHtlcContract,
+  }
+  // Refuse at review what signing would refuse (dust principal, deadline rules).
+  unwrap(validateOfferFields(intent.context, intent))
+  return intent
+}
+/**
+ * B's response to an admitted offer. An accept adds B's per-swap eCash claim key and B's main
+ * account (sender and refund address of B's MON lock), and is refused unless the offer names
+ * this network's GenericHTLC.
+ */
+export async function buildResponseIntent(
+  captured: CapturedNegotiation,
+  context: NegotiationContext,
+  offerBytes: Uint8Array,
+  decision: 'accept' | 'reject',
+): Promise<LocalNegotiationIntent> {
+  captured.auth.assertCurrent()
+  if (decision === 'reject')
+    return { context, action: 'reject', offerBytes: new Uint8Array(offerBytes) }
+  const offer = unwrap(decodeNegotiationEventStandalone(offerBytes, context))
+  if (offer.kind !== 'offer') throw new Error('Response requires signed offer')
+  if (toHex(offer.terms.evmHtlcContract) !== toHex(htlcContract()))
+    throw new Error('Offer names a different HTLC contract (conflict)')
+  const evmSender = evmMainAccount(captured.wallet)
+  const xecClaimPublicKey = await xecHtlcPublicKey(
+    captured,
+    context.swapId,
+    'claim',
+  )
+  return {
+    context,
+    action: 'accept',
+    offerBytes: new Uint8Array(offerBytes),
+    xecClaimPublicKey,
+    evmSender,
   }
 }
 let activeCommands = 0

@@ -5,6 +5,7 @@ import { NegotiationRecovery, type NegotiationScan } from '../../swap-protocol/s
 import { createNativeNegotiationJournalStore } from '../../swap-protocol/src/storage/negotiation-native'
 import { createNegotiationMessagePlugin } from '../../swap-protocol/src/message-plugin'
 import { buildNegotiationOffer, TESTNET_NEGOTIATION_POLICY } from '../../swap-protocol/src/negotiation'
+import { fixtureOfferFields } from '../../swap-protocol/src/negotiation-fixtures.testutil'
 import { encodeSignedSwapEvent } from '../../swap-protocol/src/index'
 import { encodeItemFrames } from '../message-item-plugins/wire'
 import { DefaultStampUnavailableError } from '../oracle/stamp-policy'
@@ -2740,7 +2741,7 @@ describe('two typed wallets on the open directory', () => {
           ],
           policy: TESTNET_NEGOTIATION_POLICY,
         },
-        { xecPrincipal: 12345n, evmPrincipal: 10n ** 18n, expiry: 2000000000n },
+        fixtureOfferFields({ evmPrincipal: 10n ** 18n }),
         async (digest) => f.alice.identity.signHash(Buffer.from(digest)),
       )
       if (!offer.ok) throw new Error(offer.error.code)

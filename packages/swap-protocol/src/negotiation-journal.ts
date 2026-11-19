@@ -5,6 +5,7 @@ import { standaloneItemBudget } from '@frank/codec'
 import registry from '../../../docs/protocol/chains/v1.json'
 import {
   negotiationLimits,
+  RETIRED_NEGOTIATION_POLICY_NAMES,
   reduceNegotiationStandalone,
   validateAuthenticatedNegotiationEvent,
   type AuthenticatedNegotiationContext,
@@ -426,6 +427,15 @@ export function inspectNegotiationJournalRecord(
     'xecChainIdentifier',
     'evmChainIdentifier',
   ])
+  if (
+    typeof policy.name === 'string' &&
+    RETIRED_NEGOTIATION_POLICY_NAMES.includes(policy.name)
+  )
+    fail(
+      'corrupt-record',
+      `Unsupported old swap negotiation record (policy ${policy.name}, payload v1). ` +
+        "Reset: delete this account's swap negotiation storage (frank-swap-negotiation-v1-…)",
+    )
   if (!Array.isArray(context.parties) || context.parties.length !== 2)
     fail('corrupt-record', 'Journal ordered parties')
   let binding: JournalBinding

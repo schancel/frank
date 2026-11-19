@@ -1,6 +1,7 @@
 import { readFileSync } from 'fs'
 import { join } from 'path'
 import { sha256 } from '@noble/hashes/sha256.js'
+import { hmac } from '@noble/hashes/hmac.js'
 import {
   encodeCanonical,
   decodeCanonical,
@@ -34,9 +35,20 @@ import {
   reduceNegotiationStandalone,
   validateAuthenticatedNegotiationEvent,
   negotiationLimits,
+  negotiationDeadlineRules,
+  defaultNegotiationDeadlines,
+  deriveOfferSwapId,
+  offerSwapIdTranscript,
+  validateOfferFields,
   type NegotiationContext,
   type AuthenticatedNegotiationContext,
 } from './negotiation'
+import {
+  FIXTURE_EXPIRY,
+  FIXTURE_XEC_CLAIM_KEY,
+  fixtureAccept,
+  fixtureOfferFields,
+} from './negotiation-fixtures.testutil'
 
 const a = MonadIdentity.fromPrivateKeyHex(`0x${'00'.repeat(31)}01`)
 const b = MonadIdentity.fromPrivateKeyHex(`0x${'00'.repeat(31)}02`)
@@ -59,11 +71,9 @@ const context = (): NegotiationContext => ({
   ],
   policy: { ...TESTNET_NEGOTIATION_POLICY },
 })
-const amounts = () => ({
-  xecPrincipal: 12345n,
-  evmPrincipal: 1000000000000000001n,
-  expiry: 2000000000n,
-})
+const amounts = () => fixtureOfferFields()
+const decide = (decision: 'accept' | 'reject') =>
+  decision === 'accept' ? fixtureAccept() : ({ kind: 'reject' } as const)
 const encoded = (event: SignedSwapEvent) => must(encodeSignedSwapEvent(event))
 const offer = async (bound = context()) =>
   must(
@@ -80,7 +90,7 @@ const response = async (
     await buildNegotiationResponse(
       bound,
       encoded(first),
-      decision,
+      decide(decision),
       async digest => signB(digest),
     ),
   )
@@ -120,14 +130,24 @@ const auth = (
 }
 
 const GOLDEN = {
-  keyId: 'd90ea4471f3ace9eaa5fe1dfd73a68b7c7bab615f0edb7cdab354440cd760007',
+  keyId:
+    'd90ea4471f3ace9eaa5fe1dfd73a68b7c7bab615f0edb7cdab354440cd760007',
   payload:
-    'a900010101025022222222222222222222222222222222038258210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798582102c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5046b7865632d746573746e6574056d6d6f6e61642d746573746e6574061930390758200000000000000000000000000000000000000000000000000de0b6b3a7640001081a77359400',
-  termsHash: 'f8b7ee07bf1dc40ae416b07c01dd0d501e480833102bf87b07da54d3336257cb',
+    'af00020102025022222222222222222222222222222222038258210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798582102c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5046b7865632d746573746e6574056d6d6f6e61642d746573746e6574061930390758200000000000000000000000000000000000000000000000000de0b6b3a7640001081a77359400095820bb391415c05e39d77ca17381d3be3f7d0cd5e5332e5a579311adaa0aa62106e90a582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90b54aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0c1a7736e5800d1a77363cc00e54cccccccccccccccccccccccccccccccccccccccc',
+  termsHash:
+    '1f591cee420a6b20ba2ae83d45809876f3b4aea4b87aedcdf46d4d99cf43dc73',
   signatureDigest:
-    '582624b31fece4adebb3e8691df54dc71845f857036b9c18b1de9cf1a911332f',
+    '90e17d2eb654b86de8183579e142bd2776aa02c148d71647cd6d71d8dc50ac6c',
   event:
-    '00011111111111111111111111111111111111111111111111111111111111111111000001d90ea4471f3ace9eaa5fe1dfd73a68b7c7bab615f0edb7cdab354440cd760007000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000a8a900010101025022222222222222222222222222222222038258210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798582102c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5046b7865632d746573746e6574056d6d6f6e61642d746573746e6574061930390758200000000000000000000000000000000000000000000000000de0b6b3a7640001081a7735940002f346f20985ee9596e4b5b09d0e860238aa98372e8a10716b0837f16b66c77da657d96836b569c6cdaa57fe2b008e4f145eb3b52e32e546585b2d5da1114cf6000100473045022100da639b92d0689c44a6de244544fd53b3d3b832e7aee4bebde1b4fbb270d07eb20220261ccdb884567ae97b14e82347720acd32743711ed91e7ca5bed07d625c6ff01',
+    '00011111111111111111111111111111111111111111111111111111111111111111000001d90ea4471f3ace9eaa5fe1dfd73a68b7c7bab615f0edb7cdab354440cd76000700000000000000000000000000000000000000000000000000000000000000000000000000000000000000000127af00020102025022222222222222222222222222222222038258210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798582102c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5046b7865632d746573746e6574056d6d6f6e61642d746573746e6574061930390758200000000000000000000000000000000000000000000000000de0b6b3a7640001081a77359400095820bb391415c05e39d77ca17381d3be3f7d0cd5e5332e5a579311adaa0aa62106e90a582102f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f90b54aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0c1a7736e5800d1a77363cc00e54cccccccccccccccccccccccccccccccccccccccc3137d0a7e4276b75b59f41fa3975f7a93bff889f5c62e178ca5393cdb19bd386a4c4e2d6592fc19b57b49f5ab6a7ab6613c43267ee550d9134e0d344aa53a1ab0001004730450221008a4db8787cd472da731576d2a6ff67252e5ecfc2168c4c91f6c5361fafbe24b002201993bf9aa8efaf107f49471ad45a4da7aa0154658f39bede0c58ccf04d037611',
+  acceptPayload:
+    'a7000201502222222222222222222222222222222202582102c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5035820a4c4e2d6592fc19b57b49f5ab6a7ab6613c43267ee550d9134e0d344aa53a1ab0458201f591cee420a6b20ba2ae83d45809876f3b4aea4b87aedcdf46d4d99cf43dc7305582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd130654bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+  acceptEvent:
+    '00011111111111111111111111111111111111111111111111111111111111111111000002c1632be52db81d114dd8765e53d9f627663162f748d69686521d3419ea5f76fb010000000000000000000000000000000000000000000000000000000000000000000000000000000001a4c4e2d6592fc19b57b49f5ab6a7ab6613c43267ee550d9134e0d344aa53a1ab000000b9a7000201502222222222222222222222222222222202582102c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5035820a4c4e2d6592fc19b57b49f5ab6a7ab6613c43267ee550d9134e0d344aa53a1ab0458201f591cee420a6b20ba2ae83d45809876f3b4aea4b87aedcdf46d4d99cf43dc7305582102e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd130654bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2ec092321a2a282b8606498e67313b59fc1330eeaa3e89555c995409b8a072b1ff94119fc15212f09847a970bddc64eac066f19e609a3888e733207bbf4deec00001004630440220738c37ed39ef028ab6969e0c29135c750b4958ad990148ad853dec44442d53d4022054bd5330c8f6ea959718adee23e1cf819eeed68dc1bf3566f89d1ec52ea80640',
+  swapIdTranscript:
+    '8d766672616e6b2f737761702d6f666665722d69642f7631747865632d6d6f6e61642d746573746e65742d76326b7865632d746573746e65746d6d6f6e61642d746573746e657450222222222222222222222222222222228258210279be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798582102c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee519303958200000000000000000000000000000000000000000000000000de0b6b3a76400011a773594001a7736e5801a77363cc054aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa54cccccccccccccccccccccccccccccccccccccccc',
+  swapId:
+    '587e24fd9a9cd43854d5802c1b2df28827994cccfcb46bd306a1ee24a352ab02',
 }
 
 describe('authenticated negotiation schema and domains', () => {
@@ -246,8 +266,8 @@ describe('authenticated negotiation schema and domains', () => {
   it('rejects malformed or unsupported payload fields, curve points and numeric forms', async () => {
     const first = await offer()
     const invalidFields: Array<[bigint, Encodable]> = [
-      [0n, 2],
-      [1n, 2],
+      [0n, 1],
+      [1n, 1],
       [2n, new Uint8Array(15)],
       [3n, [context().parties[0], context().parties[0]]],
       [3n, [new Uint8Array(33).fill(0xff), context().parties[1]]],
@@ -263,7 +283,14 @@ describe('authenticated negotiation schema and domains', () => {
       [7n, 1n],
       [8n, -1n],
       [8n, '2000000000'],
-      [9n, 1],
+      [9n, new Uint8Array(31)],
+      [10n, new Uint8Array(33).fill(0xff)],
+      [10n, new Uint8Array(32)],
+      [11n, new Uint8Array(19)],
+      [12n, -1n],
+      [13n, '1'],
+      [14n, new Uint8Array(21)],
+      [15n, 1],
     ]
     for (const [field, value] of invalidFields) {
       const changed = changePayload(first, fields => fields.set(field, value))
@@ -305,7 +332,7 @@ describe('authenticated negotiation schema and domains', () => {
         encodeOfferPayload({ ...decoded.terms, ...changes }, context()).ok,
       ).toBe(false)
     // Same integer, deliberately non-minimal encoding, signed over those actual bytes.
-    const nonminimal = fromHex(GOLDEN.payload.replace(/^a90001/, 'a9001801'))
+    const nonminimal = fromHex(GOLDEN.payload.replace(/^af0002/, 'af001802'))
     expect(
       decodeNegotiationEventStandalone(
         encoded(signed({ ...first, payload: nonminimal })),
@@ -400,7 +427,11 @@ describe('authenticated negotiation schema and domains', () => {
         standaloneItemBudget(),
       )
       expect(admitted.ok).toBe(false)
-      expect(initial.history).toEqual({ offer: null, decision: null })
+      expect(initial.history).toEqual({
+        offer: null,
+        decision: null,
+        accept: null,
+      })
     }
   })
 
@@ -427,8 +458,10 @@ describe('authenticated negotiation schema and domains', () => {
     input.conversationId.fill(0)
     input.parties[0].fill(0)
     mutablePolicy.xecChainIdentifier = 'xec-regtest'
-    economic.xecPrincipal = 1n
-    economic.expiry = 0n
+    ;(economic as { xecPrincipal: bigint }).xecPrincipal = 1n
+    ;(economic as { expiry: bigint }).expiry = 0n
+    economic.hashLock.fill(0)
+    economic.evmRecipient.fill(0)
     const signature = signA(captured)
     finish(signature)
     const first = must(await pending)
@@ -568,9 +601,9 @@ describe('prevalidated negotiation journal and eligibility', () => {
       reduceNegotiationStandalone([encoded(second), encoded(first)], context()),
     )
     expect(
-      must(negotiationEligibility(reduction, amounts().expiry - 1n)),
+      must(negotiationEligibility(reduction, FIXTURE_EXPIRY - 1n)),
     ).toEqual({ eligibleForPreparation: true, reason: 'accepted' })
-    for (const now of [amounts().expiry, amounts().expiry + 1n]) {
+    for (const now of [FIXTURE_EXPIRY, FIXTURE_EXPIRY + 1n]) {
       expect(must(negotiationEligibility(reduction, now))).toEqual({
         eligibleForPreparation: false,
         reason: 'expired',
@@ -702,7 +735,7 @@ describe('Buffer ownership across deferred identity signing', () => {
     const pending = buildNegotiationResponse(
       context(),
       raw,
-      'accept',
+      fixtureAccept(),
       async digest => {
         const signature = signB(digest)
         await gate
@@ -754,7 +787,7 @@ it('owns all Buffer context fields and a returned Buffer signature during respon
   const pending = buildNegotiationResponse(
     input,
     raw,
-    'accept',
+    fixtureAccept(),
     async digest => {
       signature = Buffer.from(signB(digest))
       await gate
@@ -803,4 +836,284 @@ it('reduction owns Buffer input bytes retained in its applied event history', as
   raw.fill(0)
   expect(hex(encoded(reduced.applied[0]))).toBe(GOLDEN.event)
   expect(reduced.history.offer?.event).toEqual(first)
+})
+
+describe('v2 HTLC terms: deadline rules R1–R3 and the other executability checks', () => {
+  const E = FIXTURE_EXPIRY
+  const H = 3600n
+  /** A signed offer carrying `changes`, built past the builder (which refuses them). */
+  const signedOffer = async (changes: Record<number, Encodable>) => {
+    const base = await offer()
+    return changePayload(base, fields => {
+      for (const [k, v] of Object.entries(changes)) fields.set(BigInt(k), v)
+    })
+  }
+  const reduce = (...events: SignedSwapEvent[]) =>
+    must(reduceNegotiationStandalone(events.map(encoded), context()))
+
+  it('pins the v2 accept golden bytes and exposes both signed terms only after acceptance', async () => {
+    const first = await offer(),
+      second = await response(first)
+    expect(hex(second.payload)).toBe(GOLDEN.acceptPayload)
+    expect(hex(encoded(second))).toBe(GOLDEN.acceptEvent)
+    const reduced = reduce(first, second)
+    expect(reduced.violation).toBeNull()
+    expect(reduced.usableAcceptance?.offer).toMatchObject(fixtureOfferFields())
+    expect(reduced.usableAcceptance?.accept).toMatchObject(
+      fixtureAccept().fields,
+    )
+    expect(reduced.history.accept?.event).toEqual(second)
+    const rejected = reduce(first, await response(first, 'reject'))
+    expect(rejected.history.accept).toBeNull()
+    expect(rejected.usableAcceptance).toBeNull()
+  })
+
+  it('accepts the exact rule boundaries and the UI defaults', async () => {
+    const rules = must(negotiationDeadlineRules(TESTNET_NEGOTIATION_POLICY))
+    expect(rules).toMatchObject({
+      evmFinality: 600,
+      minRefundGap: 6 * 3600,
+      minClaimWindow: 8 * 3600,
+      maxSpan: 72 * 3600,
+    })
+    const defaults = must(
+      defaultNegotiationDeadlines(TESTNET_NEGOTIATION_POLICY, E),
+    )
+    expect(defaults).toEqual({
+      expiry: E + H,
+      evmExpiry: E + 13n * H,
+      xecRefundTime: E + 25n * H,
+    })
+    for (const deadlines of [
+      defaults,
+      // R2 and R1 exactly at their minimum.
+      { expiry: E, evmExpiry: E + 8n * H, xecRefundTime: E + 14n * H },
+      // R3 exactly at its maximum.
+      { expiry: E, evmExpiry: E + 8n * H, xecRefundTime: E + 72n * H },
+    ]) {
+      const first = must(
+        await buildNegotiationOffer(
+          context(),
+          fixtureOfferFields(deadlines),
+          async d => signA(d),
+        ),
+      )
+      expect(reduce(first).violation).toBeNull()
+    }
+  })
+
+  it.each([
+    ['R2: EVM expiry less than 8 h after E', { 13: E + 8n * H - 1n }],
+    ['inverted: EVM expiry before E', { 13: E - 1n }],
+    ['R1: XEC refund less than 6 h after T_B', { 12: E + 18n * H - 1n }],
+    ['inverted: XEC refund before T_B', { 12: E + 11n * H }],
+    ['R3: XEC refund more than 72 h after E', { 12: E + 72n * H + 1n }],
+    ['T_A not a CLTV timestamp', { 8: 0n, 13: 9n * H, 12: 18n * H }],
+    [
+      'T_A beyond 32 bits',
+      {
+        8: 1n << 32n,
+        13: (1n << 32n) + 9n * H,
+        12: (1n << 32n) + 18n * H,
+      },
+    ],
+    ['XEC principal under dust', { 6: 545n }],
+    ['zero EVM recipient', { 11: new Uint8Array(20) }],
+    ['zero HTLC contract', { 14: new Uint8Array(20) }],
+  ] as [string, Record<number, Encodable>][])(
+    'a signed offer with %s is a violation, never accepted, and is refused by the builder',
+    async (_, changes) => {
+      const bad = await signedOffer(changes)
+      const decoded = must(
+        decodeNegotiationEventStandalone(encoded(bad), context()),
+      )
+      if (decoded.kind !== 'offer') throw new Error('Expected offer')
+      const alone = reduce(bad)
+      expect(alone.violation?.code).toBe('transition-rejected')
+      expect(alone.history.offer).toBeNull()
+      expect(alone.usableAcceptance).toBeNull()
+      expect(must(negotiationEligibility(alone, 1n)).reason).toBe('violation')
+      // B's builder refuses to accept it; rejecting it stays possible.
+      expect(
+        (
+          await buildNegotiationResponse(
+            context(),
+            encoded(bad),
+            fixtureAccept(),
+            async d => signB(d),
+          )
+        ).ok,
+      ).toBe(false)
+      expect(
+        (
+          await buildNegotiationResponse(
+            context(),
+            encoded(bad),
+            { kind: 'reject' },
+            async d => signB(d),
+          )
+        ).ok,
+      ).toBe(true)
+      expect(
+        await buildNegotiationOffer(context(), decoded.terms, async d =>
+          signA(d),
+        ),
+      ).toMatchObject({ ok: false, error: { code: 'transition-rejected' } })
+      expect(validateOfferFields(context(), decoded.terms).ok).toBe(false)
+    },
+  )
+
+  it.each([
+    ['claim key equal to the refund key', 'xecClaimPublicKey', 5],
+    ['zero EVM sender', 'evmSender', 6],
+    ['EVM sender equal to the recipient', 'evmSender', 6],
+  ] as const)(
+    'an accept with %s is a violation and leaves no usable acceptance',
+    async (name, field, key) => {
+      const value =
+        name === 'claim key equal to the refund key'
+          ? fixtureOfferFields().xecRefundPublicKey
+          : name === 'zero EVM sender'
+          ? new Uint8Array(20)
+          : fixtureOfferFields().evmRecipient
+      const first = await offer()
+      const accept = changePayload(await response(first), fields =>
+        fields.set(BigInt(key), value),
+      )
+      const reduced = reduce(first, accept)
+      expect(reduced.violation?.code).toBe('transition-rejected')
+      expect(reduced.usableAcceptance).toBeNull()
+      expect(
+        (
+          await buildNegotiationResponse(
+            context(),
+            encoded(first),
+            fixtureAccept({ [field]: value }),
+            async d => signB(d),
+          )
+        ).ok,
+      ).toBe(false)
+    },
+  )
+
+  it('rejects an accept that omits B fields and a reject that carries them', async () => {
+    const first = await offer()
+    const yes = await response(first),
+      no = await response(first, 'reject')
+    const stripped = changePayload(yes, fields => {
+      fields.delete(5n)
+      fields.delete(6n)
+    })
+    const padded = changePayload(no, fields => {
+      fields.set(5n, FIXTURE_XEC_CLAIM_KEY)
+      fields.set(6n, new Uint8Array(20).fill(0xbb))
+    })
+    for (const bad of [stripped, padded])
+      expect(decodeNegotiationEventStandalone(encoded(bad), context()).ok).toBe(
+        false,
+      )
+  })
+
+  it('reports an old v1 payload as a version failure', async () => {
+    const first = await offer()
+    const old = changePayload(first, fields => {
+      fields.set(0n, 1)
+      fields.set(1n, 1)
+    })
+    expect(
+      decodeNegotiationEventStandalone(encoded(old), context()),
+    ).toMatchObject({ ok: false, error: { code: 'bad-version' } })
+  })
+
+  it('regtest proof policy uses the same rules with second margins', async () => {
+    const rules = must(
+      negotiationDeadlineRules(REGTEST_PROOF_NEGOTIATION_POLICY),
+    )
+    expect(rules).toMatchObject({
+      evmFinality: 5,
+      xecFinality: 30,
+      xecTimeSkew: 0,
+      watcherDowntime: 10,
+      minRefundGap: 40,
+      minClaimWindow: 60,
+    })
+    const local = { ...context(), policy: REGTEST_PROOF_NEGOTIATION_POLICY }
+    const fields = fixtureOfferFields({
+      evmExpiry: E + 60n,
+      xecRefundTime: E + 100n,
+    })
+    expect(
+      (await buildNegotiationOffer(local, fields, async d => signA(d))).ok,
+    ).toBe(true)
+    expect(
+      (await buildNegotiationOffer(context(), fields, async d => signA(d))).ok,
+    ).toBe(false)
+    expect(
+      (
+        await buildNegotiationOffer(
+          local,
+          { ...fields, xecRefundTime: E + 99n },
+          async d => signA(d),
+        )
+      ).ok,
+    ).toBe(false)
+  })
+})
+
+describe('A derives the v2 swapId from its private salt and the offer facts', () => {
+  const salt = new Uint8Array(32).fill(0x5a)
+  const keyed = (key: Uint8Array) => (t: Uint8Array) => hmac(sha256, key, t)
+  const facts = () => ({ ...context(), ...fixtureOfferFields() })
+  it('pins the transcript and the derived swapId', () => {
+    expect(hex(must(offerSwapIdTranscript(facts())))).toBe(
+      GOLDEN.swapIdTranscript,
+    )
+    expect(hex(must(deriveOfferSwapId(facts(), keyed(salt))))).toBe(
+      GOLDEN.swapId,
+    )
+  })
+  it('differs for another account salt and for every offer fact', () => {
+    const base = hex(must(deriveOfferSwapId(facts(), keyed(salt))))
+    expect(
+      hex(
+        must(deriveOfferSwapId(facts(), keyed(new Uint8Array(32).fill(0x5b)))),
+      ),
+    ).not.toBe(base)
+    const variants = [
+      { policy: REGTEST_PROOF_NEGOTIATION_POLICY },
+      { conversationId: new Uint8Array(16).fill(0x23) },
+      { parties: [context().parties[1], context().parties[0]] as const },
+      { xecPrincipal: 12346n },
+      { evmPrincipal: 2n },
+      { expiry: FIXTURE_EXPIRY + 1n },
+      { xecRefundTime: FIXTURE_EXPIRY + 86401n },
+      { evmExpiry: FIXTURE_EXPIRY + 43201n },
+      { evmRecipient: new Uint8Array(20).fill(0xab) },
+      { evmHtlcContract: new Uint8Array(20).fill(0xcd) },
+    ]
+    const seen = new Set([base])
+    for (const change of variants) {
+      const id = hex(
+        must(deriveOfferSwapId({ ...facts(), ...change }, keyed(salt))),
+      )
+      expect(seen.has(id)).toBe(false)
+      seen.add(id)
+    }
+  })
+  it('refuses a keyed hash that is not 32 bytes and malformed facts', () => {
+    expect(deriveOfferSwapId(facts(), () => new Uint8Array(31)).ok).toBe(false)
+    expect(
+      offerSwapIdTranscript({ ...facts(), evmRecipient: new Uint8Array(19) })
+        .ok,
+    ).toBe(false)
+    expect(
+      offerSwapIdTranscript({
+        ...facts(),
+        policy: {
+          ...TESTNET_NEGOTIATION_POLICY,
+          name: 'xec-monad-testnet-v1' as never,
+        },
+      }).ok,
+    ).toBe(false)
+  })
 })

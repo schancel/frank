@@ -17,14 +17,33 @@ atomic settlement. Those remain separate typed boundaries in `docs/atomic-swap-s
 ## Authenticated negotiation predecessor
 
 `@frank/swap-protocol/src/negotiation` is a separate pure entry point. The existing package entry
-and Stage-0/pair experiments are unchanged. It freezes offer/accept/reject payload version1,
-pair-policy version1, lane0 and manifest-local message types1/2/3, with A depositing XEC and B
-EVM. Principal quantities use bigint, with uint64 XEC and fixed big-endian uint256 EVM wire
-encodings. These amounts exclude execution fees. Negotiation contains no inputs, nonces, J/T,
-deployments, refund signatures or funding authorization.
+and Stage-0/pair experiments are unchanged. It freezes offer/accept/reject payload version 2,
+pair-policy version 2, lane0 and manifest-local message types1/2/3, with A depositing XEC and B
+EVM, for the HTLC swap (docs/plans/htlc-swaps/README.md). Principal quantities use bigint, with
+uint64 XEC and fixed big-endian uint256 EVM wire encodings. These amounts exclude execution fees.
+An offer additionally signs the HTLC terms: `hashLock` (sha256 of A's 32-byte preimage), A's
+per-swap `xecRefundPublicKey`, A's main account `evmRecipient`, the absolute deadlines
+`xecRefundTime` (T_A) and `evmExpiry` (T_B), and `evmHtlcContract`; `expiry` is the acceptance
+deadline E. An accept adds B's per-swap `xecClaimPublicKey` and B's main account `evmSender`; a
+reject carries no extra fields. Negotiation contains no inputs, nonces or funding authorization.
 
-Callers must select `TESTNET_NEGOTIATION_POLICY` (`xec-testnet`/`monad-testnet`) or the separately
-named `REGTEST_PROOF_NEGOTIATION_POLICY` (`xec-regtest`/`monad-regtest`). The implementation reads
+The reducer treats signed terms that cannot execute as a violation, never an accepted swap: the
+deadline rules R1 `T_A − T_B ≥ minRefundGap`, R2 `T_B − E ≥ minClaimWindow`, R3
+`T_A − E ≤ maxSpan` (`negotiationDeadlineRules`; testnet 6 h / 8 h / 72 h), T_A a 32-bit CLTV
+timestamp, `xecPrincipal ≥ 546`, non-zero recipient/sender/contract, distinct eCash claim and
+refund keys and `evmSender ≠ evmRecipient`. Builders refuse the same terms. The UI defaults are
+`defaultNegotiationDeadlines` (E = now + 1 h, T_B = E + 12 h, T_A = T_B + 12 h on testnet).
+
+A's swapId is `deriveOfferSwapId(facts, keyedHash)`: a keyed hash, under A's private account
+salt, of the `frank/swap-offer-id/v1` transcript of the offer facts (policy, conversation,
+parties, principals, E, T_A, T_B, recipient, contract). `authorizeNegotiation` signs an offer only
+for the swapId the account's `offerSwapId` capability derives, so a swapId is never taken from a
+peer or the wire and never reused for different terms.
+
+Callers must select `TESTNET_NEGOTIATION_POLICY` (`xec-monad-testnet-v2`) or the separately
+named `REGTEST_PROOF_NEGOTIATION_POLICY` (`xec-monad-regtest-proof-v2`, the same rules with
+margins in seconds). Stored journal rows of the retired v1 policies fail with that reason and a
+reset instruction (delete the account's negotiation storage namespace). The implementation reads
 IDs, family and JSON-RPC permission directly from `docs/protocol/chains/v1.json`; it neither
 accepts aliases nor substitutes native IDs. This structural registry check is not upstream
 checkpoint or chain-state verification.
@@ -33,7 +52,7 @@ Builders receive explicit swap/conversation IDs, ordered identity keys and an as
 `signDigest` capability. They snapshot their inputs before awaiting it, hash the existing
 `frank/swap-event-signature/v1` preimage exactly once, and verify the returned central algorithm-1
 strict-DER low-S signature. Identity key IDs use `frank/swap-identity-key-id/v1`; terms hashes use
-`frank/swap-negotiation-terms/v1`. Golden vectors pin all these bytes in the negotiation tests.
+`frank/swap-negotiation-terms/v2`. Golden vectors pin all these bytes in the negotiation tests.
 The signer capability provides identity authorization only, never financial transaction signing.
 
 `decodeNegotiationEventSchema` lets a stateless transport plugin parse and verify the self-contained

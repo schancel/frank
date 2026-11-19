@@ -82,7 +82,8 @@ export function startBotNegotiationRecovery(input: {
         (value.state === "capacity" || value.state === "storage-error")
       )
         console.warn(
-          `[bot-host] Swap recovery ${value.state}; evidence and coverage retained`
+          `[bot-host] Swap recovery ${value.state}; evidence and coverage retained` +
+            (value.failure ? `: ${value.failure}` : "")
         );
     },
   });

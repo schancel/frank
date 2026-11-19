@@ -263,7 +263,7 @@
   </q-card>
 </template>
 <script lang="ts">
-import { defineComponent, markRaw, type PropType } from 'vue'
+import { defineComponent, markRaw } from 'vue'
 import { addressFromCompressedPubkey, fromHex, toHex } from '@frank/codec'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import {
@@ -278,6 +278,7 @@ import {
   decodeNegotiationEventStandalone,
 } from '@frank/swap-protocol/src/negotiation'
 import {
+  buildOfferIntent,
   captureNegotiation,
   sendNegotiation,
   negotiationCommandStatus,
@@ -296,12 +297,11 @@ export default defineComponent({
     address: { type: String, required: true },
     conversationId: { type: String, required: true },
     contact: { type: Object, default: () => ({}) },
-    swapId: { type: Object as PropType<Uint8Array>, required: true },
     stampValue: { type: String, required: true },
     stampUnavailable: { type: String, default: '' },
     conversationName: { type: String, default: '' },
   },
-  emits: ['newOffer', 'close'],
+  emits: ['close'],
   setup() {
     return { status: negotiationCommandStatus }
   },
@@ -373,9 +373,6 @@ export default defineComponent({
       this.reviewed = null
     },
     conversationId() {
-      this.reviewed = null
-    },
-    swapId() {
       this.reviewed = null
     },
     xecAmount() {
@@ -462,9 +459,7 @@ export default defineComponent({
         const capture = await captureNegotiation({
           address: this.address,
           conversationId: this.conversationId,
-          swapId: intent.context.swapId,
           stampValue: BigInt(record.stampValueWei),
-          responseContext: intent.context,
         })
         await sendNegotiation(capture, intent)
         this.$emit('close')
@@ -496,32 +491,28 @@ export default defineComponent({
         const original = {
           address: this.address,
           conversationId: this.conversationId,
-          swapId: this.swapId,
           stampValue: BigInt(this.stampValue),
           xecAmount: this.xecAmount,
           evmAmount: this.evmAmount,
           expiryInput: this.expiryInput,
         }
         const capture = await captureNegotiation(original)
+        // The swap deadlines follow the acceptance deadline (policy defaults); the swapId,
+        // hash lock and refund key are this account's own, derived from the offer facts.
+        const intent = await buildOfferIntent(capture, {
+          xecPrincipal,
+          evmPrincipal,
+          expiry: BigInt(Math.floor(ms / 1000)),
+        })
         if (
           this.address !== original.address ||
           this.conversationId !== original.conversationId ||
-          this.swapId !== original.swapId ||
           this.xecAmount !== original.xecAmount ||
           this.evmAmount !== original.evmAmount ||
           this.expiryInput !== original.expiryInput
         )
           throw new Error('Conversation changed during review')
-        this.reviewed = markRaw({
-          capture,
-          intent: {
-            action: 'offer' as const,
-            context: capture.context,
-            xecPrincipal,
-            evmPrincipal,
-            expiry: BigInt(Math.floor(ms / 1000)),
-          },
-        })
+        this.reviewed = markRaw({ capture, intent })
       } catch (e) {
         this.error = negotiationErrorCode(e)
         this.status.error = this.error
@@ -534,7 +525,6 @@ export default defineComponent({
       try {
         await sendNegotiation(this.reviewed.capture, this.reviewed.intent)
         this.reviewed = null
-        this.$emit('newOffer')
         this.$emit('close')
       } catch {
         /* Durable error is displayed across reopening. */
@@ -545,7 +535,6 @@ export default defineComponent({
       this.reviewed = null
       this.error = ''
       this.status.error = ''
-      this.$emit('newOffer')
     },
   },
 })

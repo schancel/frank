@@ -11,6 +11,10 @@ import {
   type NegotiationContext,
 } from './negotiation'
 import {
+  fixtureAccept,
+  fixtureOfferFields,
+} from './negotiation-fixtures.testutil'
+import {
   NegotiationRecovery,
   type NegotiationEnvelope,
   type NegotiationRecoveryOptions,
@@ -39,7 +43,7 @@ async function signed() {
       must(
         await buildNegotiationOffer(
           context,
-          { xecPrincipal: 100n, evmPrincipal: 200n, expiry: 2000000000n },
+          fixtureOfferFields({ xecPrincipal: 1000n, evmPrincipal: 200n }),
           sign(a),
         ),
       ),
@@ -47,7 +51,7 @@ async function signed() {
   )
   const response = must(
     encodeSignedSwapEvent(
-      must(await buildNegotiationResponse(context, offer, 'accept', sign(b))),
+      must(await buildNegotiationResponse(context, offer, fixtureAccept(), sign(b))),
     ),
   )
   return { offer, response }
@@ -401,7 +405,7 @@ test('same-peer conversations remain separate and malformed original identities 
       must(
         await buildNegotiationOffer(
           secondContext,
-          { xecPrincipal: 100n, evmPrincipal: 200n, expiry: 2000000000n },
+          fixtureOfferFields({ xecPrincipal: 1000n, evmPrincipal: 200n }),
           sign(a),
         ),
       ),

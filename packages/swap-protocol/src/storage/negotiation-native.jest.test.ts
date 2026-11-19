@@ -489,3 +489,22 @@ it('holds native child-process exclusion for coverage-only namespaces', async ()
   await store.close()
   expect(await (await owned()).readCoverage('monad-testnet')).toBe(0)
 })
+it('an old v1 negotiation row stops the store with what it is and how to reset', async () => {
+  const store = await owned(),
+    row = emptyRow(0)
+  await store.compareAndSwap(row.key, undefined, row.raw)
+  await store.close()
+  const parsed = JSON.parse(row.raw)
+  parsed.context.policy.name = 'xec-monad-testnet-v1'
+  const db = await raw(store.namespace)
+  await db.batch(
+    [{ type: 'put', key: 'cd'.repeat(32), value: JSON.stringify(parsed) }],
+    { sync: true },
+  )
+  await db.close()
+  const reopened = await owned()
+  await expect(reopened.listRecords()).rejects.toThrow(
+    /Unsupported old swap negotiation record \(policy xec-monad-testnet-v1, payload v1\).*Reset: delete/,
+  )
+  await reopened.close()
+})

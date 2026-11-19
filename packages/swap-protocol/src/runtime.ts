@@ -32,6 +32,8 @@ export interface NegotiationRecoverySnapshot {
   readonly state: NegotiationRecoveryState
   readonly coverage: number | undefined
   readonly journals: readonly NegotiationJournalInspection[]
+  /** Why the last pass failed (for example an unsupported old stored record); for diagnostics. */
+  readonly failure?: string
 }
 export interface NegotiationEnvelope {
   readonly chainIdentifier: string
@@ -93,6 +95,7 @@ export class NegotiationRecovery {
   private failures = 0
   private state: NegotiationRecoveryState = 'restoring'
   private coverage: number | undefined
+  private failure: string | undefined
   private rows: readonly { key: string; raw: string }[] = []
   private readonly owner: NegotiationJournalOwner
   private readonly policy: NegotiationPairPolicy
@@ -114,11 +117,13 @@ export class NegotiationRecovery {
       journals: Object.freeze(
         this.rows.map(row => inspectNegotiationJournalRecord(row.raw)),
       ),
+      ...(this.failure === undefined ? {} : { failure: this.failure }),
     })
   }
-  private publish(state: NegotiationRecoveryState): void {
+  private publish(state: NegotiationRecoveryState, failure?: string): void {
     if (!this.active) return
     this.state = state
+    this.failure = failure
     this.options.publish(this.snapshot)
   }
   private async restore(): Promise<void> {
@@ -194,7 +199,7 @@ export class NegotiationRecovery {
         if (reduction.history.decision === null) return true
         return (
           reduction.usableAcceptance !== null &&
-          nowSeconds < BigInt(reduction.usableAcceptance.expiry)
+          nowSeconds < BigInt(reduction.usableAcceptance.offer.expiry)
         )
       } catch {
         return true
@@ -280,6 +285,7 @@ export class NegotiationRecovery {
             error.code === 'capacity'
           ? 'capacity'
           : 'storage-error',
+        error instanceof Error ? error.message : String(error),
       )
       const store = this.store
       this.store = undefined

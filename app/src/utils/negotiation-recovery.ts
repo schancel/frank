@@ -35,8 +35,20 @@ export function startAppNegotiationRecovery(input: {
   const mine = {}
   current = mine
   inspectCurrent = undefined
+  let reported: string | undefined
   const publish = (snapshot: NegotiationRecoverySnapshot) => {
-    if (current === mine) status.value = snapshot
+    if (current !== mine) return
+    status.value = snapshot
+    // Say which stored record stopped restoration (for example an old v1 negotiation row and
+    // its reset), once per distinct failure.
+    if (
+      snapshot.state === 'storage-error' &&
+      snapshot.failure !== undefined &&
+      snapshot.failure !== reported
+    ) {
+      reported = snapshot.failure
+      console.warn(`[swap] Negotiation restore failed: ${snapshot.failure}`)
+    }
   }
   const chain = activeChain
   const messages = chain.directMessages

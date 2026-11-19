@@ -723,6 +723,19 @@ export function swapSecretCapabilityOf(
     },
   });
 }
+/**
+ * The live typed wallet's EVM main account address: the account its GenericHTLC calls are sent
+ * from (`sendContractCall`), so the sender and refund address of its locks and the recipient it
+ * names in a swap offer. `undefined` for a wallet with no typed material or once it is closed.
+ */
+export function htlcMainAccountOf(
+  wallet: NativeWalletHandle | WalletHandle
+): string | undefined {
+  const internals = evmWalletInternals(wallet);
+  if (!internals.material || !internals.typed || internals.closed)
+    return undefined;
+  return internals.material.mainAccount.address.toLowerCase();
+}
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: EvmChainWalletHandle) {
   requireOpenWallet(wallet);

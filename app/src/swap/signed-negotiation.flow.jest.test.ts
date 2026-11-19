@@ -96,6 +96,26 @@ jest.mock('../utils/notifications', () => ({
   insufficientStampNotify: jest.fn(),
   desktopNotify: jest.fn(),
 }))
+// Per-swap eCash HTLC keys are custody's (packages/wallet/ecash-htlc-keys.ts, pinned there);
+// this stand-in answers for the xec-testnet wallet without opening an eCash relay chain.
+jest.mock('../accounts/utxo-wallets', () => ({
+  ...jest.requireActual('../accounts/utxo-wallets'),
+  openUtxoWallet: async (chainIdentifier: string) => {
+    if (chainIdentifier !== 'xec-testnet')
+      throw new Error('Unexpected UTXO chain')
+    return { wallet: { htlcPublicKey: mockXecHtlcPublicKey } }
+  },
+}))
+function mockXecHtlcPublicKey(swapId: string, role: string): Uint8Array {
+  const { secp256k1 } = require('@noble/curves/secp256k1')
+  const { sha256 } = require('@noble/hashes/sha256')
+  if (!/^[0-9a-f]{64}$/.test(swapId)) throw new Error('Swap id hex')
+  const account = mockSession.state.account.receipt.context.accountId
+  return secp256k1.getPublicKey(
+    sha256(new TextEncoder().encode(`${account}:${role}:${swapId}`)),
+    true,
+  )
+}
 jest.mock('@frank/swap-protocol/src/storage/negotiation-browser', () => ({
   createBrowserNegotiationJournalStore: async (binding: object) =>
     require('@frank/swap-protocol/src/storage/negotiation-native').createNativeNegotiationJournalStore(
@@ -144,7 +164,20 @@ const MessageBubble =
 const Form = require('../components/dialogs/OfferSwapDialog.vue').default
 const en = require('../i18n/en-us').default
 const mailbox = require('@frank/cashweb/relay/mailbox-client')
+const {
+  fixtureAccept,
+  fixtureOfferFields,
+} = require('@frank/swap-protocol/src/negotiation-fixtures.testutil')
 jest.setTimeout(60000)
+/** A's real v2 offer writer: deadlines, main account, HTLC, own swapId, hash lock, refund key. */
+async function offerFor(capture: unknown, xecPrincipal = 1000n) {
+  const { buildOfferIntent } = require('./negotiation-commands')
+  return buildOfferIntent(capture, {
+    xecPrincipal,
+    evmPrincipal: 500n,
+    expiry: 2000000000n,
+  })
+}
 const pass = defineComponent({
   inheritAttrs: false,
   setup:
@@ -414,7 +447,7 @@ test.each([
     await flushPromises()
     const form = page.findComponent(Form)
     expect(form.exists()).toBe(true)
-    await form.find('[data-testid="swap-xec-amount"]').setValue('1.23')
+    await form.find('[data-testid="swap-xec-amount"]').setValue('12.34')
     await form
       .find('[data-testid="swap-evm-amount"]')
       .setValue('0.000000000000000456')
@@ -469,8 +502,56 @@ test.each([
       standaloneItemBudget(),
     )
     expect(decoded.ok).toBe(true)
-    expect(decoded.value.terms.xecPrincipal).toBe(123n)
-    expect(decoded.value.terms.evmPrincipal).toBe(456n)
+    const terms = decoded.value.terms
+    expect(terms.xecPrincipal).toBe(1234n)
+    expect(terms.evmPrincipal).toBe(456n)
+    // v2 HTLC terms: policy-default deadlines after the chosen E, A's main account, this
+    // network's GenericHTLC, and A's own swapId, hash lock and refund key.
+    expect(terms.evmExpiry - terms.expiry).toBe(12n * 3600n)
+    expect(terms.xecRefundTime - terms.evmExpiry).toBe(12n * 3600n)
+    expect('0x' + toHex(terms.evmHtlcContract)).toBe(
+      f.chain.getHtlcAddress().toLowerCase(),
+    )
+    const {
+      htlcMainAccountOf,
+      swapSecretCapabilityOf,
+    } = require('@frank/wallet/chain/evm-chain')
+    expect('0x' + toHex(terms.evmRecipient)).toBe(htlcMainAccountOf(f.alice))
+    const {
+      deriveOfferSwapId,
+    } = require('@frank/swap-protocol/src/negotiation')
+    const { hmacSha256 } = require('@frank/crypto-box')
+    const swapId = decoded.value.event.swapId
+    const derived = deriveOfferSwapId(
+      {
+        policy: TESTNET_NEGOTIATION_POLICY,
+        conversationId: terms.conversationId,
+        parties: terms.parties,
+        xecPrincipal: terms.xecPrincipal,
+        evmPrincipal: terms.evmPrincipal,
+        expiry: terms.expiry,
+        xecRefundTime: terms.xecRefundTime,
+        evmExpiry: terms.evmExpiry,
+        evmRecipient: terms.evmRecipient,
+        evmHtlcContract: terms.evmHtlcContract,
+      },
+      (t: Uint8Array) => hmacSha256(t, conversationIdSaltOf(f.alice)),
+    )
+    expect(toHex(swapId)).toBe(toHex(derived.value))
+    const { sha256 } = require('@noble/hashes/sha256')
+    expect(toHex(terms.hashLock)).toBe(
+      toHex(
+        sha256(
+          swapSecretCapabilityOf(f.alice).swapPreimage({
+            policyName: TESTNET_NEGOTIATION_POLICY.name,
+            swapId,
+          }),
+        ),
+      ),
+    )
+    expect(toHex(terms.xecRefundPublicKey)).toBe(
+      toHex(mockXecHtlcPublicKey(toHex(swapId), 'refund')),
+    )
     page.unmount()
     mounted.pop()
     await recovery.stop()
@@ -572,9 +653,22 @@ test.each([
     ).toHaveLength(1)
     await recovery.stop()
     await useSession(1)
-    expect(
-      negotiationRecoveryStatus.snapshot.journals[0].reduction.history.decision,
-    ).toBe(decision)
+    const reduction = negotiationRecoveryStatus.snapshot.journals[0].reduction
+    expect(reduction.history.decision).toBe(decision)
+    expect(reduction.violation).toBeNull()
+    if (decision === 'accept') {
+      const { htlcMainAccountOf } = require('@frank/wallet/chain/evm-chain')
+      const accepted = reduction.usableAcceptance
+      expect('0x' + toHex(accepted.accept.evmSender)).toBe(
+        htlcMainAccountOf(f.bob),
+      )
+      expect(toHex(accepted.accept.xecClaimPublicKey)).toBe(
+        toHex(mockXecHtlcPublicKey(toHex(swapId), 'claim')),
+      )
+      expect(toHex(accepted.accept.xecClaimPublicKey)).not.toBe(
+        toHex(accepted.offer.xecRefundPublicKey),
+      )
+    } else expect(reduction.usableAcceptance).toBeNull()
     expect(card.text()).toContain(
       decision === 'accept'
         ? 'Authenticated acceptance; principal execution is not authorized'
@@ -602,16 +696,9 @@ test.each([0n, 1000n])(
     const capture = await captureNegotiation({
       address: f.bob.identity.displayAddress,
       conversationId,
-      swapId: new Uint8Array(32).fill(7),
       stampValue,
     })
-    const intent = {
-      action: 'offer',
-      context: capture.context,
-      xecPrincipal: 100n,
-      evmPrincipal: 500n,
-      expiry: 2000000000n,
-    }
+    const intent = await offerFor(capture)
     f.setPhase('retained')
     await expect(sendNegotiation(capture, intent)).rejects.toThrow(
       'delivery pending',
@@ -658,9 +745,13 @@ test.each([0n, 1000n])(
     const recovered = await captureNegotiation({
       address: f.bob.identity.displayAddress,
       conversationId,
-      swapId: intent.context.swapId,
       stampValue,
     })
+    // The reopened wallet derives the same swapId, hash lock and offer from the same facts.
+    const rebuilt = await offerFor(recovered)
+    expect(toHex(rebuilt.context.swapId)).toBe(toHex(intent.context.swapId))
+    expect(toHex(rebuilt.hashLock)).toBe(toHex(intent.hashLock))
+    expect(rebuilt).toEqual(intent)
     const derivation = jest.spyOn(mockSession, 'getActiveFamilyMaterial')
     await sendNegotiation(recovered, intent)
     expect(derivation).not.toHaveBeenCalled()
@@ -714,7 +805,6 @@ test.each(['peer', 'claim', 'sign', 'completion', 'send'] as const)(
     const request = {
       address: f.bob.identity.displayAddress,
       conversationId: '11111111-1111-4111-8111-111111111111',
-      swapId: new Uint8Array(32).fill(9),
       stampValue: 0n,
     }
     if (phase === 'peer') {
@@ -730,13 +820,7 @@ test.each(['peer', 'claim', 'sign', 'completion', 'send'] as const)(
       await expect(capturing).rejects.toThrow()
     } else {
       const captured = await captureNegotiation(request)
-      const intent = {
-        action: 'offer',
-        context: captured.context,
-        xecPrincipal: 100n,
-        evmPrincipal: 500n,
-        expiry: 2000000000n,
-      }
+      const intent = await offerFor(captured)
       if (phase === 'claim') {
         const original =
           mockStore.claimOutgoingApplicationMessage.bind(mockStore)
@@ -806,16 +890,9 @@ test('same peer in independent conversations retains separate authenticated stat
     const capture = await captureNegotiation({
       address: f.bob.identity.displayAddress,
       conversationId: conversations[i],
-      swapId: new Uint8Array(32).fill(21 + i),
       stampValue: 0n,
     })
-    await sendNegotiation(capture, {
-      action: 'offer',
-      context: capture.context,
-      xecPrincipal: 100n + BigInt(i),
-      evmPrincipal: 500n,
-      expiry: 2000000000n,
-    })
+    await sendNegotiation(capture, await offerFor(capture, 1000n + BigInt(i)))
   }
   const records = await mockStore.outgoingApplicationMessages({
     accountId: 'a',
@@ -890,14 +967,14 @@ test('an authenticated response before its offer remains incomplete and never en
   }
   const offer = await buildNegotiationOffer(
     context,
-    { xecPrincipal: 100n, evmPrincipal: 500n, expiry: 2000000000n },
+    fixtureOfferFields({ xecPrincipal: 1000n, evmPrincipal: 500n }),
     async (d: Uint8Array) => f.alice.identity.signHash(Buffer.from(d)),
   )
   const offerBytes = encodeSignedSwapEvent(offer.value).value
   const response = await buildNegotiationResponse(
     context,
     offerBytes,
-    'accept',
+    fixtureAccept(),
     async (d: Uint8Array) => f.bob.identity.signHash(Buffer.from(d)),
   )
   const eventHex = toHex(encodeSignedSwapEvent(response.value).value)
@@ -998,16 +1075,9 @@ test.each([false, true])(
     const capture = await captureNegotiation({
       address: f.bob.identity.displayAddress,
       conversationId: '11111111-1111-4111-8111-111111111111',
-      swapId: new Uint8Array(32).fill(7),
       stampValue: 1000n,
     })
-    const intent = {
-      action: 'offer',
-      context: capture.context,
-      xecPrincipal: 100n,
-      evmPrincipal: 500n,
-      expiry: 2000000000n,
-    }
+    const intent = await offerFor(capture)
     const send = jest
       .spyOn(f.chain.directMessages, 'send')
       .mockImplementation(async p => {
@@ -1090,16 +1160,9 @@ test.each(['missing', 'unreadable', 'conflicting', 'revoked'])(
     const capture = await captureNegotiation({
       address: f.bob.identity.displayAddress,
       conversationId: '11111111-1111-4111-8111-111111111111',
-      swapId: new Uint8Array(32).fill(8),
       stampValue: 0n,
     })
-    const intent = {
-      action: 'offer',
-      context: capture.context,
-      xecPrincipal: 100n,
-      evmPrincipal: 500n,
-      expiry: 2000000000n,
-    }
+    const intent = await offerFor(capture)
     // Substitute delivery only to get a rekeyed presentation without creating an attempt.
     const send = jest.spyOn(f.chain.directMessages, 'send').mockResolvedValue({
       payloadDigest: 'ab'.repeat(32),

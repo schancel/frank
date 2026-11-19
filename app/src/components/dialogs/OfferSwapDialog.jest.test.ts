@@ -10,6 +10,7 @@ jest.mock('../../swap/negotiation-commands', () => ({
   },
   negotiationUnavailable: () => mockUnavailable,
   captureNegotiation: jest.fn(),
+  buildOfferIntent: jest.fn(),
   sendNegotiation: jest.fn(),
   negotiationErrorCode: () => 'invalidAmount',
 }))
@@ -33,7 +34,6 @@ const mountForm = () =>
     props: {
       address: 'peer',
       conversationId: '11111111-1111-4111-8111-111111111111',
-      swapId: new Uint8Array(32).fill(1),
       stampValue: '0',
       contact: { name: 'Bob' },
     },
@@ -92,7 +92,7 @@ test.each([
   ).toBeDefined()
   w.unmount()
 })
-test('error survives closing/reopening and a deliberate new offer requests another swap identity', async () => {
+test('error survives closing/reopening and a deliberate new offer clears it', async () => {
   const w = mountForm()
   await w.find('[data-testid="swap-review"]').trigger('click')
   const error = mockStatus.error
@@ -104,17 +104,20 @@ test('error survives closing/reopening and a deliberate new offer requests anoth
     .findAll('button')
     .find(b => b.text() === 'signedSwap.newOffer')!
     .trigger('click')
-  expect(reopened.emitted('newOffer')).toHaveLength(1)
+  expect(mockStatus.error).toBe('')
   reopened.unmount()
 })
 test('expiry preset populates future datetime and successful propose emits close', async () => {
-  const { captureNegotiation, sendNegotiation } = jest.requireMock(
-    '../../swap/negotiation-commands',
+  const { captureNegotiation, buildOfferIntent, sendNegotiation } =
+    jest.requireMock('../../swap/negotiation-commands')
+  captureNegotiation.mockResolvedValue({ stampValueWei: '0' })
+  buildOfferIntent.mockImplementation(
+    async (_: unknown, terms: Record<string, bigint>) => ({
+      action: 'offer',
+      context: { swapId: new Uint8Array(32).fill(1) },
+      ...terms,
+    }),
   )
-  captureNegotiation.mockResolvedValue({
-    context: { swapId: new Uint8Array(32).fill(1) },
-    stampValueWei: '0',
-  })
   sendNegotiation.mockResolvedValue(undefined)
   const w = mountForm()
   await w.find('[data-testid="swap-xec-amount"]').setValue('100')
@@ -126,6 +129,13 @@ test('expiry preset populates future datetime and successful propose emits close
   await w.find('[data-testid="swap-propose"]').trigger('click')
   await flushPromises()
   expect(w.emitted('close')).toHaveLength(1)
-  expect(w.emitted('newOffer')).toHaveLength(1)
+  // The offer's swap deadlines and swapId come from the writer, from the chosen terms only.
+  expect(buildOfferIntent).toHaveBeenCalledTimes(1)
+  expect(buildOfferIntent.mock.calls[0][1]).toEqual({
+    xecPrincipal: 10000n,
+    evmPrincipal: 10n ** 18n,
+    expiry: expect.any(BigInt),
+  })
+  expect(sendNegotiation.mock.calls[0][1]).toMatchObject({ action: 'offer' })
   w.unmount()
 })

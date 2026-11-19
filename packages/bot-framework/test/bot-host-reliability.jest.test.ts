@@ -1,6 +1,7 @@
 import * as negotiationStorage from '@frank/swap-protocol/src/storage/negotiation-native'
 import { NegotiationJournalError } from '@frank/swap-protocol/src/negotiation-journal'
 import { buildNegotiationOffer, TESTNET_NEGOTIATION_POLICY } from '@frank/swap-protocol/src/negotiation'
+import { fixtureOfferFields } from '@frank/swap-protocol/src/negotiation-fixtures.testutil'
 import { encodeSignedSwapEvent } from '@frank/swap-protocol/src'
 import { MonadIdentity } from '@frank/wallet/evm-identity'
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -145,7 +146,7 @@ describe("FrankBotHost Reliability Features", () => {
       const peer = MonadIdentity.fromPrivateKeyHex(`0x${'00'.repeat(31)}01`);
       mockFeatureScan.mockImplementation(async ({ wallet, sinceMs }) => {
         const context = { swapId: new Uint8Array(32).fill(1), conversationId: new Uint8Array(16).fill(2), parties: [peer.compressedPubKey, wallet.identity.compressedPubKey] as const, policy: TESTNET_NEGOTIATION_POLICY };
-        const offer = await buildNegotiationOffer(context, { xecPrincipal: 100n, evmPrincipal: 200n, expiry: 2000000000n }, async digest => new Uint8Array(peer.signHash(Buffer.from(digest))));
+        const offer = await buildNegotiationOffer(context, fixtureOfferFields({ xecPrincipal: 1000n, evmPrincipal: 200n }), async digest => new Uint8Array(peer.signHash(Buffer.from(digest))));
         if (!offer.ok) throw new Error(offer.error.code);
         const bytes = encodeSignedSwapEvent(offer.value);
         if (!bytes.ok) throw new Error(bytes.error.code);
@@ -193,7 +194,7 @@ describe("FrankBotHost Reliability Features", () => {
       });
       mockFeatureScan.mockImplementation(async ({ wallet, sinceMs }) => {
         const context = { swapId: new Uint8Array(32).fill(sinceMs === 0 ? 1 : 2), conversationId: new Uint8Array(16).fill(2), parties: [peer.compressedPubKey, wallet.identity.compressedPubKey] as const, policy: TESTNET_NEGOTIATION_POLICY };
-        const offer = await buildNegotiationOffer(context, { xecPrincipal: 100n, evmPrincipal: 200n, expiry: 2000000000n }, async digest => new Uint8Array(peer.signHash(Buffer.from(digest))));
+        const offer = await buildNegotiationOffer(context, fixtureOfferFields({ xecPrincipal: 1000n, evmPrincipal: 200n }), async digest => new Uint8Array(peer.signHash(Buffer.from(digest))));
         if (!offer.ok) throw new Error(offer.error.code);
         const bytes = encodeSignedSwapEvent(offer.value);
         if (!bytes.ok) throw new Error(bytes.error.code);

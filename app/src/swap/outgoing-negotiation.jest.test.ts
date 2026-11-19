@@ -26,25 +26,35 @@ import {
 import {
   TESTNET_NEGOTIATION_POLICY,
   decodeNegotiationEventStandalone,
+  deriveOfferSwapId,
 } from '@frank/swap-protocol/src/negotiation'
+import {
+  FIXTURE_EXPIRY,
+  fixtureAcceptFields,
+  fixtureOfferFields,
+} from '@frank/swap-protocol/src/negotiation-fixtures.testutil'
 import vectors from '../../../reviews/signed-negotiation-ui/fixtures/negotiation-id-vectors.json'
 jest.setTimeout(30000)
 const alice = MonadIdentity.fromPrivateKeyHex('0x' + '01'.padStart(64, '0'))
 const bob = MonadIdentity.fromPrivateKeyHex('0x' + '02'.padStart(64, '0'))
 const salt = new Uint8Array(16).fill(8)
-const context = {
-  swapId: new Uint8Array(32).fill(1),
+const offerSwapId = (transcript: Uint8Array) => hmacSha256(transcript, salt)
+const base = {
   conversationId: new Uint8Array(16).fill(2),
   parties: [alice.compressedPubKey, bob.compressedPubKey] as const,
   policy: TESTNET_NEGOTIATION_POLICY,
 }
+const fields = fixtureOfferFields({ xecPrincipal: 1230n, evmPrincipal: 456n })
+const derived = deriveOfferSwapId({ ...base, ...fields }, offerSwapId)
+if (!derived.ok) throw new Error('swapId derivation')
+const context = { ...base, swapId: derived.value }
 const intent: LocalNegotiationIntent = {
   action: 'offer',
   context,
-  xecPrincipal: 123n,
-  evmPrincipal: 456n,
-  expiry: 200n,
+  ...fields,
 }
+/** Clock `n` seconds around the acceptance deadline: at(200n) is the expiry E itself. */
+const at = (n: bigint) => FIXTURE_EXPIRY - 200n + n
 let digests: string[] = []
 let location: string,
   storage: LevelMessageStore,
@@ -66,6 +76,7 @@ function auth(role = 0): {
     },
     assertAdmittedOffer: jest.fn(),
     intentKey: bytes => toHex(hmacSha256(bytes, salt)),
+    offerSwapId,
     messageId: bytes => formatConversationId(uuidv5Bytes(salt, toHex(bytes))),
     async signDigest(digest) {
       signatures++
@@ -77,7 +88,7 @@ function auth(role = 0): {
 const run = (
   value = intent,
   authorization = auth(),
-  clock = () => 100n,
+  clock = () => at(100n),
   stampValueWei = '0',
 ) =>
   authorizeNegotiation({
@@ -142,7 +153,7 @@ test('canonical local format roundtrips exact terms and rejects trailing/noncano
   ).toThrow()
   expect(() =>
     decodeLocalNegotiationIntent(
-      encodeCanonical(['frank/swap-negotiation-local-intent/v1', 0]),
+      encodeCanonical(['frank/swap-negotiation-local-intent/v2', 0]),
     ),
   ).toThrow()
 })
@@ -203,7 +214,7 @@ test.each(['claim', 'sign', 'completion'] as const)(
     const result = await run()
     const count = signatures
     await reopen()
-    expect(await run(intent, auth(), () => 300n)).toEqual(result)
+    expect(await run(intent, auth(), () => at(300n))).toEqual(result)
     expect(signatures).toBe(count)
     expect(new Set(digests).size).toBe(1)
     expect(
@@ -215,11 +226,58 @@ test.each(['claim', 'sign', 'completion'] as const)(
   },
 )
 test('expired authorization cannot newly claim/sign, while persisted signed delivery retains expiry', async () => {
-  await expect(run(intent, auth(), () => 200n)).rejects.toThrow('expired')
+  await expect(run(intent, auth(), () => at(200n))).rejects.toThrow('expired')
   expect(signatures).toBe(0)
   const result = await run()
   await reopen()
-  expect(await run(intent, auth(), () => 999n)).toEqual(result)
+  expect(await run(intent, auth(), () => at(999n))).toEqual(result)
+})
+test('an offer is signed only for the swapId this account derives from its facts', async () => {
+  for (const swapId of [
+    new Uint8Array(32).fill(1),
+    // A swapId derived from other facts (a peer's, or another offer's) is not this offer's.
+    (() => {
+      const other = deriveOfferSwapId(
+        { ...base, ...fields, xecPrincipal: 1231n },
+        offerSwapId,
+      )
+      if (!other.ok) throw new Error('swapId derivation')
+      return other.value
+    })(),
+  ])
+    await expect(
+      run({ ...intent, context: { ...context, swapId } }),
+    ).rejects.toThrow('Offer swap ID was not derived by this account')
+  const otherSalt = auth()
+  otherSalt.offerSwapId = t => hmacSha256(t, new Uint8Array(16).fill(9))
+  await expect(run(intent, otherSalt)).rejects.toThrow(
+    'Offer swap ID was not derived by this account',
+  )
+  expect(signatures).toBe(0)
+  expect(
+    await storage.outgoingApplicationMessages({ accountId: 'a' }),
+  ).toHaveLength(0)
+  expect((await run()).phase).toBe('signed')
+})
+test('offer terms that break the deadline rules are refused before any claim', async () => {
+  const bad = fixtureOfferFields({
+    xecPrincipal: 1230n,
+    evmPrincipal: 456n,
+    xecRefundTime: fields.evmExpiry + 3600n,
+  })
+  const swapId = deriveOfferSwapId({ ...base, ...bad }, offerSwapId)
+  if (!swapId.ok) throw new Error('swapId derivation')
+  await expect(
+    run({
+      action: 'offer',
+      context: { ...base, swapId: swapId.value },
+      ...bad,
+    }),
+  ).rejects.toThrow('R1')
+  expect(signatures).toBe(0)
+  expect(
+    await storage.outgoingApplicationMessages({ accountId: 'a' }),
+  ).toHaveLength(0)
 })
 test.each(['conversation', 'party', 'chain', 'account', 'stamp'] as const)(
   'immutable %s change refuses before any additional signing',
@@ -241,7 +299,7 @@ test.each(['conversation', 'party', 'chain', 'account', 'stamp'] as const)(
     if (changed === 'account')
       a.accountId = 'recovered-account-replacement' as never
     await expect(
-      run(value, a, () => 100n, changed === 'stamp' ? '1' : '0'),
+      run(value, a, () => at(100n), changed === 'stamp' ? '1' : '0'),
     ).rejects.toThrow()
     expect(signatures).toBe(1)
   },
@@ -310,6 +368,7 @@ test('claims exact admitted response before signing; opposite choice and respons
     action: 'accept',
     context,
     offerBytes: fromHex(offer.signedPayloadHex),
+    ...fixtureAcceptFields(),
   }
   const a = auth(1)
   a.assertAdmittedOffer = () => {
@@ -381,11 +440,11 @@ test('feature-corrupt opaque intent survives reopen and refuses before signer', 
 })
 
 test('expiry crossed during durable claim preserves unsigned claim and refuses signing', async () => {
-  let now = 100n
+  let now = at(100n)
   const original = owner.claimOutgoingApplicationMessage
   owner.claimOutgoingApplicationMessage = async claim => {
     const result = await original(claim)
-    now = 200n
+    now = at(200n)
     return result
   }
   await expect(run(intent, auth(), () => now)).rejects.toThrow()

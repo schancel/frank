@@ -1,4 +1,4 @@
-import { UnsupportedBaseChainError } from '@frank/wallet/chain'
+import { UnsupportedBaseChainError } from '@frank/wallet/chain/base-chain'
 import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { BASE_CHAIN_SETTING, resolveMainWalletChain } from './base-wallet'
 import { buildWalletConfigs } from '../utils/wallet-configs'

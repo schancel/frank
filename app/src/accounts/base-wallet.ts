@@ -14,11 +14,12 @@
  * The messaging chain is unchanged either way (plan D2, docs/plans/lotus-v2-base): identity, the
  * directory and DM stamps stay on the EVM wallet, which remains in the wallet list.
  */
+import { activeChain } from '@frank/wallet/chain'
+// The seam's own module, not the package index: suites that stub the index keep it real.
 import {
-  activeChain,
   resolveBaseChain,
   UnsupportedBaseChainError,
-} from '@frank/wallet/chain'
+} from '@frank/wallet/chain/base-chain'
 import type { ChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { readViteEnv } from '@frank/wallet/chain/vite-env'
 

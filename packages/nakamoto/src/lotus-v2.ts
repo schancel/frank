@@ -116,6 +116,8 @@ export type {
 } from './lotus-v2/cost.js'
 export {
   LOTUS_V2_DUST_LIMIT,
+  LOTUS_V2_FRANK_FEE_MARGIN_BASIS_POINTS,
+  LOTUS_V2_FRANK_FEE_RULE,
   LOTUS_V2_MIN_FEE_PER_KB,
   LOTUS_V2_REGTEST_NODE_FEE_RULE,
   LOTUS_V2_SPEC_FEE_RULE,
@@ -142,8 +144,11 @@ export {
   LotusV2FeeCeilingError,
   LotusV2InsufficientFundsError,
   buildLotusV2Transaction,
+  lotusV2PriceShape,
 } from './lotus-v2/build.js'
 export type {
   LotusV2BuiltTransaction,
   LotusV2ChangeDestination,
+  LotusV2InputShape,
+  LotusV2OutputShape,
 } from './lotus-v2/build.js'

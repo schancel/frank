@@ -1,0 +1,263 @@
+{
+ "schema": "frank/lotus-v2-fee-vectors/1",
+ "generator": "packages/nakamoto/scripts/lotus-v2-fee-vectors.py",
+ "reference": {
+  "repository": "Lotus",
+  "head": "d53861d489dda80b10779185424a19091fbf14b0",
+  "note": "working tree as read, uncommitted docs; sha256 of the files used",
+  "files": {
+   "monetary.py": "e212d8f5062fe838d69f6580101042c8f277274482e32e1aeab122b319e0393b",
+   "resources.py": "04efd5ee89c93570ca6af64f77d2a2c22af2bb948133e50f6237eaba9b308d9e",
+   "vm.py": "c244396158a41c2fa8c612d8c91c6b6ed2784011c214e61436d74d9f86eb3112",
+   "vm_cost.py": "cda9d9d022dc398f825eeb37d7cb0f9efea9940a82dfd0821525fd100043f5e7",
+   "signing.py": "56a805cc8c5fb91115d434046173e51ddadad8b3293620b05e8c11682fdd5063"
+  }
+ },
+ "anchors": {
+  "genesisTail": "378000000",
+  "genesisWork": "1800000641450944"
+ },
+ "rulings": "lotus-86 2026-11-19: C_tx by the reference size pass; cuShare = 2*ceil(ceil(C_tx*M/2^32)*sqrt(I_n)) + 2*(Q_up(base+C_tx) - Q_floor(base)); linearShare + qShare is the cu share; total = max(IndexedByteFee, tokenBurn + linearShare + qShare); margin 0",
+ "states": [
+  {
+   "name": "calibration point, quiet chain (I = 1, E below E_min)",
+   "ema": "0",
+   "byteFeeIndex": {
+    "subsidy": "378000000",
+    "work": "1800000641450944"
+   }
+  },
+  {
+   "name": "block 1 of the bootstrap (I about 398)",
+   "ema": "17179869184",
+   "byteFeeIndex": {
+    "subsidy": "150378000000",
+    "work": "1800000641450944"
+   }
+  },
+  {
+   "name": "E = 2^36, I = 1, rest of block 2^20 cu",
+   "ema": "68719476736",
+   "byteFeeIndex": {
+    "subsidy": "378000000",
+    "work": "1800000641450944"
+   },
+   "blockCostCu": "1048576"
+  },
+  {
+   "name": "lagged I = 4, own I = 2, E = 2^35, block past E_min",
+   "ema": "34359738368",
+   "byteFeeIndex": {
+    "subsidy": "1512000000",
+    "work": "1800000641450944"
+   },
+   "cuIndex": {
+    "subsidy": "756000000",
+    "work": "1800000641450944"
+   },
+   "blockCostCu": "18253611008"
+  }
+ ],
+ "cases": [
+  {
+   "name": "keyhash 3-in/2-out, one mode-1 signature",
+   "tx": "07000000000000000000000003000200101010101010101010101010101010101010101010101010101010101010101000000000ffffffff010001257aba20f9f2a0b353f482f415281da3a00929d08a7d9a6498054f5ef6623b5580e607f792bb000240212c9944683b258a546f02686de88c67f1172debc0ce378fb6a1f795215f5160b64c262f406ac27e6eed67db556308b33da0ce8281933cb06767098ba95719402079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798111111111111111111111111111111111111111111111111111111111111111101000000ffffffff010001257aba206c172988ab3e829b83c07d16df464f4da19ca99f1ce861b50bf6efe89473d6b392bb000241a0991dc0452fcea03916a116e3d2953a524f51d65c39b41e73b53b4166c0f48308e58cc355b02a544ad7039923408150972191c7703e3f872d638d4ce3f2fcfd0120e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13121212121212121212121212121212121212121212121212121212121212121202000000ffffffff010001257aba2012aa5108c28b02188a086a752a9708ad2b50274782b3949453344d95687a24bf92bb00024023419f43a861ad4f42d3783f4cdbb7f67eeb54f5154224f22d243b3c9f8b0d83afe1c71c93b774fca1e243185724d7a46474c187bd2d10a57e15c958bbec9b51202f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe400404b4c000000000001be6e751ee18c3e94d5e0b555f763348a519af96bdfabc6eeb98cadf86408dde301010000301b0f00000000000184f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb010100",
+   "coins": [
+    "0040420f00000000000184f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb010100",
+    "0080841e0000000000019e1eef66729201080863a4bff6ede3aaf617f54d3bed922044d705367c2d4767010100",
+    "00c0c62d000000000001ed8e50c893e2361f54cfd85e0ab8f7bdff32ec9e714297e84bdf3da724caa673010100"
+   ],
+   "size": 650,
+   "invocationCosts": [
+    [
+     "256"
+    ],
+    [
+     "256"
+    ],
+    [
+     "256"
+    ]
+   ],
+   "linearCost": "3513",
+   "transactionCost": "3560",
+   "byteFee": "650",
+   "tokenOutputs": 0,
+   "tokenBurn": "0",
+   "priced": [
+    {
+     "state": "calibration point, quiet chain (I = 1, E below E_min)",
+     "indexedByteFee": "650",
+     "linearShare": "28480",
+     "qShare": "2",
+     "total": "28482"
+    },
+    {
+     "state": "block 1 of the bootstrap (I about 398)",
+     "indexedByteFee": "12965",
+     "linearShare": "568050",
+     "qShare": "2",
+     "total": "568052"
+    },
+    {
+     "state": "E = 2^36, I = 1, rest of block 2^20 cu",
+     "indexedByteFee": "650",
+     "linearShare": "113920",
+     "qShare": "4",
+     "total": "113924"
+    },
+    {
+     "state": "lagged I = 4, own I = 2, E = 2^35, block past E_min",
+     "indexedByteFee": "1300",
+     "linearShare": "80554",
+     "qShare": "60522",
+     "total": "141076"
+    }
+   ]
+  },
+  {
+   "name": "Frank HTLC claim, 1-in/1-out",
+   "tx": "07000000000000000000000001000100303030303030303030303030303030303030303030303030303030303030303000000000ffffffff0100016b8c1020000000000000000000000000000000a7b820425ed4e4a36b30ea21b90e21c712c649e8214c29b7eaf68089d1039c6e55384c928c1040000000000000000000000000000000a720c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5bb01eb0bce1f9c9ff788da3ae657aaa8251eb95cf61feaa4ab59467c71487eb18bf90240491166a1fb9f0f95e5007f687d8cc28824e021faea2a28d8291745123afb7bcd91390910d9d93700d4e5cd17e50bf71af255d1ec0addff0540ba04d6c5caf58f20424242424242424242424242424242424242424242424242424242424242424200706f98000000000001be6e751ee18c3e94d5e0b555f763348a519af96bdfabc6eeb98cadf86408dde3010100",
+   "coins": [
+    "0080969800000000000124c23875709b154783035b3ce573672f1c280d040980ddbcf1c986c5dc8b57c0010100"
+   ],
+   "size": 344,
+   "invocationCosts": [
+    [
+     "341"
+    ]
+   ],
+   "linearCost": "1577",
+   "transactionCost": "1586",
+   "byteFee": "344",
+   "tokenOutputs": 0,
+   "tokenBurn": "0",
+   "priced": [
+    {
+     "state": "calibration point, quiet chain (I = 1, E below E_min)",
+     "indexedByteFee": "344",
+     "linearShare": "12688",
+     "qShare": "2",
+     "total": "12690"
+    },
+    {
+     "state": "block 1 of the bootstrap (I about 398)",
+     "indexedByteFee": "6862",
+     "linearShare": "253070",
+     "qShare": "2",
+     "total": "253072"
+    },
+    {
+     "state": "E = 2^36, I = 1, rest of block 2^20 cu",
+     "indexedByteFee": "344",
+     "linearShare": "50752",
+     "qShare": "2",
+     "total": "50754"
+    },
+    {
+     "state": "lagged I = 4, own I = 2, E = 2^35, block past E_min",
+     "indexedByteFee": "688",
+     "linearShare": "35888",
+     "qShare": "26964",
+     "total": "62852"
+    }
+   ]
+  },
+  {
+   "name": "Frank HTLC refund, 1-in/1-out",
+   "tx": "0700000001f401000000000001000100303030303030303030303030303030303030303030303030303030303030303000000000ffffffff010001484e10f4010000000000000000000000000000f38c1040000000000000000000000000000000a720f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9bb010555615706e9ef493c78527b4a654d885e036b90bab694d0e9486bbdeab388ea0140675e623bbe9a3ec0f97e791539caca5434247fc01e44c0b25878cd82e7e9bb7239d8660efa2a1eecb27113d08fff9a5838f8a57f0de650020dc90b0b9f08fbaa00706f98000000000001f1a62e80b4baa35348e20f484d7d67ea244c686c0373aaa7188227e81435c399010100",
+   "coins": [
+    "0080969800000000000124c23875709b154783035b3ce573672f1c280d040980ddbcf1c986c5dc8b57c0010100"
+   ],
+   "size": 276,
+   "invocationCosts": [
+    [
+     "297"
+    ]
+   ],
+   "linearCost": "1396",
+   "transactionCost": "1403",
+   "byteFee": "276",
+   "tokenOutputs": 0,
+   "tokenBurn": "0",
+   "priced": [
+    {
+     "state": "calibration point, quiet chain (I = 1, E below E_min)",
+     "indexedByteFee": "276",
+     "linearShare": "11224",
+     "qShare": "2",
+     "total": "11226"
+    },
+    {
+     "state": "block 1 of the bootstrap (I about 398)",
+     "indexedByteFee": "5505",
+     "linearShare": "223870",
+     "qShare": "2",
+     "total": "223872"
+    },
+    {
+     "state": "E = 2^36, I = 1, rest of block 2^20 cu",
+     "indexedByteFee": "276",
+     "linearShare": "44896",
+     "qShare": "2",
+     "total": "44898"
+    },
+    {
+     "state": "lagged I = 4, own I = 2, E = 2^35, block past E_min",
+     "indexedByteFee": "552",
+     "linearShare": "31748",
+     "qShare": "23852",
+     "total": "55600"
+    }
+   ]
+  },
+  {
+   "name": "keyhash 1-in, 2 token outputs and native change",
+   "tx": "07000000000000000000000001000300101010101010101010101010101010101010101010101010101010101010101000000000ffffffff010001257aba20f9f2a0b353f482f415281da3a00929d08a7d9a6498054f5ef6623b5580e607f792bb000240f5d02fd8b61aacce8e472cc8d1e58aa63484c59c0aeb9647a4a3b7bd42886d7fcef998d787401dd4c72c75569dadac6cfed940ff8377acb914df1209daf368eb2079be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798015802000000000000777777777777777777777777777777777777777777777777777777777777777701be6e751ee18c3e94d5e0b555f763348a519af96bdfabc6eeb98cadf86408dde301010001900100000000000077777777777777777777777777777777777777777777777777777777777777770184f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb01010000706f9800000000000184f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb010100",
+   "coins": [
+    "0080969800000000000184f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb010100"
+   ],
+   "size": 396,
+   "invocationCosts": [
+    [
+     "256"
+    ]
+   ],
+   "linearCost": "1909",
+   "transactionCost": "1922",
+   "byteFee": "396",
+   "tokenOutputs": 2,
+   "tokenBurn": "2184",
+   "priced": [
+    {
+     "state": "calibration point, quiet chain (I = 1, E below E_min)",
+     "indexedByteFee": "396",
+     "linearShare": "15376",
+     "qShare": "2",
+     "total": "17562"
+    },
+    {
+     "state": "block 1 of the bootstrap (I about 398)",
+     "indexedByteFee": "7899",
+     "linearShare": "306684",
+     "qShare": "2",
+     "total": "308870"
+    },
+    {
+     "state": "E = 2^36, I = 1, rest of block 2^20 cu",
+     "indexedByteFee": "396",
+     "linearShare": "61504",
+     "qShare": "2",
+     "total": "63690"
+    },
+    {
+     "state": "lagged I = 4, own I = 2, E = 2^35, block past E_min",
+     "indexedByteFee": "792",
+     "linearShare": "43490",
+     "qShare": "32676",
+     "total": "78350"
+    }
+   ]
+  }
+ ]
+}

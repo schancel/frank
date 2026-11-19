@@ -65,8 +65,9 @@ export interface LotusV2IndexedCuShareRule {
   readonly anchors: LotusV2IndexAnchors
   readonly schedule: LotusV2CostSchedule
   /**
-   * Added to the cu share (not the byte floor), in basis points, for drift of
-   * E between estimate and inclusion. 200 = 2%.
+   * Wallet policy, not consensus: basis points added to the cu share (not the
+   * byte floor) for drift of E between estimate and inclusion. The spec
+   * defines no margin; 0 prices exactly the spec's fee.
    */
   readonly marginBasisPoints: bigint
 }
@@ -82,9 +83,10 @@ export const LOTUS_V2_REGTEST_NODE_FEE_RULE: LotusV2ByteFloorRule =
   })
 
 /**
- * Rule (c) with the approved schedule and the launch anchors (C16: T_g =
- * 378 XPI, W_g for target bits 0x1a280830, "still recommended"). No node
- * enforces it yet; a network that does states its own anchors.
+ * Rule (c) exactly as the spec prices it: the approved schedule, the launch
+ * anchors (C16: T_g = 378 XPI, W_g for target bits 0x1a280830, "still
+ * recommended") and no margin. No node enforces it yet; a network that does
+ * states its own anchors.
  */
 export const LOTUS_V2_SPEC_FEE_RULE: LotusV2IndexedCuShareRule = Object.freeze({
   kind: 'indexed-cu-share' as const,
@@ -95,8 +97,19 @@ export const LOTUS_V2_SPEC_FEE_RULE: LotusV2IndexedCuShareRule = Object.freeze({
     genesisWork: 1_800_000_641_450_944n,
   }),
   schedule: LOTUS_V2_APPROVED_COST_SCHEDULE,
-  marginBasisPoints: 200n,
+  marginBasisPoints: 0n,
 })
+
+/** Frank's wallet margin on the cu share, 2%: Frank policy, not a spec value. */
+export const LOTUS_V2_FRANK_FEE_MARGIN_BASIS_POINTS = 200n
+
+/** The spec's rule (c) plus Frank's wallet margin. */
+export const LOTUS_V2_FRANK_FEE_RULE: LotusV2IndexedCuShareRule = Object.freeze(
+  {
+    ...LOTUS_V2_SPEC_FEE_RULE,
+    marginBasisPoints: LOTUS_V2_FRANK_FEE_MARGIN_BASIS_POINTS,
+  },
+)
 
 /** Chain state rule (c) needs. The caller reads it from the tip until an RPC returns it. */
 export interface LotusV2FeeChainState {
@@ -129,14 +142,21 @@ function positive(value: bigint, what: string): bigint {
   return value
 }
 
-/** Floor integer square root. */
+/**
+ * Floor integer square root by Newton's iteration, as Python's `math.isqrt`
+ * the reference uses. The start `2^ceil(bits/2)` is at least the root, and
+ * from above the iterates decrease strictly until the floor root.
+ */
 export function lotusV2Isqrt(n: bigint): bigint {
-  if (n < 0n) throw new RangeError('isqrt of a negative value')
+  if (typeof n !== 'bigint' || n < 0n)
+    throw new RangeError('isqrt of a negative value')
   if (n < 2n) return n
-  let x = BigInt(Math.floor(Math.sqrt(Number(n))))
-  while (x * x > n) x -= 1n
-  while ((x + 1n) * (x + 1n) <= n) x += 1n
-  return x
+  let x = 1n << ((BigInt(n.toString(2).length) + 1n) >> 1n)
+  for (;;) {
+    const next = (x + n / x) >> 1n
+    if (next >= x) return x
+    x = next
+  }
 }
 
 function ceilSqrt(n: bigint): bigint {
@@ -260,12 +280,16 @@ export interface LotusV2FeeBreakdown {
   readonly tokenBurn: bigint
   /** `max(byteFloor, tokenBurn)`: the per-transaction validity rule. */
   readonly consensusFloor: bigint
-  /** Rule (c) only; zero under `byte-floor`. */
-  readonly cuShare: bigint
+  /**
+   * Rule (c) only, zero under `byte-floor`: the linear part of the spec's cu
+   * share, `2 * ceil(ceil(C_tx * M / 2^32) * sqrt(I_n))`.
+   */
+  readonly linearShare: bigint
+  /** The concentration (Q) part; the spec's cu share is `linearShare + qShare`. */
   readonly qShare: bigint
-  /** The margin added to the cu share. */
+  /** The rule's wallet margin on the cu share. */
   readonly margin: bigint
-  /** What to pay: `max(consensusFloor, tokenBurn + cuShare + qShare + margin)`. */
+  /** What to pay: `max(consensusFloor, tokenBurn + linearShare + qShare + margin)`. */
   readonly total: bigint
   /** Rule (c) only. */
   readonly cost?: LotusV2StaticCost
@@ -302,7 +326,7 @@ export function lotusV2RequiredFee(params: {
       byteFloor,
       tokenBurn,
       consensusFloor,
-      cuShare: 0n,
+      linearShare: 0n,
       qShare: 0n,
       margin: 0n,
       total: consensusFloor,
@@ -343,7 +367,7 @@ export function lotusV2RequiredFee(params: {
     byteFloor,
     tokenBurn,
     consensusFloor,
-    cuShare: share.linear,
+    linearShare: share.linear,
     qShare: share.concentration,
     margin,
     total: priced > consensusFloor ? priced : consensusFloor,

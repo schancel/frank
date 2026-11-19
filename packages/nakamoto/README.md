@@ -36,11 +36,12 @@ built and verified, P2SH script evaluation is an explicit unsupported error.
 Fees are computed from the spec without running scripts: `lotusV2StaticCost`
 (P05 static cost algebra, approved schedule), `lotusV2RequiredFee` under a
 `LotusV2FeeRule` (the byte floor lotusd enforces today, or rule (c) with
-caller-supplied E and subsidy indices), and `buildLotusV2Transaction`, which
-signs a transaction paying exactly that fee
-(`docs/plans/lotus-v2-base/README.md` "Fees"). VM execution and block/state
-commitments are not implemented; a mint signature message is an explicit
-unsupported error.
+caller-supplied E and subsidy indices), `lotusV2PriceShape`, which prices
+inputs and outputs by kind without signing (for coin selection), and
+`buildLotusV2Transaction`, which signs a transaction paying exactly that fee
+and verifies every signature (`docs/plans/lotus-v2-base/README.md` "Fees").
+VM execution and block/state commitments are not implemented; a mint signature
+message is an explicit unsupported error.
 
 It does not read or write CashWeb CBOR. `@frank/codec` and `frank-cbor`
 marshal a frame and pass the digest bytes into a nakamoto sign or hash call.
@@ -76,4 +77,3 @@ bitcore-derived parts is `ATTRIBUTION.md`.
 ## Tests
 
 From this directory: `yarn test`.
-

@@ -1,16 +1,17 @@
-"""Generate test/fixtures/lotus-v2/fee-vectors-keyhash.json from the Lotus reference.
+"""Generate test/fixtures/lotus-v2/fee-vectors-frank.json from the Lotus reference.
 
 Vectors for what the shared Lotus file (tools/lotus-v2-reference/vectors/
 fee_vectors.json, copied as test/fixtures/lotus-v2/fee_vectors.json) lacks:
-spends of Frank's 37-byte keyhash program. Every number
-comes from the reference module; this script only maps a decoded transaction
-to the reference's inputs and the wallet cu share ruled on 2026-11-19 to the
+a mode-1 signature, token outputs from keyhash coins, and Frank's HTLC claim
+and refund programs (test/lotus-v2-fee-cases.ts). Every number comes from the
+reference module; this script only maps a decoded transaction to the
+reference's inputs and the wallet cu share ruled on 2026-11-19 to the
 reference's primitives. It never writes inside the Lotus repository.
 
     npx tsx test/lotus-v2-fee-cases.ts --print > /tmp/cases.json
-    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=$LOTUS/tools/lotus-v2-reference \
+    PYTHONDONTWRITEBYTECODE=1 \
       python3 -I scripts/lotus-v2-fee-vectors.py $LOTUS /tmp/cases.json \
-      > test/fixtures/lotus-v2/fee-vectors-keyhash.json
+      > test/fixtures/lotus-v2/fee-vectors-frank.json
 
 `-I` ignores PYTHONPATH, so the script adds the reference path itself from
 the first argument. Needs the `blake3` Python package (requirements.txt of the
@@ -183,7 +184,7 @@ def main():
             priced.append({
                 "state": state["name"],
                 "indexedByteFee": str(indexed_byte),
-                "cuShare": str(share),
+                "linearShare": str(share),
                 "qShare": str(q),
                 "total": str(max(consensus, token_burn + share + q)),
             })
@@ -214,7 +215,7 @@ def main():
         "anchors": {"genesisTail": str(T_G), "genesisWork": str(W_G)},
         "rulings": "lotus-86 2026-11-19: C_tx by the reference size pass; cuShare = "
                    "2*ceil(ceil(C_tx*M/2^32)*sqrt(I_n)) + 2*(Q_up(base+C_tx) - Q_floor(base)); "
-                   "total = max(IndexedByteFee, tokenBurn + cuShare + qShare); margin 0",
+                   "linearShare + qShare is the cu share; total = max(IndexedByteFee, tokenBurn + linearShare + qShare); margin 0",
         "states": states, "cases": out,
     }, sys.stdout, indent=1)
     sys.stdout.write("\n")

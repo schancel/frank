@@ -10,10 +10,10 @@
 // with the `recommended_opcodes()` table and the approved signature weights.
 //
 // Implemented: data pushes, numeric constants, the fixed stack shuffles,
-// PICK/ROLL, CAT, EQUAL/EQUALVERIFY, VERIFY, SHA256/HASH256/BLAKE3,
-// CHECKSIG/CHECKSIGVERIFY, IF/NOTIF/ELSE/ENDIF and the lock checks. Every other
-// opcode, loops and automatic-success scripts are an explicit
-// LotusV2UnsupportedError rather than a guessed charge.
+// PICK/ROLL, CAT, SIZE, EQUAL/EQUALVERIFY, NUMEQUALVERIFY, VERIFY,
+// SHA256/HASH256/BLAKE3, CHECKSIG/CHECKSIGVERIFY, IF/NOTIF/ELSE/ENDIF and the
+// lock checks. Every other opcode, loops and automatic-success scripts are an
+// explicit LotusV2UnsupportedError rather than a guessed charge.
 //
 // Pending in the spec, so flagged on every result that depends on it: the
 // state-key weight (151 cu for a coin up to 158 bytes) is a placeholder until
@@ -109,6 +109,7 @@ const DEFAULT_OP: OpCharge = [1, 1, 1]
 /** Reference `recommended_opcodes()` entries for the opcodes implemented here. */
 const OP_CHARGES: Readonly<Record<number, OpCharge>> = Object.freeze({
   0x88: [1, 0, 1], // CAT
+  0xa7: [2, 25, 1], // NUMEQUALVERIFY (numeric comparisons)
   0x91: [1, 1, 1], // EQUAL
   0x92: [1, 1, 1], // EQUALVERIFY
   0xb8: [3, 5, 0], // SHA256
@@ -172,6 +173,8 @@ const IMPLEMENTED = new Set<number>([
   0x80, // SWAP
   0x81, // TUCK
   0x88, // CAT
+  0x8c, // SIZE
+  0xa7, // NUMEQUALVERIFY
   0x91, // EQUAL
   0x92, // EQUALVERIFY
   0xb8, // SHA256
@@ -383,6 +386,15 @@ function transfer(
       operands.push(a, b)
       main.push(b, a, b)
       results.push(b)
+    } else if (op === 0x8c) {
+      // SIZE keeps its operand and pushes a number (P05 row "SIZE": 16).
+      need(1)
+      operands.push(main[main.length - 1] as number)
+      push(16)
+    } else if (op === 0xa7) {
+      // NUMEQUALVERIFY pops two numbers and pushes nothing.
+      pop()
+      pop()
     } else if (op === 0x88) {
       const b = pop()
       const a = pop()

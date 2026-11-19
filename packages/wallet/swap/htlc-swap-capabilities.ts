@@ -15,7 +15,7 @@
  */
 import type { ChronikClient, Tx } from "chronik-client";
 import { ZeroAddress } from "ethers";
-import { EcashWallet } from "../ecash-wallet";
+import { EcashWallet, type XecFinality } from "../ecash-wallet";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import {
   extractXecHtlcPreimage,
@@ -46,11 +46,7 @@ import {
 
 const hex = (bytes: Uint8Array) => Buffer.from(bytes).toString("hex");
 
-/** When an eCash transaction counts as final: Avalanche (testnet, mainnet), or a number of
- * confirmations (a single regtest node has no Avalanche quorum). */
-export type XecFinality =
-  | { readonly kind: "avalanche" }
-  | { readonly kind: "confirmations"; readonly depth: number };
+export type { XecFinality };
 
 export function createXecHtlcSwapCapability(params: {
   wallet: Pick<
@@ -62,6 +58,8 @@ export function createXecHtlcSwapCapability(params: {
     | "prepareNativeOperation"
     | "submitNativeOperation"
     | "releaseNativeOperation"
+    | "reconcileNativeOperation"
+    | "retryConflictedNativeOperation"
   >;
   chronik: Pick<
     ChronikClient,
@@ -138,7 +136,17 @@ export function createXecHtlcSwapCapability(params: {
     },
 
     async lockOperation(swapId: string) {
-      return operation(swapId)?.state;
+      const current = operation(swapId);
+      if (current?.state !== "exposed" && current?.state !== "submitted")
+        return current?.state;
+      // An exposed lock whose input another device spent in a final transaction can never land:
+      // reconciling finds that, and the runner then funds again with fresh inputs. A failed
+      // lookup proves nothing; the stored state stands until the next observation.
+      return (
+        await wallet
+          .reconcileNativeOperation(current.operationId)
+          .catch(() => current)
+      ).state;
     },
 
     async fund(input: {
@@ -156,6 +164,10 @@ export function createXecHtlcSwapCapability(params: {
           recipient: { raw: xecHtlcAddress(chainIdentifier, input.terms) },
           value: xecHtlcFundingValue(input.principalSats),
         });
+      // The earlier lock can never land (a final spend took one of its inputs): the same
+      // authorized lock, same HTLC and amount, is signed again from fresh inputs.
+      else if (existing.state === "conflicted")
+        await wallet.retryConflictedNativeOperation(operationId);
       // prepareNativeOperation is bound to the id: a second call returns the same operation.
       const sent = await wallet.submitNativeOperation(operationId);
       return { txid: sent.txHash };

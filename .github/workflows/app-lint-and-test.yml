@@ -223,7 +223,8 @@ jobs:
       - name: Wallet CPU and request budgets
         run: yarn workspace @frank/wallet test --ci --runInBand wallet-performance-simulation.integration.jest.test.ts
 
-  # eCash HTLCs, a shared seed on eCash, and the eCash <-> EVM HTLC swap on real nodes: Bitcoin
+  # eCash HTLCs, a shared seed on eCash (and two of its devices spending one coin), and the
+  # eCash <-> EVM HTLC swap on real nodes: Bitcoin
   # ABC's bitcoind with Chronik (the release `regtest:fetch` pins by SHA-256, cached between runs)
   # and anvil. The step fails if either binary is missing, so no suite can be silently skipped.
   bot-regtest:
@@ -247,7 +248,7 @@ jobs:
           test -x "$BITCOIND" || { echo "no Chronik bitcoind from regtest:fetch" >&2; exit 1; }
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
-          FRANK_BITCOIN_ABC_BIN_DIR="$(dirname "$BITCOIND")" ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/bot test --ci --runInBand demo/regtest/ecash-htlc.regtest.jest.test.ts demo/regtest/ecash-shared-seed.regtest.jest.test.ts demo/regtest/htlc-swap.regtest.jest.test.ts
+          FRANK_BITCOIN_ABC_BIN_DIR="$(dirname "$BITCOIND")" ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/bot test --ci --runInBand demo/regtest/ecash-htlc.regtest.jest.test.ts demo/regtest/ecash-shared-seed.regtest.jest.test.ts demo/regtest/ecash-input-conflict.regtest.jest.test.ts demo/regtest/htlc-swap.regtest.jest.test.ts
 
   bot-demo-suites:
     runs-on: ubuntu-latest

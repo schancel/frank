@@ -528,6 +528,16 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
     ],
     ['released: never funds again', { op: 'released' }, 'abandoned/none'],
     [
+      'conflicted (another final spend took an input), before the cutoff: funds again',
+      { op: 'conflicted' },
+      'xecLockPending/fund-xec:new',
+    ],
+    [
+      'conflicted, past the cutoff: abandons',
+      { op: 'conflicted', now: fundBy + 1 },
+      'abandoned/none',
+    ],
+    [
       'a foreign output at the script: does not fund',
       { xec: xecObs([output({ valueSats: 999n })]) },
       'accepted/none',

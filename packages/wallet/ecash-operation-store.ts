@@ -29,7 +29,8 @@ export interface EcashNativeOperation {
     | "exposed"
     | "submitted"
     | "confirmed"
-    | "released";
+    | "released"
+    | "conflicted";
   readonly transactions: ReadonlyArray<{
     readonly txid: string;
     readonly rawTransaction: string;
@@ -47,6 +48,26 @@ export interface EcashNativeOperation {
         readonly kind: "external-payload";
         readonly binding: EcashOperationExposureBinding;
       };
+  /**
+   * Set only in state "conflicted": another transaction spent `input` and that spend is final, so
+   * this operation's signed transaction can never land. Its other inputs are no longer claimed.
+   */
+  readonly conflict?: EcashOperationConflict;
+  /**
+   * Earlier signed attempts of this same operation that became conflicted, oldest first. A
+   * conflicted operation retried with fresh inputs keeps its id and intent and records the
+   * attempt here, so the history still shows it.
+   */
+  readonly conflictedAttempts?: ReadonlyArray<{
+    readonly txid: string;
+    readonly conflict: EcashOperationConflict;
+  }>;
+}
+
+export interface EcashOperationConflict {
+  readonly input: { readonly txid: string; readonly vout: number };
+  /** The final transaction that spent `input`. Never this operation's own transaction. */
+  readonly spentBy: string;
 }
 
 export interface EcashOperationLedger {
@@ -150,7 +171,14 @@ export function parseEcashOperationLedger(
       operation.intent.value === "0" ||
       (operation.intent.maxFee !== undefined &&
         !quantity(operation.intent.maxFee)) ||
-      !["prepared", "exposed", "submitted", "confirmed", "released"].includes(
+      ![
+        "prepared",
+        "exposed",
+        "submitted",
+        "confirmed",
+        "released",
+        "conflicted",
+      ].includes(
         String(operation.state)
       ) ||
       !quantity(operation.fee) ||
@@ -180,7 +208,50 @@ export function parseEcashOperationLedger(
     )
       throw new Error("Invalid eCash operation record");
     ids.add(operation.operationId);
-    if (operation.state !== "released") {
+    const ownTxid = (operation.transactions as Array<{ txid: string }>)[0].txid;
+    const conflict = (candidate: unknown, txid: string, inputs: unknown[]) =>
+      object(candidate) &&
+      object(candidate.input) &&
+      hash(candidate.input.txid) &&
+      Number.isSafeInteger(candidate.input.vout) &&
+      hash(candidate.spentBy) &&
+      candidate.spentBy !== txid &&
+      inputs.some(
+        (input) =>
+          object(input) &&
+          object(candidate.input) &&
+          input.txid === candidate.input.txid &&
+          input.vout === candidate.input.vout
+      );
+    if (
+      operation.state === "conflicted"
+        ? !conflict(
+            operation.conflict,
+            ownTxid,
+            operation.inputs
+          )
+        : operation.conflict !== undefined
+    )
+      throw new Error("Invalid eCash operation conflict");
+    if (
+      operation.conflictedAttempts !== undefined &&
+      (!Array.isArray(operation.conflictedAttempts) ||
+        operation.conflictedAttempts.some(
+          (attempt: unknown) =>
+            !object(attempt) ||
+            !hash(attempt.txid) ||
+            attempt.txid === ownTxid ||
+            !object(attempt.conflict) ||
+            !hash(attempt.conflict.spentBy) ||
+            attempt.conflict.spentBy === attempt.txid ||
+            !object(attempt.conflict.input) ||
+            !hash(attempt.conflict.input.txid) ||
+            !Number.isSafeInteger(attempt.conflict.input.vout)
+        ))
+    )
+      throw new Error("Invalid eCash conflicted attempts");
+    // A conflicted operation can never land: its inputs are no longer claimed.
+    if (operation.state !== "released" && operation.state !== "conflicted") {
       for (const input of operation.inputs) {
         const key = `${input.txid}:${input.vout}`;
         if (claimed.has(key)) throw new Error("Overlapping eCash input claims");
@@ -189,6 +260,7 @@ export function parseEcashOperationLedger(
     }
     const exposure = operation.exposure;
     if (operation.state === "prepared" || operation.state === "released") {
+      // A retried conflicted operation is prepared again: its new bytes are not yet exposed.
       if (exposure !== undefined)
         throw new Error("Unexposed eCash operation has exposure");
     } else if (

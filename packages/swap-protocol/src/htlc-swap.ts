@@ -88,6 +88,9 @@ export type XecLockOperationState =
   | 'submitted'
   | 'confirmed'
   | 'released'
+  /** A final transaction spent one of its inputs: its bytes can never land. Funding again
+   * signs the same lock from fresh inputs, under the same id and cutoff. */
+  | 'conflicted'
 
 export interface XecHtlcCapability {
   readonly chainIdentifier: string
@@ -99,7 +102,8 @@ export interface XecHtlcCapability {
   /**
    * Funds the HTLC with exactly `principalSats + XEC_HTLC_SPEND_FEE_SATS` through the native
    * operation `swap:<swapId>:xec-lock`. Idempotent: an existing operation is resumed (its same
-   * bytes re-submitted), never a second funding; a released one is refused.
+   * bytes re-submitted), never a second funding; a released one is refused. A conflicted one
+   * (its bytes can never land) is signed again from fresh inputs.
    */
   fund(input: {
     readonly swapId: string
@@ -863,8 +867,11 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
           op === 'prepared' ? { kind: 'release-xec-lock' } : NONE,
           warnings,
         )
+      // A conflicted lock never landed and never will: before the cutoff it is funded again.
       return decide(
-        op === 'prepared' || record?.fundingAuthorizedAt !== undefined
+        op === 'prepared' ||
+          op === 'conflicted' ||
+          record?.fundingAuthorizedAt !== undefined
           ? 'xecLockPending'
           : 'accepted',
         { kind: 'fund-xec', resume: false },

@@ -14,6 +14,7 @@ import {
   EcashWallet,
   EcashWalletFactory,
   EcashBip39WalletFactory,
+  type XecFinality,
 } from "../ecash-wallet";
 import type { ChronikClient } from "chronik-client";
 import type { ChainUtxoPool } from "../chain-utxo-pool";
@@ -38,6 +39,8 @@ export interface EcashChainConfig {
   nativeAttemptStore?: NativeTransactionAttemptStore;
   operationStore?: EcashOperationStore;
   chainUtxoPool?: ChainUtxoPool;
+  /** When a spend counts as final (see `ecashFinality`): Avalanche, or confirmations on regtest. */
+  finality?: XecFinality;
 }
 
 const ECASH_NETWORKS = {
@@ -134,6 +137,7 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
         nativeAttemptStore: config.nativeAttemptStore,
         operationStore,
         chainUtxoPool: config.chainUtxoPool,
+        finality: config.finality,
         getTransactionStatus: (transaction) =>
           getEcashTransactionStatus(config, transaction),
         rebroadcast: async (rawTransactions) => {

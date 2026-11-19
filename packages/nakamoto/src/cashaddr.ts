@@ -40,7 +40,11 @@ export interface CashaddrDecoded {
   readonly payload: Uint8Array
 }
 
-function polymod(values: readonly number[]): bigint {
+/**
+ * The 40-bit BCH-code polymod shared by CashAddr and Lotus v2 addresses,
+ * without CashAddr's final xor with 1 (Lotus v2 addresses.md "Checksum").
+ */
+export function polymod40(values: readonly number[]): bigint {
   const generator = [
     0x98f2bc8e61n,
     0x79b76d99e2n,
@@ -58,7 +62,11 @@ function polymod(values: readonly number[]): bigint {
       }
     }
   }
-  return checksum ^ 1n
+  return checksum
+}
+
+function polymod(values: readonly number[]): bigint {
+  return polymod40(values) ^ 1n
 }
 
 function expandPrefix(prefix: string): number[] {

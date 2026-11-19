@@ -107,7 +107,11 @@ export type ProtocolIdentityProbe = Readonly<
     }
 >
 
-export interface ChainDescriptor {
+/**
+ * What every nakamoto chain shares, whatever its transaction format: the
+ * protocol identity in `docs/protocol/chains/v1.json` and the network kind.
+ */
+export interface ChainIdentity {
   /** Stable Frank protocol identifier used in relay paths and signed scopes. */
   readonly protocolId: string
   /** Relay dispatch family. Nakamoto-style chains share the Bitcoin proxy family. */
@@ -120,8 +124,21 @@ export interface ChainDescriptor {
   )[]
   /** Required checks binding an upstream to this exact chain. */
   readonly identityProbes: readonly ProtocolIdentityProbe[]
-  readonly family: ChainFamily
   readonly network: NetworkKind
+  readonly sources: readonly string[]
+}
+
+/**
+ * Transaction format. It selects the whole object model: grammar, identity
+ * hash, signature message, address layout and Merkle rule change together,
+ * so they are not independent fields of one descriptor.
+ */
+export type ChainFormat = 'bitcoin' | 'lotus-v2'
+
+/** A Bitcoin-format chain (BTC, BCH, XEC, XPI v1, DOGE, LTC). */
+export interface ChainDescriptor extends ChainIdentity {
+  readonly format: 'bitcoin'
+  readonly family: ChainFamily
   readonly pubkeyHashVersion: number
   readonly scriptHashVersion: number
   readonly wifVersion: number
@@ -152,8 +169,45 @@ export interface ChainDescriptor {
   readonly relayFeePerKb: PolicyAmount
   readonly header: HeaderShape
   readonly script: ScriptRules
-  readonly sources: readonly string[]
 }
+
+/**
+ * A Lotus v2 network (native version-7 transactions). Each field is a
+ * capability read by `src/lotus-v2/`; the values are spec facts with their
+ * source in `sources`.
+ */
+export interface LotusV2ChainDescriptor extends ChainIdentity {
+  readonly format: 'lotus-v2'
+  /** 32-byte ChainID, hex in digest order. Committed in every TxID, TxHash and signature message. */
+  readonly chainId: string
+  /** The only transaction version (P01). */
+  readonly transactionVersion: 7
+  /** `H_name(x) = BLAKE3(tagPrefix + name || 00 || x)` (P02 hash registry). */
+  readonly hash: {
+    readonly kind: 'blake3-tagged'
+    readonly tagPrefix: 'Lotus/v2/'
+  }
+  /** P02 `IndexedTreeRoot`: layer-numbered nodes, odd levels padded with 32 zero bytes. */
+  readonly merkle: {
+    readonly kind: 'indexed-tagged'
+    readonly oddRule: 'pad-zero'
+  }
+  /** addresses.md typed addresses: hrp, 40-bit checksum constant, accepted type selectors. */
+  readonly address: {
+    readonly kind: 'lotus-v2-typed'
+    readonly hrp: string
+    readonly checksumConstant: bigint
+    readonly types: readonly (0 | 1)[]
+  }
+  /** P01 CHECKSIG: unmodified BIP340 over x-only keys, with the defined signing modes. */
+  readonly signature: {
+    readonly kind: 'bip340-x-only'
+    readonly modes: readonly (0 | 1 | 2)[]
+  }
+}
+
+/** Every descriptor nakamoto defines, discriminated by `format`. */
+export type AnyChainDescriptor = ChainDescriptor | LotusV2ChainDescriptor
 
 export interface UnknownChainError {
   readonly code: 'unknown-chain'

@@ -1,7 +1,7 @@
 {
   "name": "@frank/nakamoto",
   "version": "0.0.1",
-  "description": "Typed chain library for BTC, BCH, XEC, and XPI. Consensus bytes follow the chains. The public API does not follow bitcore-lib.",
+  "description": "Typed chain library for BTC, BCH, XEC, XPI, and Lotus v2. Consensus bytes follow the chains. The public API does not follow bitcore-lib.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -112,6 +112,10 @@
     "./curve": {
       "types": "./dist/curve.d.ts",
       "import": "./dist/curve.js"
+    },
+    "./lotus-v2": {
+      "types": "./dist/lotus-v2.d.ts",
+      "import": "./dist/lotus-v2.js"
     }
   },
   "dependencies": {

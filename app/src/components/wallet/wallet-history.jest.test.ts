@@ -381,7 +381,10 @@ describe('buildWalletHistoryGroups', () => {
     // receipt, read again, shows it, and the swap row shows that fee over the one its outcome
     // cached before.
     const corrected = (BigInt(fee) + 777n).toString()
-    const moved: NotedSendStatus = { ...note, inclusion: { ...note.inclusion!, feeWei: corrected } }
+    const moved: NotedSendStatus = {
+      ...note,
+      inclusion: { ...note.inclusion!, feeWei: corrected },
+    }
     for (const rows of [
       load([], [moved], [{ ...swap, feeWei: fee }]),
       load([given], [moved], [{ ...swap, feeWei: fee }]),

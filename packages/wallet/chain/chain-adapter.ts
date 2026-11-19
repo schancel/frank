@@ -55,7 +55,7 @@ import {
 } from './chains-registry';
 import type { EvmDexEntry } from './dex-entries';
 import type { SolanaDexEntry } from './solana-dex-entries';
-import { listEvmSwapVenues } from './dex-deployments';
+import { listEnabledEvmDexEntries } from './dex-deployments';
 import { deriveEd25519MasterNode, deriveEd25519PathNode } from '../ed25519-hd-keyring';
 import {
   createWalletStorage,
@@ -1014,7 +1014,7 @@ class EvmChainAdapter implements ChainAdapter {
       },
     ];
     const contracts = new Set<string>();
-    for (const venue of listEvmSwapVenues(this.chainId)) {
+    for (const venue of listEnabledEvmDexEntries(this.chainId)) {
       for (const token of venue.tokens) {
         if (!token.address || contracts.has(token.address.toLowerCase())) continue;
         contracts.add(token.address.toLowerCase());

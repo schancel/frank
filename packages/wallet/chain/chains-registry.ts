@@ -7,7 +7,11 @@ import {
 
 export { projectProtocolChains, type ProtocolChainFacts };
 
-import { MONAD_TESTNET_DEX, type EvmDexEntry } from "./dex-entries";
+import {
+  HYPERLIQUID_TESTNET_DEX,
+  MONAD_TESTNET_DEX,
+  type EvmDexEntry,
+} from "./dex-entries";
 import {
   SOLANA_DEVNET_DEX,
   SOLANA_MAINNET_DEX,
@@ -368,6 +372,7 @@ export const CLIENT_CHAIN_EXTENSIONS: Readonly<
       nativeDecimals: 18,
       networkTag: "HYPT",
       ...deployedContracts("hyperliquid-testnet"),
+      dex: HYPERLIQUID_TESTNET_DEX,
     }),
     "tempo-mainnet": Object.freeze({
       wallet: JSON_RPC_WALLET,

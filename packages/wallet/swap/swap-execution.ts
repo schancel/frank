@@ -7,6 +7,7 @@
 
 import type { UniswapV4Deployment } from '../chain/dex-deployments'
 import type { EvmSwapCallRecord } from '../storage/evm-native-operation-journal'
+import type { EvmDexPlan } from './evm-dex'
 import {
   chargedGasPrice,
   estimateCallFee,
@@ -15,7 +16,6 @@ import {
   type GasChargedOn,
   type NetworkFeeEstimate,
   type SwapChainReader,
-  type SwapPlan,
 } from './evm-swap'
 import {
   readSwapOutcome,
@@ -421,7 +421,7 @@ export interface ConsolidationNeed {
 export async function consolidationNeeded(params: {
   reader: SwapChainReader
   wallet: Pick<SwapWallet, 'getContractCallFunds'>
-  plan: SwapPlan
+  plan: Pick<EvmDexPlan, 'approvals' | 'swap'>
   /** The swap's fee when it could already be estimated. */
   swapFee?: NetworkFeeEstimate
 }): Promise<ConsolidationNeed> {
@@ -476,7 +476,7 @@ export interface SwapCost {
 export async function estimateSwapCost(params: {
   reader: SwapChainReader
   wallet: Pick<SwapWallet, 'estimateLegacyFee'>
-  plan: SwapPlan
+  plan: Pick<EvmDexPlan, 'approvals' | 'swap'>
   account: string
   /** What `consolidationNeeded` said must be moved in first. */
   moveWei?: bigint
@@ -623,11 +623,36 @@ async function send(
   }
 }
 
+/** What a confirmed swap paid in and what the account received, read from its receipt's logs. */
+export type SwapOutcomeReader = (
+  logs: readonly ReceiptLog[],
+) => { amountIn: bigint; amountOut: bigint } | undefined
+
+/**
+ * How a swap's outcome is read from its receipt: an exchange's own reader, or, for Uniswap v4,
+ * its deployment and the pool route the swap took.
+ */
+export type SwapOutcomeSource =
+  | { deployment: UniswapV4Deployment; route: PoolRoute }
+  | { readOutcome: SwapOutcomeReader }
+
+function outcomeReaderOf(
+  source: SwapOutcomeSource,
+  account: string,
+): SwapOutcomeReader {
+  if ('readOutcome' in source) return source.readOutcome
+  return logs =>
+    readSwapOutcome({
+      deployment: source.deployment,
+      route: source.route,
+      account,
+      logs,
+    })
+}
+
 /** What the chain says a submitted swap did. Never falls back to the quote. */
-export async function readSwapResult(params: {
+export async function readSwapResult(params: SwapOutcomeSource & {
   reader: SwapExecutionReader
-  deployment: UniswapV4Deployment
-  route: PoolRoute
   account: string
   /** The call that was sent, when known: a reverted swap is asked why with it. */
   swap?: EncodedCall
@@ -640,12 +665,7 @@ export async function readSwapResult(params: {
   const feeWei = receipt.gasUsed * receipt.gasPrice
   const totalFeeWei = feeWei + (params.earlierFeesWei ?? 0n)
   if (receipt.status === 1) {
-    const outcome = readSwapOutcome({
-      deployment: params.deployment,
-      route: params.route,
-      account: params.account,
-      logs: receipt.logs,
-    })
+    const outcome = outcomeReaderOf(params, params.account)(receipt.logs)
     return { status: 'confirmed', ...handle, ...outcome, feeWei, totalFeeWei }
   }
   // The receipt carries no revert data: ask the node what the same call does at the block it
@@ -674,11 +694,13 @@ export async function readSwapResult(params: {
  * signed and journaled and before it is broadcast: record them durably there. If `onSigned`
  * throws, nothing is broadcast.
  */
-export async function executeSwap(params: {
+export async function executeSwap(params: (
+  | { deployment: UniswapV4Deployment }
+  | { readOutcome: SwapOutcomeReader }
+) & {
   reader: SwapExecutionReader
   wallet: SwapWallet
-  deployment: UniswapV4Deployment
-  plan: SwapPlan
+  plan: EvmDexPlan
   account: string
   /** The amount the user confirmed may be moved into the main account first; none by default. */
   consolidateWei?: bigint
@@ -774,9 +796,13 @@ export async function executeSwap(params: {
   else await wallet.reobserveNativeOperations?.()
   if (!receipt) return { status: 'pending', ...handle }
   return readSwapResult({
+    ...('readOutcome' in params
+      ? { readOutcome: params.readOutcome }
+      : {
+          deployment: params.deployment,
+          route: plan.quote.route as PoolRoute,
+        }),
     reader,
-    deployment: params.deployment,
-    route: plan.quote.route,
     account,
     swap: plan.swap,
     handle,
@@ -791,17 +817,17 @@ export async function executeSwap(params: {
  * re-submits the same signed transaction through the wallet (never a new one) and watches again;
  * past the swap's deadline it is cancelled instead (`settleSwap`), and what lands is reported.
  */
-export async function reconcileSwap(params: {
+export async function reconcileSwap(params: SwapOutcomeSource & {
   reader: SwapExecutionReader
   wallet: Pick<
     SwapWallet,
     'resumeNativeOperation' | 'reobserveNativeOperations' | 'cancelContractCall'
   >
-  deployment: UniswapV4Deployment
-  route: PoolRoute
   account: string
   swap: EncodedCall
   handle: Handle
+  /** The deadline the swap call carries (seconds); read from a Universal Router call if absent. */
+  deadline?: number
   timing?: SwapTiming
 }): Promise<SwapResult> {
   const timing = params.timing ?? DEFAULT_SWAP_TIMING
@@ -809,7 +835,7 @@ export async function reconcileSwap(params: {
     params.reader,
     params.wallet,
     params.handle,
-    swapDeadlineOf(params.swap.data),
+    params.deadline ?? swapDeadlineOf(params.swap.data),
     timing,
     { ...timing, inclusionTimeoutMs: 0 },
   )

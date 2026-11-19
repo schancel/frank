@@ -15,21 +15,26 @@ import {
 import type { EvmDex, EvmDexWallet } from '@frank/wallet/swap/evm-dex'
 import type { SwapExecutionReader } from '@frank/wallet/swap/swap-execution'
 import { UniswapV4Dex } from '@frank/wallet/swap/uniswap-v4-dex'
+import { HyperSwapV2Dex } from '@frank/wallet/swap/hyperswap-v2'
 import type { EvmSwapCallRecord } from '@frank/wallet/storage/evm-native-operation-journal'
 import { swapRecordItemOf } from '@frank/wallet/chain/evm-legacy-consolidator'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import { Transaction } from 'ethers'
 import { accountSession } from 'src/accounts/session'
+import { openEvmWallet } from 'src/accounts/evm-wallets'
 
 /** Adapter key (a dex entry's `adapter`) to the class that speaks to that exchange. */
-const EVM_DEX_ADAPTERS: {
-  readonly [K in EvmDexEntry['adapter']]: new (
-    chainIdentifier: string,
-    entry: Extract<EvmDexEntry, { adapter: K }>,
-    wallet: EvmDexWallet,
-  ) => EvmDex
-} = {
-  'uniswap-v4': UniswapV4Dex,
+function evmDexFor(
+  chainIdentifier: string,
+  entry: EvmDexEntry,
+  wallet: EvmDexWallet,
+): EvmDex {
+  switch (entry.adapter) {
+    case 'uniswap-v4':
+      return new UniswapV4Dex(chainIdentifier, entry, wallet)
+    case 'hyperswap-v2':
+      return new HyperSwapV2Dex(chainIdentifier, entry, wallet)
+  }
 }
 
 export interface EvmSwapSession {
@@ -83,8 +88,12 @@ export async function openEvmSwapSession(
 ): Promise<EvmSwapSession> {
   const entry = getEvmDexDeployment(chainIdentifier, venueId)
   if (!entry) throw new EvmSwapUnavailableError('no-deployment')
-  const wallet = await accountSession.getWallet()
+  // Opens the account (if it is not yet) before its state is read.
+  await accountSession.getWallet()
   const { account: signedIn, revision } = accountSession.state
+  // The account's configured EVM owner for exactly this network: the account's own wallet when
+  // that is the network, otherwise the wallet `openEvmWallet` opens for it. Never another one.
+  const { wallet } = await openEvmWallet(chainIdentifier)
   if (wallet.family !== 'evm' || wallet.chainIdentifier !== chainIdentifier)
     throw new EvmSwapUnavailableError('wrong-network')
   const reader = wallet.evmReader
@@ -108,10 +117,9 @@ export async function openEvmSwapSession(
     cancelContractCall: optional(wallet.cancelContractCall),
     reobserveNativeOperations: optional(wallet.reobserveNativeOperations),
   }
-  const Adapter = EVM_DEX_ADAPTERS[entry.adapter]
   return {
     chainIdentifier,
-    dex: new Adapter(chainIdentifier, entry, calls),
+    dex: evmDexFor(chainIdentifier, entry, calls),
     // The EVM handle's receive address is its main account; execution checks it again against
     // the account the wallet actually signs from.
     account: (await wallet.getReceiveAddress()).raw,

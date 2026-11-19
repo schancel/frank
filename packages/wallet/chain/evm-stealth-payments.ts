@@ -29,7 +29,7 @@ import {
 } from '../storage/evm-native-operation-journal'
 import { EvmNativeOperationPendingError } from './evm-legacy-consolidator'
 import type { PreparedIndependentPaymentParams } from './evm-legacy-consolidator'
-import { listEvmSwapVenues } from './dex-deployments'
+import { listEnabledEvmDexEntries } from './dex-deployments'
 import type { ConstructEvmTransactionSetRequest } from '../evm-transaction-set-types'
 
 /** The most sources one native stealth payment draws on; its quote selects with the same bound. */
@@ -140,7 +140,7 @@ export function configuredEvmStealthToken(
 ): string {
   const normalized = getAddress(address).toLowerCase()
   if (
-    !listEvmSwapVenues(chainIdentifier).some((venue) =>
+    !listEnabledEvmDexEntries(chainIdentifier).some((venue) =>
       venue.tokens.some((token) => token.address?.toLowerCase() === normalized),
     )
   )

@@ -18,6 +18,19 @@
  * StateView.poolManager(), V4Quoter.poolManager() and UniversalRouter.poolManager() all return the
  * PoolManager below; each pool is initialised with liquidity and the quoter answers for it.
  *
+ * Source for `hyperliquid-testnet`: HyperSwap's published testnet contracts,
+ * https://docs.hyperswap.exchange/docs/amm/contracts/testnet/v2/ (V2 router, factory),
+ * https://docs.hyperswap.exchange/docs/amm/contracts/testnet/v3/ (SwapRouter02) and
+ * https://docs.hyperswap.exchange/docs/amm/contracts/testnet/ (its WETH and test PURR tokens).
+ * The published V2 router quotes and manages liquidity but has no swap function (its bytecode
+ * holds no swap selector); swaps through the V2 pairs go through SwapRouter02, whose
+ * factoryV2() is the V2 factory. Checked on chain 2026-11-18 (`swap/hyperswap-v2.livecheck.ts`
+ * repeats the check): chain 998, every address holds code, router.factory() and router.WETH()
+ * and swapRouter.factoryV2() and swapRouter.WETH9() are the factory and wrapped native coin
+ * below, factory.getPair(wrapped native, PURR) is the pair below with reserves on both sides,
+ * router.getAmountsOut answers, and a simulated (`eth_call`) swap through SwapRouter02 pays
+ * exactly that answer.
+ *
  * To add a network or a pool: add it here, then run the live check against that network.
  */
 
@@ -209,5 +222,82 @@ export const MONAD_TESTNET_DEX: readonly UniswapV4Deployment[] = Object.freeze([
   }),
 ])
 
+/** A Uniswap v2-style pair of a router's factory, and the two tokens it holds. */
+export interface UniswapV2Pair {
+  readonly address: string
+  readonly token0: string
+  readonly token1: string
+}
+
+/**
+ * A HyperSwap V2 deployment (a Uniswap v2-style router, factory and pairs). Its router has no
+ * way to take a portion of the output for Frank, so the entry cannot carry an interface fee.
+ */
+export interface HyperSwapV2Deployment extends SwapVenue {
+  readonly adapter: 'hyperswap-v2'
+  readonly source: string
+  /** The V2 router: quotes (`getAmountsOut`) only. */
+  readonly router: string
+  /** HyperSwap's SwapRouter02: sends the swap through the V2 pairs (`swapExactTokensForTokens`). */
+  readonly swapRouter: string
+  readonly factory: string
+  /** The wrapped native coin the router trades the native coin through (its `WETH()`). */
+  readonly wrappedNative: string
+  readonly tokens: readonly EvmDexToken[]
+  /** Pairs the router may trade through; each one's tokens are the configured ones. */
+  readonly pairs: readonly UniswapV2Pair[]
+  readonly interfaceFee?: never
+}
+
+const HYPERLIQUID_TESTNET_WRAPPED = '0xADcb2f358Eae6492F61A5F87eb8893d09391d160'
+const HYPERLIQUID_TESTNET_PURR = '0xC003D79B8a489703b1753711E3ae9fFDFC8d1a82'
+
+/** The `dex` list of the `hyperliquid-testnet` row of the chain registry. */
+export const HYPERLIQUID_TESTNET_DEX: readonly HyperSwapV2Deployment[] =
+  Object.freeze([
+    Object.freeze({
+      id: 'hyperswap-v2',
+      adapter: 'hyperswap-v2',
+      enabled: true,
+      displayName: 'HyperSwap V2',
+      maintainer: 'HyperSwap',
+      source: 'https://docs.hyperswap.exchange/docs/amm/contracts/testnet/v2/',
+      router: '0x85aA63EB2ab9BaAA74eAd7e7f82A571d74901853',
+      swapRouter: '0x51c5958FFb3e326F8d7AA945948159f1FF27e14A',
+      factory: '0xA028411927E2015A363014881a4404C636218fb1',
+      wrappedNative: HYPERLIQUID_TESTNET_WRAPPED,
+      tokens: Object.freeze([
+        Object.freeze({
+          symbol: 'tHYPE',
+          name: 'Hyperliquid testnet HYPE',
+          decimals: 18,
+          address: null,
+        }),
+        Object.freeze({
+          symbol: 'PURR',
+          name: 'HyperSwap test PURR',
+          decimals: 18,
+          address: HYPERLIQUID_TESTNET_PURR,
+          testToken: true,
+        }),
+      ]),
+      pairs: Object.freeze([
+        Object.freeze({
+          address: '0xddA44A39AaA3e2dcc8aFd78ca70b0718877188b5',
+          token0: HYPERLIQUID_TESTNET_WRAPPED,
+          token1: HYPERLIQUID_TESTNET_PURR,
+        }),
+      ]),
+    }),
+  ])
+
 /** Every EVM dex entry type; one per adapter. */
-export type EvmDexEntry = UniswapV4Deployment
+export type EvmDexEntry = UniswapV4Deployment | HyperSwapV2Deployment
+
+/**
+ * Whether an adapter's transactions can carry Frank's interface fee. A venue that cannot is not
+ * offered while a fee is configured: it is neither offered without the fee nor offered to fail.
+ */
+export const EVM_DEX_CARRIES_INTERFACE_FEE: {
+  readonly [K in EvmDexEntry['adapter']]: boolean
+} = Object.freeze({ 'uniswap-v4': true, 'hyperswap-v2': false })

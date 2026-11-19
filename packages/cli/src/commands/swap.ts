@@ -71,6 +71,11 @@ export const swapNetwork = {
           ", "
         )}`
       );
+    // These commands speak Uniswap v4 only; another exchange is refused, not quoted as one.
+    if (deployment.adapter !== "uniswap-v4")
+      throw new Error(
+        `${deployment.displayName} (${chainIdentifier}) is not supported by this command; quote it in the app`
+      );
     const url = options.rpcUrl ?? process.env.FRANK_SWAP_RPC_URL;
     if (!url)
       throw new Error(

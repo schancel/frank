@@ -24,6 +24,7 @@ import level, { type LevelDB } from 'level'
 import { join } from 'path'
 import { computeAddress, getAddress, Interface, Transaction } from 'ethers'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
+import { listEnabledEvmDexEntries } from '../chain/dex-deployments'
 import { runNativeTransactionExclusive } from '../chain/chain-wallet'
 import type { ReceivedCoinItem } from '@frank/cashweb/types/messages'
 import { durableDelete, durablePut, openDurableLevel } from './level-durability'
@@ -148,11 +149,9 @@ function configuredErc20(chainIdentifier: string, contractAddress: string) {
   const contract = getAddress(contractAddress).toLowerCase()
   if (!chain || chain.family !== 'evm')
     throw new Error('Unsupported canonical EVM chain')
-  const supported = (chain.dex ?? []).some(
-    venue =>
-      venue.adapter === 'uniswap-v4' &&
-      venue.enabled &&
-      venue.tokens.some(token => token.address?.toLowerCase() === contract),
+  // The chain's configured tokens are those of its enabled EVM exchanges, whichever protocol.
+  const supported = listEnabledEvmDexEntries(chainIdentifier).some(venue =>
+    venue.tokens.some(token => token.address?.toLowerCase() === contract),
   )
   if (!supported) throw new Error('Unsupported configured ERC20 contract')
   return { contract, nativeChainId: BigInt(chain.nativeChainId!) }

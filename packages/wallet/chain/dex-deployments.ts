@@ -8,6 +8,7 @@
 import { PROTOCOL_CHAINS } from './chains-registry'
 import {
   assertInterfaceFee,
+  EVM_DEX_CARRIES_INTERFACE_FEE,
   resolveConfiguredInterfaceFee,
   type EvmDexEntry,
   type UniswapV4Deployment,
@@ -34,28 +35,52 @@ for (const [chainIdentifier, entry] of Object.entries(PROTOCOL_CHAINS)) {
   if (new Set(dex.map(venue => venue.id)).size !== dex.length)
     throw new Error('Dex ids must be unique within a chain')
   // A Solana entry's fee is checked where Solana addresses are understood (solana-swap).
-  for (const venue of dex)
-    if (isEvmDexEntry(venue) && venue.interfaceFee)
+  for (const venue of dex) {
+    if (!isEvmDexEntry(venue)) continue
+    if (!Object.prototype.hasOwnProperty.call(EVM_DEX_CARRIES_INTERFACE_FEE, venue.adapter))
+      throw new Error(`${chainIdentifier} lists an unknown EVM dex adapter`)
+    if (venue.interfaceFee) {
+      if (!EVM_DEX_CARRIES_INTERFACE_FEE[venue.adapter])
+        throw new Error(`${venue.adapter} cannot carry an interface fee`)
       assertInterfaceFee(venue.interfaceFee)
+    }
+  }
 }
 
-/** The enabled dex entries of a canonical chain identifier, in order. Empty when none. */
-export function listEvmSwapVenues(
+/**
+ * The enabled EVM dex entries of a canonical chain identifier, in order, whatever fee policy is
+ * configured. Their tokens are the chain's configured ERC-20 assets. Empty when none.
+ */
+export function listEnabledEvmDexEntries(
   chainIdentifier: string,
-): readonly UniswapV4Deployment[] {
+): readonly EvmDexEntry[] {
   const entry = Object.prototype.hasOwnProperty.call(
     PROTOCOL_CHAINS,
     chainIdentifier,
   )
     ? PROTOCOL_CHAINS[chainIdentifier]
     : undefined
+  return (entry?.dex ?? []).filter(isEvmDexEntry).filter(venue => venue.enabled)
+}
+
+/**
+ * The dex entries a swap can be made on, in order: the enabled ones, each with any configured
+ * interface fee. While a fee is configured, an entry whose adapter cannot carry one is left out.
+ */
+export function listEvmSwapVenues(
+  chainIdentifier: string,
+): readonly EvmDexEntry[] {
   const configuredFee = resolveConfiguredInterfaceFee('evm')
-  return (entry?.dex ?? [])
-    .filter(isEvmDexEntry)
-    .filter(venue => venue.enabled)
+  return listEnabledEvmDexEntries(chainIdentifier)
+    .filter(
+      venue =>
+        configuredFee === undefined ||
+        EVM_DEX_CARRIES_INTERFACE_FEE[venue.adapter],
+    )
     .map(venue =>
       venue.interfaceFee === undefined && configuredFee !== undefined
-        ? Object.freeze({ ...venue, interfaceFee: configuredFee })
+        ? // Only an adapter that carries a fee is still listed here.
+          (Object.freeze({ ...venue, interfaceFee: configuredFee }) as EvmDexEntry)
         : venue,
     )
 }
@@ -67,11 +92,20 @@ export function listEvmSwapVenues(
 export function getEvmDexDeployment(
   chainIdentifier: string,
   venueId?: string,
-): UniswapV4Deployment | undefined {
+): EvmDexEntry | undefined {
   const venues = listEvmSwapVenues(chainIdentifier)
   return venueId === undefined
     ? venues[0]
     : venues.find(venue => venue.id === venueId)
+}
+
+/** One enabled Uniswap v4 dex of a chain, as `getEvmDexDeployment` finds it; else undefined. */
+export function getUniswapV4Deployment(
+  chainIdentifier: string,
+  venueId?: string,
+): UniswapV4Deployment | undefined {
+  const venue = getEvmDexDeployment(chainIdentifier, venueId)
+  return venue?.adapter === 'uniswap-v4' ? venue : undefined
 }
 
 export function listEvmDexDeploymentChains(): string[] {

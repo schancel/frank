@@ -103,6 +103,10 @@ beforeEach(() => {
         : 'monad-mainnet'
       : wallet === 'solana'
       ? 'solana-devnet'
+      : wallet === 'hyperliquid'
+      ? isTestnet
+        ? 'hyperliquid-testnet'
+        : 'hyperliquid-mainnet'
       : undefined,
   )
 })
@@ -125,6 +129,21 @@ describe('the swap shell', () => {
     expect(has(view, 'swap-unavailable')).toBe(false)
   })
 
+  it('gives the Hyperliquid testnet wallet the EVM panel on HyperSwap V2, and mainnet none', () => {
+    const view = mountShell('hyperliquid')
+    expect(JSON.parse(view.get('[data-testid="evm-panel"]').text())).toEqual({
+      chainIdentifier: 'hyperliquid-testnet',
+      walletId: 'hyperliquid',
+      venueId: 'hyperswap-v2',
+    })
+    expect(view.get('[data-testid="swap-venue"]').text()).toBe('HyperSwap V2')
+    // HyperSwap runs its own deployment: no note.
+    expect(has(view, 'swap-venue-note')).toBe(false)
+    const mainnet = mountShell('hyperliquid', { isTestnet: false })
+    expect(has(mainnet, 'evm-panel')).toBe(false)
+    expect(has(mainnet, 'swap-unavailable')).toBe(true)
+  })
+
   it('gives a Solana wallet the Solana panel and never the EVM one', () => {
     const view = mountShell('solana')
     // The Solana panel finds its own wallet: the shell passes it nothing.
@@ -144,7 +163,7 @@ describe('the swap shell', () => {
 
   it.each(
     WALLET_CONFIGS.map(wallet => wallet.id).filter(
-      id => id !== 'monad' && id !== 'solana',
+      id => id !== 'monad' && id !== 'solana' && id !== 'hyperliquid',
     ),
   )('says truthfully that the %s wallet has no swap', wallet => {
     const view = mountShell(wallet)

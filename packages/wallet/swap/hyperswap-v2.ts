@@ -1,281 +1,471 @@
-/** Disabled HyperSwap V2 testnet native -> test PURR adapter. No registration side effects.
- * Deployment: https://docs.hyperswap.exchange/docs/amm/contracts/testnet/v2/
- * Tokens: https://docs.hyperswap.exchange/docs/amm/contracts/testnet/
- * Wallet owns custody, reservations, signed-byte persistence, and resubmission. This module
- * owns quote/calldata/receipt interpretation only. It never creates an exchange account.
+/**
+ * HyperSwap V2 (a Uniswap v2-style router, factory and pairs) behind the EVM dex interface: the
+ * adapter class for registry entries whose `adapter` is `hyperswap-v2`. It is given its entry
+ * and the wallet as a narrow interface; it finds nothing by itself and registers nothing.
+ *
+ * It swaps the native coin for a configured token through one configured pair. The quote is
+ * the V2 router's `getAmountsOut`; the swap is sent to HyperSwap's SwapRouter02 (the published
+ * V2 router has no swap function) as `multicall(deadline, [swapExactTokensForTokens(...)])`
+ * paying the native coin as the call value, which SwapRouter02 wraps. Any other direction is
+ * refused as having no route. Nothing in that call can take a portion of the output for Frank,
+ * so an entry of this kind never carries an interface fee (`EVM_DEX_CARRIES_INTERFACE_FEE`).
+ *
+ * The wallet owns custody, funds, the journal and resubmission; the shared EVM swap execution
+ * (`swap-execution.ts`) moves funds into the main account when the user confirmed it, sends the
+ * swap through the wallet's recorded contract send, and watches it. This class owns the quote,
+ * the calldata, and reading what the receipt says the swap did.
  */
 import { Interface, getAddress } from 'ethers'
-import { PROTOCOL_CHAINS } from '../chain/chains-registry'
+import { getChainRegistryEntry } from '../chain/chains-registry'
+import type {
+  EvmDexToken,
+  HyperSwapV2Deployment,
+  UniswapV2Pair,
+} from '../chain/dex-entries'
 import type { EvmDex, EvmDexPlan, EvmDexQuote, EvmDexWallet } from './evm-dex'
 import { SwapRecordMismatchError } from './evm-dex'
-import { estimateCallFee, quoteIsFresh, SwapNoRouteError } from './evm-swap'
-import { settle, DEFAULT_SWAP_TIMING, type SwapExecutionReader, type SwapWallet, type SwapResult, type SwapProgress, type SwapTiming, type ConsolidationNeed, type SwapCost } from './swap-execution'
-import type { EvmDexToken } from '../chain/dex-entries'
+import {
+  SWAP_DEADLINE_SECONDS,
+  SwapNoLiquidityError,
+  SwapNoRouteError,
+} from './evm-swap'
+import {
+  consolidationNeeded,
+  estimateSwapCost,
+  executeSwap,
+  readSwapResult,
+  reconcileSwap,
+  type SwapOutcomeReader,
+} from './swap-execution'
+import { minimumOutput, type EncodedCall } from './uniswap-v4'
 
-export const HYPERSWAP_V2_TESTNET = Object.freeze({
-  id: 'hyperswap-v2', adapter: 'hyperswap-v2', enabled: false,
-  chainIdentifier: 'hyperliquid-testnet', displayName: 'HyperSwap V2',
-  maintainer: 'HyperSwap',
-  router: '0x85aA63EB2ab9BaAA74eAd7e7f82A571d74901853',
-  factory: '0xA028411927E2015A363014881a4404C636218fb1',
-  wrappedNative: '0xADcb2f358Eae6492F61A5F87eb8893d09391d160',
-  pair: '0xddA44A39AaA3e2dcc8aFd78ca70b0718877188b5',
-  tokenIn: Object.freeze({ symbol: 'tHYPE', name: 'Hyperliquid testnet HYPE', decimals: 18, address: null }),
-  tokenOut: Object.freeze({ symbol: 'PURR', name: 'HyperSwap test PURR', decimals: 18,
-    address: '0xC003D79B8a489703b1753711E3ae9fFDFC8d1a82', testToken: true }),
-})
-const d = HYPERSWAP_V2_TESTNET
-const router = new Interface([
-  'function factory() view returns(address)', 'function WETH() view returns(address)',
-  'function getAmountsOut(uint256,address[]) view returns(uint256[])',
-  'function swapExactETHForTokens(uint256,address[],address,uint256) payable returns(uint256[])',
+/** A Uniswap v2 pair's fee: 0.3% of the input, taken by the pair. */
+const V2_LP_FEE_PPM = 3000
+
+const routerInterface = new Interface([
+  'function factory() view returns (address)',
+  'function WETH() view returns (address)',
+  'function getAmountsOut(uint256 amountIn, address[] path) view returns (uint256[] amounts)',
 ])
-const factory = new Interface(['function getPair(address,address) view returns(address)'])
-const pair = new Interface([
-  'function token0() view returns(address)', 'function token1() view returns(address)',
-  'function getReserves() view returns(uint112,uint112,uint32)',
-  'event Swap(address indexed sender,uint amount0In,uint amount1In,uint amount0Out,uint amount1Out,address indexed to)',
+const swapRouterInterface = new Interface([
+  'function factoryV2() view returns (address)',
+  'function WETH9() view returns (address)',
+  'function swapExactTokensForTokens(uint256 amountIn, uint256 amountOutMin, address[] path, address to) payable returns (uint256 amountOut)',
+  'function multicall(uint256 deadline, bytes[] data) payable returns (bytes[] results)',
 ])
-const token = new Interface([
-  'function decimals() view returns(uint8)', 'function balanceOf(address) view returns(uint256)',
-  'event Transfer(address indexed from,address indexed to,uint256 value)',
+const factoryInterface = new Interface([
+  'function getPair(address tokenA, address tokenB) view returns (address)',
 ])
-const same = (a: string | null | undefined, b: string) => typeof a === 'string' && a.toLowerCase() === b.toLowerCase()
-const positive = (v: bigint) => { if (v <= 0n || v >= 1n << 256n) throw new RangeError('Invalid swap amount') }
+const pairInterface = new Interface([
+  'function token0() view returns (address)',
+  'function token1() view returns (address)',
+  'function getReserves() view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast)',
+  'event Swap(address indexed sender, uint256 amount0In, uint256 amount1In, uint256 amount0Out, uint256 amount1Out, address indexed to)',
+])
+const erc20Interface = new Interface([
+  'event Transfer(address indexed from, address indexed to, uint256 value)',
+])
 
-export interface HyperSwapRoute {
-  readonly kind: 'hyperswap-v2-native-purr'
-  readonly amountIn: string
-  readonly minimumAmountOut: string
-  readonly account: string
-  readonly deadline: number
+const same = (a: unknown, b: string) =>
+  typeof a === 'string' && a.toLowerCase() === b.toLowerCase()
+
+/** The route a HyperSwap V2 swap takes: the native coin in, through one pair, the token out. */
+export interface HyperSwapV2Route {
+  readonly kind: 'hyperswap-v2'
+  readonly pair: string
+  /** `[wrapped native, token out]`, as the router is given it. */
+  readonly path: readonly [string, string]
 }
-export interface HyperSwapPlan extends EvmDexPlan {
-  readonly account: string
-  readonly route: HyperSwapRoute
+
+export interface HyperSwapV2Quote extends EvmDexQuote {
+  readonly route: HyperSwapV2Route
+}
+export type HyperSwapV2Plan = EvmDexPlan<HyperSwapV2Quote>
+
+function isRoute(route: unknown): route is HyperSwapV2Route {
+  const r = route as Partial<HyperSwapV2Route> | null
+  return (
+    r?.kind === 'hyperswap-v2' &&
+    typeof r.pair === 'string' &&
+    Array.isArray(r.path) &&
+    r.path.length === 2 &&
+    r.path.every(address => typeof address === 'string')
+  )
 }
 
-export interface HyperSwapReader extends SwapExecutionReader {
-  getNetwork?(): Promise<{ chainId: bigint | number }>
-  getBlock?(tag: 'latest' | number | string): Promise<{ hash?: string | null; baseFeePerGas: bigint | null } | null>
-  getCode?(address: string): Promise<string>
-}
+type Dex = EvmDex<HyperSwapV2Quote, HyperSwapV2Plan>
 
-/** No fallback chain, token, router, or pair is accepted. */
-export class HyperSwapV2Testnet implements EvmDex<EvmDexQuote, HyperSwapPlan> {
-  readonly entry = d
-  readonly chainIdentifier = d.chainIdentifier
-  readonly tokens = [d.tokenIn, d.tokenOut]
-  
-  constructor(private readonly wallet: EvmDexWallet, private readonly now: () => number = Date.now) {}
+export class HyperSwapV2Dex implements Dex {
+  /** Set once the router, factory and pairs answered as configured; cleared when they did not. */
+  private verified?: Promise<void>
 
-  private get reader(): HyperSwapReader { return this.wallet.reader as HyperSwapReader }
+  constructor(
+    readonly chainIdentifier: string,
+    readonly entry: HyperSwapV2Deployment,
+    private readonly wallet: EvmDexWallet,
+    private readonly now: () => number = Date.now,
+  ) {}
 
-  private async read(abi: Interface, address: string, name: string, args: unknown[] = [], blockTag?: number) {
-    const result = await this.reader.call({ to: address, data: abi.encodeFunctionData(name, args), ...(blockTag === undefined ? {} : { blockTag }) })
-    return abi.decodeFunctionResult(name, result)
-  }
-  
-  async verifyDeployment(): Promise<void> {
-    const protocol = PROTOCOL_CHAINS[d.chainIdentifier]
-    if (this.reader.getNetwork) {
-      const net = await this.reader.getNetwork()
-      if (protocol.nativeChainId === undefined || net.chainId.toString() !== protocol.nativeChainId.toString())
-        throw new Error('HyperSwap requires Hyperliquid testnet')
-    }
-    if (this.reader.getBlock) {
-      for (const probe of protocol.identityProbes) {
-        if (probe.kind === 'block-hash' && !same((await this.reader.getBlock(probe.height))?.hash, probe.expected))
-          throw new Error('Hyperliquid testnet checkpoint mismatch')
-      }
-    }
-    const [f, w, p, t0, t1, decimals] = await Promise.all([
-      this.read(router, d.router, 'factory'), this.read(router, d.router, 'WETH'),
-      this.read(factory, d.factory, 'getPair', [d.wrappedNative, d.tokenOut.address]),
-      this.read(pair, d.pair, 'token0'), this.read(pair, d.pair, 'token1'),
-      this.read(token, d.tokenOut.address, 'decimals'),
-    ])
-    let codes: string[] = []
-    if (this.reader.getCode) {
-      codes = await Promise.all([d.router, d.factory, d.wrappedNative, d.pair, d.tokenOut.address].map(a => this.reader.getCode!(a)))
-    }
-    if (!same(f[0], d.factory) || !same(w[0], d.wrappedNative) || !same(p[0], d.pair) ||
-      !same(t0[0], d.wrappedNative) || !same(t1[0], d.tokenOut.address) || decimals[0] !== 18n ||
-      (codes.length > 0 && codes.some(code => typeof code !== "string" || !/^0x[0-9a-fA-F]+$/.test(code))))
-      throw new Error('HyperSwap deployment mismatch')
-  }
-  
-  async quote(input: { tokenIn: EvmDexToken; tokenOut: EvmDexToken; amountIn: bigint }): Promise<EvmDexQuote> {
-    const amountIn = input.amountIn
-    positive(amountIn)
-    await this.verifyDeployment()
-    const [amounts, reserves] = await Promise.all([
-      this.read(router, d.router, 'getAmountsOut', [amountIn, [d.wrappedNative, d.tokenOut.address]]),
-      this.read(pair, d.pair, 'getReserves'),
-    ])
-    if (amounts[0].length !== 2 || amounts[0][0] !== amountIn || amounts[0][1] <= 0n || reserves[0] <= 0n || reserves[1] <= 0n)
-      throw new SwapNoRouteError('HyperSwap cannot fill this amount')
-    const amountOut = amounts[0][1] as bigint
-    const mid = amountIn * reserves[1] / reserves[0]
-    return { tokenIn: d.tokenIn, tokenOut: d.tokenOut, amountIn, amountOut,
-      poolAmountOut: amountOut, lpFeePpm: 3000,
-      priceImpactPpm: mid > amountOut ? Number((mid - amountOut) * 1_000_000n / mid) : 0,
-      quotedAtMs: this.now(), route: { kind: 'hyperswap-v2-native-purr' } }
-  }
-  
-  async plan(input: { quote: EvmDexQuote; slippageBps: number; account: string }): Promise<HyperSwapPlan> {
-    const quote = await this.quote(input.quote)
-    if (!Number.isInteger(input.slippageBps) || input.slippageBps < 0 || input.slippageBps > 500)
-      throw new RangeError('Slippage must be between 0 and 500 basis points')
-    const account = getAddress(input.account)
-    const minimumAmountOut = quote.amountOut * BigInt(10_000 - input.slippageBps) / 10_000n
-    positive(minimumAmountOut)
-    const deadline = Math.floor(this.now() / 1000) + 120
-    const route: HyperSwapRoute = { kind: 'hyperswap-v2-native-purr', amountIn: quote.amountIn.toString(),
-      minimumAmountOut: minimumAmountOut.toString(), account, deadline }
-    return { account, quote, route, minimumAmountOut, slippageBps: input.slippageBps, deadline,
-      approvals: [], swap: this.callFor(route) }
-  }
-  
-  private callFor(route: HyperSwapRoute) {
-    this.validateRoute(route)
-    return { to: d.router, value: BigInt(route.amountIn), data: router.encodeFunctionData('swapExactETHForTokens', [
-      route.minimumAmountOut, [d.wrappedNative, d.tokenOut.address], route.account, route.deadline,
-    ]) }
-  }
-  
-  private validateRoute(route: unknown): asserts route is HyperSwapRoute {
-    const r = route as HyperSwapRoute
-    if (r?.kind !== 'hyperswap-v2-native-purr' || !/^\d+$/.test(r.amountIn) || !/^\d+$/.test(r.minimumAmountOut) ||
-      !Number.isSafeInteger(r.deadline) || r.deadline <= 0) throw new SwapRecordMismatchError()
-    getAddress(r.account); positive(BigInt(r.amountIn)); positive(BigInt(r.minimumAmountOut))
-  }
-  
-  async consolidation(input: { plan: HyperSwapPlan; swapFee?: SwapCost['swapFee'] }): Promise<ConsolidationNeed> {
-    return { moveWei: 0n, possible: true } // Native swaps with sufficient funds need no move
+  get tokens() {
+    return this.entry.tokens
   }
 
-  async cost(input: { plan: HyperSwapPlan; account: string; moveWei?: bigint }): Promise<SwapCost> {
-    const fee = await estimateCallFee(this.reader, input.plan.swap, input.account).catch(() => undefined)
-    return {
-      transactions: [{ kind: 'swap', feeWei: fee?.chargedFeeWei }],
-      networkFeeWei: fee?.chargedFeeWei ?? 0n,
-      complete: fee !== undefined,
-      swapFee: fee
+  /** How this network charges gas: a fact on its registry row, never assumed here. */
+  private get gasChargedOn() {
+    return getChainRegistryEntry(this.chainIdentifier)?.gasChargedOn ?? 'used'
+  }
+
+  private async read(
+    abi: Interface,
+    to: string,
+    name: string,
+    args: unknown[] = [],
+  ) {
+    const data = await this.wallet.reader.call({
+      to,
+      data: abi.encodeFunctionData(name, args),
+    })
+    return abi.decodeFunctionResult(name, data)
+  }
+
+  /**
+   * The routers, factory and pairs answer as the entry says: router.factory(), router.WETH(),
+   * swapRouter.factoryV2() and swapRouter.WETH9() are the configured factory and wrapped native
+   * coin, and every pair is the factory's pair of its two tokens. Asked once per adapter; the wallet has already checked the chain itself.
+   */
+  verifyDeployment(): Promise<void> {
+    this.verified ??= this.checkDeployment().catch(error => {
+      this.verified = undefined
+      throw error
+    })
+    return this.verified
+  }
+
+  private async checkDeployment(): Promise<void> {
+    const { router, swapRouter, factory, wrappedNative, pairs } = this.entry
+    const [[routerFactory], [weth], [swapFactory], [swapWeth]] =
+      await Promise.all([
+        this.read(routerInterface, router, 'factory'),
+        this.read(routerInterface, router, 'WETH'),
+        this.read(swapRouterInterface, swapRouter, 'factoryV2'),
+        this.read(swapRouterInterface, swapRouter, 'WETH9'),
+      ])
+    if (
+      !same(routerFactory, factory) ||
+      !same(weth, wrappedNative) ||
+      !same(swapFactory, factory) ||
+      !same(swapWeth, wrappedNative)
+    )
+      throw new Error('HyperSwap router does not match its configuration')
+    for (const pair of pairs) {
+      const [[listed], [token0], [token1]] = await Promise.all([
+        this.read(factoryInterface, factory, 'getPair', [
+          pair.token0,
+          pair.token1,
+        ]),
+        this.read(pairInterface, pair.address, 'token0'),
+        this.read(pairInterface, pair.address, 'token1'),
+      ])
+      if (
+        !same(listed, pair.address) ||
+        !same(token0, pair.token0) ||
+        !same(token1, pair.token1)
+      )
+        throw new Error('HyperSwap pair does not match its configuration')
     }
   }
 
-  async execute(input: {
-    plan: HyperSwapPlan
-    account: string
-    consolidateWei?: bigint
-    onProgress?: (progress: SwapProgress) => void
-    timing?: SwapTiming
-  }): Promise<SwapResult> {
-    await this.verifyDeployment()
-    const { plan, account, onProgress } = input
-    const call = this.callFor(plan.route)
-    if (!quoteIsFresh(plan.quote, this.now()) || plan.deadline !== plan.route.deadline ||
-      plan.deadline <= Math.floor(this.now() / 1000) || plan.deadline > Math.floor(this.now() / 1000) + 120 ||
-      plan.minimumAmountOut !== BigInt(plan.route.minimumAmountOut) || plan.quote.amountIn !== call.value ||
-      !same(account, plan.route.account) || plan.approvals.length ||
-      !same(plan.swap.to, call.to) || plan.swap.data !== call.data || plan.swap.value !== call.value)
-      throw new Error('Swap plan changed or expired; review a new quote')
-    if (!Number.isInteger(plan.slippageBps) || plan.slippageBps < 0 || plan.slippageBps > 500 ||
-      plan.minimumAmountOut !== plan.quote.amountOut * BigInt(10_000 - plan.slippageBps) / 10_000n)
-      throw new Error('Invalid minimum received')
-    const funds = await this.wallet.getContractCallFunds()
-    if (!same(funds.mainAddress, account) || funds.mainBusy || this.wallet.getUnresolvedContractCalls?.().length)
-      throw new Error('Swap account is changed or busy; reconcile its original operation')
-    const fee = await estimateCallFee(this.reader, call, account)
-    if (call.value + fee.maximumFeeWei > funds.mainBalance) // NOTE: The user's wallet may have less funds than moveWei.
-      throw new Error('Swap exceeds available funds or the authorized maximum debit')
-    
-    onProgress?.({ stage: 'submitting' })
-    let handle: { operationId: string, txHash: string }
-    try {
-      handle = await this.wallet.sendContractCall({ to: { raw: call.to }, data: call.data, value: call.value, gasLimit: fee.gasLimit,
-        record: { kind: 'swap', venueId: d.id, account: account,
-          assetIn: d.tokenIn, amountIn: call.value.toString(), assetOut: d.tokenOut,
-          quotedAmountOut: plan.quote.amountOut.toString(), minimumAmountOut: plan.minimumAmountOut.toString(),
-          interfaceFeeAmount: '0', route: plan.route, networkFeeWei: fee.chargedFeeWei.toString() } })
-    } catch (error) {
-      const pending = error as { operation?: { operationId?: string }; transaction?: { txHash?: string } }
-      if (!pending.operation?.operationId || !pending.transaction?.txHash) throw error
-      handle = { operationId: pending.operation.operationId, txHash: pending.transaction.txHash }
-    }
-    
-    onProgress?.({ stage: 'submitted', txHash: handle.txHash })
-    const timing = input.timing ?? DEFAULT_SWAP_TIMING
-    const receipt = await settle(this.reader, this.wallet, handle, timing)
-    
-    if (receipt) {
-      try { await this.wallet.resumeNativeOperation?.(handle.operationId) } catch {}
-    } else {
-      await this.wallet.reobserveNativeOperations?.()
-    }
-    
-    return this.observe({ transactionId: handle.txHash, account, route: plan.route })
+  /** The configured pair of the wrapped native coin and `token`, if there is one. */
+  private pairFor(token: string): UniswapV2Pair | undefined {
+    const wrapped = this.entry.wrappedNative
+    return this.entry.pairs.find(
+      pair =>
+        (same(pair.token0, wrapped) && same(pair.token1, token)) ||
+        (same(pair.token1, wrapped) && same(pair.token0, token)),
+    )
   }
 
-  async reconcile(input: {
-    transactionId: string
-    operationId: string
-    account: string
-    route: unknown
-    call: { to: string; data: string; value: string }
-    timing?: SwapTiming
-  }): Promise<SwapResult> {
-    this.validateRoute(input.route)
-    const timing = input.timing ?? DEFAULT_SWAP_TIMING
-    await settle(this.reader, this.wallet, { txHash: input.transactionId, operationId: input.operationId }, { ...timing, inclusionTimeoutMs: 0 })
-    await this.wallet.reobserveNativeOperations?.()
-    return this.observe({ transactionId: input.transactionId, account: input.account, route: input.route })
+  private routeFor(tokenIn: EvmDexToken, tokenOut: EvmDexToken) {
+    if (tokenIn.address !== null || tokenOut.address === null)
+      throw new SwapNoRouteError()
+    const listed = (token: EvmDexToken) =>
+      this.entry.tokens.some(
+        t =>
+          t.address === token.address ||
+          (t.address !== null &&
+            token.address !== null &&
+            same(t.address, token.address)),
+      )
+    if (!listed(tokenIn) || !listed(tokenOut)) throw new SwapNoRouteError()
+    const pair = this.pairFor(tokenOut.address)
+    if (!pair) throw new SwapNoRouteError()
+    const route: HyperSwapV2Route = {
+      kind: 'hyperswap-v2',
+      pair: pair.address,
+      path: [this.entry.wrappedNative, tokenOut.address],
+    }
+    return { pair, route }
   }
 
-  private validateTransaction(tx: NonNullable<Awaited<ReturnType<SwapExecutionReader['getTransaction']>>>, route: HyperSwapRoute) {
-    const call = this.callFor(route)
-    const typedTx = tx as { chainId: bigint; from: string; to: string | null; data: string; value: bigint }
-    if (typedTx.chainId !== 998n || !same(typedTx.from, route.account) || !same(typedTx.to, call.to) || typedTx.data !== call.data || typedTx.value !== call.value)
+  /** A route of this venue's own configuration; a recorded route is not trusted further. */
+  private configuredRoute(route: unknown): HyperSwapV2Route {
+    if (!isRoute(route)) throw new SwapRecordMismatchError()
+    const pair = this.pairFor(route.path[1])
+    if (
+      !pair ||
+      !same(route.pair, pair.address) ||
+      !same(route.path[0], this.entry.wrappedNative)
+    )
       throw new SwapRecordMismatchError()
+    return route
   }
 
-  async observe(input: { transactionId: string; account: string; route: unknown }): Promise<SwapResult> {
-    const handle = { txHash: input.transactionId, operationId: '' } // operationId is not required for output if missing
-    try { await this.verifyDeployment() } catch { return { status: 'pending', ...handle } }
-    this.validateRoute(input.route)
-    const receipt = await this.reader.getTransactionReceipt(input.transactionId)
-    if (!receipt) return { status: 'pending', ...handle }
-    const tx = await this.reader.getTransaction(input.transactionId)
-    if (!tx || !same(receipt.from, input.account) || !same(receipt.to, d.router)) throw new SwapRecordMismatchError()
-    this.validateTransaction(tx, input.route)
-    const feeWei = receipt.gasUsed * receipt.gasPrice
-    if (receipt.status === 0) return { status: 'reverted', ...handle, feeWei, totalFeeWei: feeWei }
-    if (receipt.status !== 1) return { status: 'pending', ...handle }
-    let output = 0n, swapCount = 0
-    for (const log of receipt.logs) {
-      if (same(log.address, d.pair)) {
-        let event
-        try { event = pair.parseLog(log) } catch { continue }
-        if (event?.name === 'Swap') {
-          if (!same(event.args.sender, d.router) || !same(event.args.to, input.account) ||
-            event.args.amount0In !== BigInt(input.route.amountIn) || event.args.amount1In !== 0n || event.args.amount0Out !== 0n)
-            throw new SwapRecordMismatchError()
-          output = event.args.amount1Out; swapCount++
-        }
+  async quote(input: Parameters<Dex['quote']>[0]): Promise<HyperSwapV2Quote> {
+    const { tokenIn, tokenOut, amountIn } = input
+    if (amountIn <= 0n) throw new RangeError('Swap amount must be positive')
+    const { pair, route } = this.routeFor(tokenIn, tokenOut)
+    await this.verifyDeployment()
+    const [[amounts], reserves] = await Promise.all([
+      this.read(routerInterface, this.entry.router, 'getAmountsOut', [
+        amountIn,
+        [...route.path],
+      ]),
+      this.read(pairInterface, pair.address, 'getReserves'),
+    ])
+    const nativeIs0 = same(pair.token0, this.entry.wrappedNative)
+    const reserveIn = BigInt(nativeIs0 ? reserves[0] : reserves[1])
+    const reserveOut = BigInt(nativeIs0 ? reserves[1] : reserves[0])
+    if (reserveIn <= 0n || reserveOut <= 0n) throw new SwapNoLiquidityError()
+    const out = amounts as readonly bigint[]
+    if (out.length !== 2 || BigInt(out[0]!) !== amountIn)
+      throw new Error('HyperSwap router answered for another amount')
+    const amountOut = BigInt(out[1]!)
+    if (amountOut <= 0n) throw new SwapNoLiquidityError()
+    // What the input buys at the pair's price before it moves, after the pair's fee.
+    const afterFee = (amountIn * BigInt(1_000_000 - V2_LP_FEE_PPM)) / 1_000_000n
+    const ideal = (afterFee * reserveOut) / reserveIn
+    return {
+      tokenIn,
+      tokenOut,
+      amountIn,
+      amountOut,
+      poolAmountOut: amountOut,
+      lpFeePpm: V2_LP_FEE_PPM,
+      priceImpactPpm:
+        ideal > amountOut
+          ? Number(((ideal - amountOut) * 1_000_000n) / ideal)
+          : 0,
+      quotedAtMs: this.now(),
+      route,
+    }
+  }
+
+  async plan(input: Parameters<Dex['plan']>[0]): Promise<HyperSwapV2Plan> {
+    const { quote } = input
+    const route = this.configuredRoute(quote.route)
+    const account = getAddress(input.account)
+    const minimumAmountOut = minimumOutput(quote.amountOut, input.slippageBps)
+    const deadline = Math.floor(this.now() / 1000) + SWAP_DEADLINE_SECONDS
+    return {
+      quote,
+      slippageBps: input.slippageBps,
+      minimumAmountOut,
+      deadline,
+      approvals: [],
+      swap: this.callFor(route, quote.amountIn, minimumAmountOut, account, deadline),
+    }
+  }
+
+  private callFor(
+    route: HyperSwapV2Route,
+    amountIn: bigint,
+    minimumAmountOut: bigint,
+    account: string,
+    deadline: number,
+  ): EncodedCall {
+    const swap = swapRouterInterface.encodeFunctionData(
+      'swapExactTokensForTokens',
+      [amountIn, minimumAmountOut, [...route.path], account],
+    )
+    return {
+      to: this.entry.swapRouter,
+      value: amountIn,
+      data: swapRouterInterface.encodeFunctionData('multicall', [
+        deadline,
+        [swap],
+      ]),
+    }
+  }
+
+  consolidation(input: Parameters<Dex['consolidation']>[0]) {
+    return consolidationNeeded({
+      reader: this.wallet.reader,
+      wallet: this.wallet,
+      ...input,
+    })
+  }
+
+  cost(input: Parameters<Dex['cost']>[0]) {
+    return estimateSwapCost({
+      reader: this.wallet.reader,
+      wallet: this.wallet,
+      gasChargedOn: this.gasChargedOn,
+      ...input,
+    })
+  }
+
+  /**
+   * What the receipt says the swap did: the configured pair's `Swap` event paying `account`,
+   * corroborated by the token's transfer from the pair to `account`. Undefined when the logs
+   * hold no such swap.
+   */
+  private outcomeReader(
+    route: HyperSwapV2Route,
+    account: string,
+  ): SwapOutcomeReader {
+    const pair = this.pairFor(route.path[1])!
+    const nativeIs0 = same(pair.token0, this.entry.wrappedNative)
+    const swapTopic = pairInterface.getEvent('Swap')!.topicHash
+    const transferTopic = erc20Interface.getEvent('Transfer')!.topicHash
+    return logs => {
+      let amountIn: bigint | undefined
+      let amountOut: bigint | undefined
+      for (const log of logs) {
+        if (!same(log.address, pair.address) || log.topics[0] !== swapTopic)
+          continue
+        const event = pairInterface.decodeEventLog('Swap', log.data, [
+          ...log.topics,
+        ])
+        if (!same(event.to, account)) continue
+        const paid = BigInt(nativeIs0 ? event.amount0In : event.amount1In)
+        const received = BigInt(nativeIs0 ? event.amount1Out : event.amount0Out)
+        if (paid <= 0n || received <= 0n) return undefined
+        amountIn = (amountIn ?? 0n) + paid
+        amountOut = (amountOut ?? 0n) + received
       }
+      if (amountIn === undefined || amountOut === undefined) return undefined
+      let transferred = 0n
+      for (const log of logs) {
+        if (
+          !same(log.address, route.path[1]) ||
+          log.topics[0] !== transferTopic ||
+          log.topics.length !== 3
+        )
+          continue
+        const event = erc20Interface.decodeEventLog('Transfer', log.data, [
+          ...log.topics,
+        ])
+        if (same(event.from, pair.address) && same(event.to, account))
+          transferred += BigInt(event.value)
+      }
+      if (transferred !== amountOut) throw new SwapRecordMismatchError()
+      return { amountIn, amountOut }
     }
-    let received = 0n
-    for (const log of receipt.logs) {
-      if (!same(log.address, d.tokenOut.address)) continue
-      let event
-      try { event = token.parseLog(log) } catch { continue }
-      if (event?.name === 'Transfer' && same(event.args.from, d.pair) && same(event.args.to, input.account)) received += event.args.value
+  }
+
+  async execute(input: Parameters<Dex['execute']>[0]) {
+    const { plan, account } = input
+    const { quote } = plan
+    const route = this.configuredRoute(quote.route)
+    // The plan's call is exactly what this route, amount, floor and deadline encode.
+    const call = this.callFor(
+      route,
+      quote.amountIn,
+      plan.minimumAmountOut,
+      getAddress(account),
+      plan.deadline,
+    )
+    if (
+      plan.approvals.length > 0 ||
+      !same(plan.swap.to, call.to) ||
+      plan.swap.data !== call.data ||
+      plan.swap.value !== call.value
+    )
+      throw new Error('Swap plan changed; review a new quote')
+    const asset = (token: EvmDexToken) => ({
+      symbol: token.symbol,
+      address: token.address,
+      decimals: token.decimals,
+    })
+    return executeSwap({
+      readOutcome: this.outcomeReader(route, account),
+      reader: this.wallet.reader,
+      wallet: this.wallet,
+      plan,
+      account,
+      consolidateWei: input.consolidateWei,
+      onProgress: input.onProgress,
+      timing: input.timing,
+      gasChargedOn: this.gasChargedOn,
+      // What the swap is, handed to the wallet with the swap transaction. The wallet records
+      // it and writes the note to self; this class does neither.
+      record: {
+        kind: 'swap',
+        venueId: this.entry.id,
+        account,
+        assetIn: asset(quote.tokenIn),
+        amountIn: quote.amountIn.toString(),
+        assetOut: asset(quote.tokenOut),
+        quotedAmountOut: quote.amountOut.toString(),
+        minimumAmountOut: plan.minimumAmountOut.toString(),
+        interfaceFeeAmount: '0',
+        route,
+      },
+    })
+  }
+
+  async observe(input: Parameters<Dex['observe']>[0]) {
+    const route = this.configuredRoute(input.route)
+    const handle = { operationId: '', txHash: input.transactionId }
+    const receipt = await this.wallet.reader.getTransactionReceipt(
+      input.transactionId,
+    )
+    if (!receipt) return { status: 'pending' as const, ...handle }
+    if (
+      !same(receipt.from, input.account) ||
+      !same(receipt.to, this.entry.swapRouter)
+    )
+      throw new SwapRecordMismatchError()
+    return readSwapResult({
+      readOutcome: this.outcomeReader(route, input.account),
+      reader: this.wallet.reader,
+      account: input.account,
+      handle,
+      receipt,
+    })
+  }
+
+  async reconcile(input: Parameters<Dex['reconcile']>[0]) {
+    const route = this.configuredRoute(input.route)
+    const swap = {
+      to: input.call.to,
+      data: input.call.data,
+      value: BigInt(input.call.value),
     }
-    if (swapCount !== 1 || output < BigInt(input.route.minimumAmountOut) || received !== output) throw new SwapRecordMismatchError()
-    const [balance] = await this.read(token, d.tokenOut.address, 'balanceOf', [input.account], receipt.blockNumber)
-    if (balance < received) throw new Error('Recipient balance does not corroborate the swap receipt')
-    await this.wallet.reobserveNativeOperations?.()
-    return { status: 'confirmed', ...handle, amountIn: BigInt(input.route.amountIn), amountOut: received, feeWei, totalFeeWei: feeWei }
+    if (!same(swap.to, this.entry.swapRouter))
+      throw new SwapRecordMismatchError()
+    let deadline: number | undefined
+    try {
+      const [value, calls] = swapRouterInterface.decodeFunctionData(
+        'multicall',
+        swap.data,
+      )
+      if (calls.length !== 1) throw new SwapRecordMismatchError()
+      swapRouterInterface.decodeFunctionData('swapExactTokensForTokens', calls[0])
+      if (BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER))
+        deadline = Number(value)
+    } catch {
+      throw new SwapRecordMismatchError()
+    }
+    return reconcileSwap({
+      readOutcome: this.outcomeReader(route, input.account),
+      reader: this.wallet.reader,
+      wallet: this.wallet,
+      account: input.account,
+      swap,
+      deadline,
+      handle: { operationId: input.operationId, txHash: input.transactionId },
+      timing: input.timing,
+    })
   }
 }

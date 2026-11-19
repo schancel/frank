@@ -182,7 +182,8 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
 
     // The work of one send, counted where it leaves the wallet: JSON-RPC calls by method,
-    // signatures, chain HTTP calls and relay requests. These are exact on any machine.
+    // EVM transaction signatures (message and identity signatures go through @frank/nakamoto
+    // and show only in CPU), chain HTTP calls and relay requests. These are exact on any machine.
     const signatures = jest.spyOn(SigningKey.prototype, 'sign')
     const send = async (text: string) => {
       chainHttpRequests.length = 0
@@ -419,8 +420,8 @@ describe('Wallet real-world performance & reliability simulation (integration)',
       console.log(`800 journal reservation queries: ${timing(queries)}`)
       // CPU ceiling for 800 queries, under a quarter of a millisecond each. Process CPU here
       // includes the garbage collector's helper threads, so it runs above wall: ~15-17 ms on an
-      // Apple M-series laptop (wall ~11 ms), and CI is about 2.7x slower per core. A scan that
-      // grew with the journal's history would exceed it.
+      // Apple M-series laptop (wall ~11 ms), and CI is about 2.7x slower per core. The queries already
+      // scan every row, so this catches a large per-row slowdown (roughly 10x), not a small one.
       expect(queries.cpuMs).toBeLessThan(200)
     } finally {
       await journal.Close()

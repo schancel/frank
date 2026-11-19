@@ -28,6 +28,7 @@ it("offers native denomination facts for every configured canonical network with
     "doge-testnet": 8,
     "litecoin-mainnet": 8,
     "litecoin-testnet": 8,
+    "lotus-v2-regtest": 6,
     "bnb-mainnet": 18,
     "bnb-testnet": 18,
     "polygon-mainnet": 18,

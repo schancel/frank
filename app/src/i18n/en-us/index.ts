@@ -1281,7 +1281,7 @@ export const rawEnUS = {
         xecLocked: 'Your {xec} is locked. Waiting for their {evm} lock.',
         claiming: 'Their {evm} is locked. Claiming it…',
         claimed: 'Done: you received the {evm}.',
-        claimedByPeer: 'Done: they claimed the {xec}.',
+        claimedByPeer: 'They claimed the {xec}. Collecting your {evm}…',
         awaitRefund:
           'The swap did not finish. Your {xec} is refunded automatically after its lock expires.',
         awaitXecLock: 'Waiting for their {xec} lock to be final.',
@@ -1294,6 +1294,7 @@ export const rawEnUS = {
           'Stopped: the swap ran out of time before your lock. Nothing of yours was locked.',
         refunding: 'The swap did not finish. Refunding your lock…',
         refunded: 'Refunded: your locked funds are back.',
+        checking: 'Checking the chains for this swap…',
         invalid: 'This account cannot carry out this swap.',
         unsupported: 'This swap is on networks this app does not run.',
       },

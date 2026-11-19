@@ -177,7 +177,6 @@ const FINISHED_PHASES = new Set([
   'rejected',
   'expired',
   'claimed',
-  'claimedByPeer',
   'complete',
   'lostToRefund',
   'abandoned',

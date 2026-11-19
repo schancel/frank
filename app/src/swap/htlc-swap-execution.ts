@@ -81,6 +81,12 @@ export interface AppSwapExecutionInput {
   /** The relay this session uses (its Chronik proxy serves the eCash reads). */
   relayBaseUrl: string
   negotiations: SwapNegotiationSource
+  /**
+   * Settles once the session has read the account's mailbox for the first time (its device
+   * claims included): before that, which device is active is not known, so this device starts
+   * no new swap work. It still finishes its own exposed work (`nextAction`).
+   */
+  activeDeviceKnown?: Promise<unknown>
 }
 
 export interface AppSwapExecutionDeps {
@@ -158,7 +164,15 @@ const defaultDeps: AppSwapExecutionDeps = {
       db.name ? [db.name] : [],
     )
   },
-  isActiveDevice: () => useLeaderStore().isActiveMaster,
+  // Only a device that holds the account's latest claim: with no claim known yet
+  // (`masterInstanceId` null, which `isActiveMaster` counts as active), it starts nothing new.
+  isActiveDevice: () => {
+    const leader = useLeaderStore()
+    return (
+      leader.masterInstanceId !== null &&
+      leader.masterInstanceId === leader.myInstanceId
+    )
+  },
   now: () => Math.floor(Date.now() / 1000),
   intervalMs: SWAP_RUNNER_INTERVAL_MS,
   retryMs: SWAP_CAPABILITY_RETRY_MS,
@@ -231,7 +245,16 @@ export function startAppSwapExecution(
   let runner: HtlcSwapRunner | undefined
   let store: ReturnType<AppSwapExecutionDeps['openStore']> | undefined
   let retry: ReturnType<typeof setTimeout> | undefined
+  /** Ends a retry wait at once (stop). */
+  let wake: (() => void) | undefined
   const cleanups: (() => void)[] = []
+  let claimKnown = input.activeDeviceKnown === undefined
+  void input.activeDeviceKnown
+    ?.catch(() => undefined)
+    .then(() => {
+      claimKnown = true
+      if (live()) runner?.poke()
+    })
   const fail = (failure: SwapExecutionFailure, oldDatabase = '') => {
     if (!live()) return
     swapExecutionState.status = 'failed'
@@ -242,8 +265,11 @@ export function startAppSwapExecution(
   const stop = async () => {
     stopped = true
     if (retry !== undefined) clearTimeout(retry)
+    wake?.()
     for (const cleanup of cleanups.splice(0)) cleanup()
-    await starting.catch(() => undefined)
+    // Not awaiting the start: it may be waiting on a wallet that never opens. Everything after
+    // each of its waits re-checks `live()`, so no runner is created once stopped; a runner that
+    // exists was created synchronously before this stop.
     await runner?.stop()
     await store?.close?.().catch(() => undefined)
     if (current === mine) {
@@ -267,7 +293,7 @@ export function startAppSwapExecution(
     }
 
   swapExecutionState.status = 'starting'
-  const starting = (async () => {
+  void (async () => {
     let owner: ReturnType<typeof appSwapRecordOwner>
     try {
       owner = appSwapRecordOwner(input)
@@ -302,14 +328,16 @@ export function startAppSwapExecution(
         console.warn('[swapExecution] swap wallets unavailable:', error)
         swapExecutionState.failure = 'wallet-unavailable'
         await new Promise<void>(resolve => {
+          wake = resolve
           retry = setTimeout(resolve, deps.retryMs)
         })
         retry = undefined
+        wake = undefined
       }
     }
     if (!capabilities || !live()) return
     const isActiveDevice = () => {
-      const active = deps.isActiveDevice()
+      const active = claimKnown && deps.isActiveDevice()
       swapExecutionState.activeDevice = active
       return active
     }
@@ -354,7 +382,9 @@ export function startAppSwapExecution(
     swapExecutionState.status = 'ready'
     swapExecutionState.failure = null
     started.start(deps.intervalMs)
-  })()
+  })().catch(error =>
+    console.error('[swapExecution] swap runner did not start:', error),
+  )
 
   return {
     stop,

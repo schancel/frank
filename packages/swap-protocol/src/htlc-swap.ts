@@ -622,7 +622,10 @@ export type HtlcSwapDecisionInput = {
   /** Unix seconds of this device's clock. */
   readonly now: number
   readonly record?: HtlcSwapRecord
-  /** Only the account's active device starts anything; the others observe. */
+  /** Only the account's active device starts new work. Another device still finishes what it
+   * already authorized and exposed itself: it resumes its own exposed lock operation and
+   * re-broadcasts the spends in its own record (`stores/leader.ts`: finishing authorized work is
+   * never gated); everything else it only observes. */
   readonly activeDevice: boolean
 } & (
   | { readonly negotiation: 'offered'; readonly acceptBy: number }
@@ -722,6 +725,21 @@ function xecSpendAction(
  * landed one output stays for B until B has claimed one.
  */
 export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
+  /** What an inactive device still does of `action`: only finishing its own exposed work. */
+  const finishing = (action: HtlcSwapAction): HtlcSwapAction => {
+    if (action.kind === 'fund-xec') return action.resume ? action : NONE
+    if (action.kind === 'broadcast-xec-spend') return action
+    if (action.kind === 'sign-xec-spend' && input.negotiation === 'accepted') {
+      // A new signature is new work; a spend this device already signed and stored is not.
+      const stored = fundingOf(input.terms, input.observations.xec).find(
+        o => o.spentBy === undefined && storedXecSpendOf(input.record, o),
+      )
+      return stored
+        ? { kind: 'broadcast-xec-spend', funding: outpointOf(stored) }
+        : NONE
+    }
+    return NONE
+  }
   const decide = (
     phase: HtlcSwapPhase,
     action: HtlcSwapAction = NONE,
@@ -729,7 +747,7 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     funding?: { txid: string; vout: number },
   ): HtlcSwapDecision => ({
     phase,
-    action: input.activeDevice ? action : NONE,
+    action: input.activeDevice ? action : finishing(action),
     warnings,
     ...(funding ? { funding } : {}),
   })

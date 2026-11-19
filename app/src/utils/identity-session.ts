@@ -811,6 +811,8 @@ async function startMessagingInternal(): Promise<void> {
             revision,
             account: negotiationAccount,
             relayBaseUrl: d.relayBaseUrl,
+            // The first mailbox read brings the account's device claims.
+            activeDeviceKnown: polling.firstRead ?? Promise.resolve(),
             negotiations: {
               journals: () => negotiation.journals?.() ?? [],
               subscribe: listener =>

@@ -1313,7 +1313,7 @@ export const rawFrFR = {
           'Vos {xec} sont verrouillés. En attente de leur verrouillage {evm}.',
         claiming: 'Leurs {evm} sont verrouillés. Réclamation en cours…',
         claimed: 'Terminé : vous avez reçu les {evm}.',
-        claimedByPeer: 'Terminé : ils ont réclamé les {xec}.',
+        claimedByPeer: 'Ils ont réclamé les {xec}. Réception de vos {evm}…',
         awaitRefund:
           'L’échange n’a pas abouti. Vos {xec} sont remboursés automatiquement à la fin de leur verrouillage.',
         awaitXecLock: 'En attente de la finalité de leur verrouillage {xec}.',
@@ -1329,6 +1329,7 @@ export const rawFrFR = {
         refunding:
           'L’échange n’a pas abouti. Remboursement de votre verrouillage…',
         refunded: 'Remboursé : vos fonds verrouillés sont revenus.',
+        checking: 'Vérification des chaînes pour cet échange…',
         invalid: 'Ce compte ne peut pas mener cet échange.',
         unsupported:
           'Cet échange porte sur des réseaux que cette application ne gère pas.',

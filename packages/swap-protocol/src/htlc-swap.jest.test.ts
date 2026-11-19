@@ -824,6 +824,45 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
       { active: false, xec: xecObs([output()]), evm: both('open') },
       'claiming/none',
     ],
+    // ...but finishes what it already authorized and exposed itself.
+    [
+      'inactive device: resumes its own exposed lock operation',
+      { active: false, op: 'exposed' },
+      'xecLockPending/fund-xec:resume',
+    ],
+    [
+      'inactive device: never starts a prepared or authorized lock',
+      { active: false, op: 'prepared' },
+      'xecLockPending/none',
+    ],
+    [
+      'inactive device: re-broadcasts its own stored refund',
+      {
+        active: false,
+        xec: xecObs([output()], T_A + 1),
+        evm: both('refunded'),
+        record: {
+          xecSpends: [
+            {
+              funding: FUNDING,
+              branch: 'refund',
+              rawTx: '00',
+              txid: 'ee'.repeat(32),
+            },
+          ],
+        },
+      },
+      'refunding/broadcast-xec-spend',
+    ],
+    [
+      'inactive device: never signs a new refund',
+      {
+        active: false,
+        xec: xecObs([output()], T_A + 1),
+        evm: both('refunded'),
+      },
+      'refunding/none',
+    ],
   ]
   it.each(cases)('%s', (_, c, expected) => {
     expect(summary(run('A', c))).toBe(expected)
@@ -1263,6 +1302,25 @@ describe('nextAction, B (MON depositor)', () => {
       'inactive device: never claims',
       { active: false, xec: xecObs([output()]), evm: withdrawn },
       'claimingXec/none',
+    ],
+    [
+      'inactive device: re-broadcasts its own stored claim',
+      {
+        active: false,
+        xec: xecObs([output()]),
+        evm: withdrawn,
+        record: {
+          xecSpends: [
+            {
+              funding: FUNDING,
+              branch: 'claim',
+              rawTx: '00',
+              txid: 'dd'.repeat(32),
+            },
+          ],
+        },
+      },
+      'claimingXec/broadcast-xec-spend',
     ],
   ]
   it.each(cases)('%s', (_, c, expected) => {

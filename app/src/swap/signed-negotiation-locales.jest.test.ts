@@ -25,6 +25,7 @@ const RUNNER_PHASES: Record<HtlcSwapView['phase'], true> = {
   refunded: true,
   invalid: true,
   unsupported: true,
+  checking: true,
 }
 /** Dynamic state labels are a finite part of the app-owned facade, not arbitrary wire strings. */
 test.each([

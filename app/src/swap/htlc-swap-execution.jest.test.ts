@@ -296,6 +296,7 @@ describe('session HTLC swap runner and card', () => {
     chain: any,
     log: string[],
     overrides: Record<string, unknown> = {},
+    inputOverrides: Record<string, unknown> = {},
   ) {
     const opened: string[] = []
     const execution = startAppSwapExecution(
@@ -303,6 +304,7 @@ describe('session HTLC swap runner and card', () => {
         ...session(local),
         relayBaseUrl: 'http://relay.invalid',
         negotiations: { journals: () => [journal] },
+        ...inputOverrides,
       },
       {
         openCapabilities: async () => {
@@ -575,6 +577,124 @@ describe('session HTLC swap runner and card', () => {
       old,
     )
     expect(log).toEqual([])
+  })
+
+  test('stopping the session while the wallets are being retried resolves at once', async () => {
+    const { journal } = await acceptedNegotiation('A')
+    const log: string[] = []
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
+    let attempts = 0
+    const { execution } = load(
+      'A',
+      journal,
+      new MemoryHtlcSwapRecordStore(),
+      {},
+      log,
+      {
+        openCapabilities: async () => {
+          attempts += 1
+          throw new Error('relay unreachable')
+        },
+        // A retry far in the future: only the stop can end the wait.
+        retryMs: 3_600_000,
+      },
+    )
+    await settle()
+    expect(attempts).toBe(1)
+    expect(swapExecutionState.failure).toBe('wallet-unavailable')
+    let stopped = false
+    await Promise.race([
+      execution.stop().then(() => (stopped = true)),
+      new Promise(resolve => setTimeout(resolve, 1_000)),
+    ])
+    warn.mockRestore()
+    expect(stopped).toBe(true)
+    await settle()
+    expect(attempts).toBe(1)
+    expect(swapExecutionState.status).toBe('off')
+  })
+
+  test('stopping the session while a wallet open never returns resolves at once', async () => {
+    const { journal } = await acceptedNegotiation('A')
+    const { execution } = load(
+      'A',
+      journal,
+      new MemoryHtlcSwapRecordStore(),
+      {},
+      [],
+      {
+        openCapabilities: () => new Promise(() => undefined),
+      },
+    )
+    await settle()
+    let stopped = false
+    await Promise.race([
+      execution.stop().then(() => (stopped = true)),
+      new Promise(resolve => setTimeout(resolve, 1_000)),
+    ])
+    expect(stopped).toBe(true)
+  })
+
+  test('no new swap work starts before the device claims are read, then it does', async () => {
+    const { journal } = await acceptedNegotiation('A')
+    const log: string[] = []
+    const chain: any = {
+      now: E + 60,
+      lockOperation: undefined,
+      xec: { tipMedianTime: E, outputs: [] },
+      evm: {
+        latest: null,
+        final: null,
+        blockTimestamp: E + 60,
+        owedWei: 0n,
+        mainBalanceWei: 10n ** 18n,
+        callCostWei: 1n,
+      },
+    }
+    let firstRead!: () => void
+    const activeDeviceKnown = new Promise<void>(resolve => {
+      firstRead = resolve
+    })
+    load(
+      'A',
+      journal,
+      new MemoryHtlcSwapRecordStore(),
+      chain,
+      log,
+      {},
+      {
+        activeDeviceKnown,
+      },
+    )
+    await settle()
+    expect(log).toEqual([])
+    expect(swapExecutionState.activeDevice).toBe(false)
+    firstRead()
+    await settle()
+    expect(log).toEqual(['fund'])
+  })
+
+  test('an inactive device still re-submits its own exposed XEC lock', async () => {
+    const { journal } = await acceptedNegotiation('A')
+    const log: string[] = []
+    const chain: any = {
+      now: E + 60,
+      lockOperation: 'exposed',
+      xec: { tipMedianTime: E, outputs: [] },
+      evm: {
+        latest: null,
+        final: null,
+        blockTimestamp: E + 60,
+        owedWei: 0n,
+        mainBalanceWei: 10n ** 18n,
+        callCostWei: 1n,
+      },
+    }
+    load('A', journal, new MemoryHtlcSwapRecordStore(), chain, log, {
+      isActiveDevice: () => false,
+    })
+    await settle()
+    expect(log).toEqual(['fund'])
   })
 
   test('stopping the session stops the runner and clears what the card reads', async () => {

@@ -164,6 +164,7 @@ import {
 } from "@frank/cashweb/types/messages";
 import { applyWalletSyncItem } from "../sync-dispatcher";
 import type { SwapSecretCapability } from "../swap-preimage";
+import type { TableSecretCapability } from "../table-preimage";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import {
@@ -735,6 +736,27 @@ export function htlcMainAccountOf(
   if (!internals.material || !internals.typed || internals.closed)
     return undefined;
   return internals.material.mainAccount.address.toLowerCase();
+}
+/**
+ * The live typed wallet's table-secret capability: the HTLC preimage of a game table this
+ * account arbitrates (`frank/table-htlc-preimage/v1`, `../table-preimage`), derived on each call
+ * and never stored. It hands out preimages only, never the root; it refuses once the wallet is
+ * closed. `undefined` for a wallet with no typed messaging root.
+ */
+export function tableSecretCapabilityOf(
+  wallet: NativeWalletHandle | WalletHandle
+): TableSecretCapability | undefined {
+  const internals = evmWalletInternals(wallet);
+  if (!internals.material?.canonicalRoles || !internals.typed || internals.closed)
+    return undefined;
+  return Object.freeze({
+    tablePreimage(input: { game: string; tableId: Uint8Array }) {
+      const live = evmWalletInternals(wallet);
+      if (live.closed || !live.material?.canonicalRoles)
+        throw new Error("Table secrets require live typed wallet custody");
+      return live.material.canonicalRoles.tablePreimage(input);
+    },
+  });
 }
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: EvmChainWalletHandle) {

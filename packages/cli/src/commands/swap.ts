@@ -22,7 +22,8 @@ import {
   planSwap,
   type SwapChainReader,
 } from "@frank/wallet/swap/evm-swap";
-import { findToken, minimumOutput } from "@frank/wallet/swap/uniswap-v4";
+import { findToken } from "@frank/wallet/swap/uniswap-v4";
+import { minimumOutput } from "@frank/wallet/swap/evm-swap-call";
 
 import { outputError, outputResult } from "../util";
 
@@ -70,6 +71,11 @@ export const swapNetwork = {
         `No swap is available on ${chainIdentifier}. Available: ${listEvmDexDeploymentChains().join(
           ", "
         )}`
+      );
+    // These commands speak Uniswap v4 only; another exchange is refused, not quoted as one.
+    if (deployment.adapter !== "uniswap-v4")
+      throw new Error(
+        `${deployment.displayName} (${chainIdentifier}) is not supported by this command; quote it in the app`
       );
     const url = options.rpcUrl ?? process.env.FRANK_SWAP_RPC_URL;
     if (!url)

@@ -23,7 +23,7 @@ import {
   formatUnits,
   parseUnits,
 } from 'ethers'
-import { getEvmDexDeployment } from '../chain/dex-deployments'
+import { getUniswapV4Deployment } from '../chain/dex-deployments'
 import { PROTOCOL_CHAINS } from '../chain/chains-registry'
 import { EvmLegacyConsolidator } from '../chain/evm-legacy-consolidator'
 import { NativeEvmTransactionBuilder } from '../chain/evm-transaction-builder'
@@ -44,7 +44,7 @@ async function main(): Promise<void> {
     throw new Error(
       'Usage: SWAP_LIVECHECK_ACCOUNT_JSON=… tsx swap-real.livecheck.ts <FROM> <TO> <amount> [slippageBps]',
     )
-  const configured = getEvmDexDeployment(chainIdentifier)
+  const configured = getUniswapV4Deployment(chainIdentifier)
   if (!configured) throw new Error(`No swap deployment for ${chainIdentifier}`)
   // To exercise the interface-fee action for real before any venue is configured with one:
   // SWAP_LIVECHECK_FEE_BPS and SWAP_LIVECHECK_FEE_RECIPIENT (an address you control).

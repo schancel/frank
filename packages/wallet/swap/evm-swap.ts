@@ -14,7 +14,6 @@ import {
   encodeSwap,
   erc20Interface,
   interfaceFeeAmount,
-  minimumOutput,
   outputAtMidPrice,
   permit2Interface,
   poolId,
@@ -23,10 +22,10 @@ import {
   stateViewInterface,
   type AllowanceState,
   type ApprovalStep,
-  type EncodedCall,
   type PoolRoute,
   type SwapRevertReason,
 } from './uniswap-v4'
+import { minimumOutput, type EncodedCall } from './evm-swap-call'
 
 /** The node calls a swap makes. An ethers `Provider` satisfies it. */
 export interface SwapChainReader {

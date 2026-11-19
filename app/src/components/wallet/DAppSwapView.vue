@@ -66,7 +66,7 @@ import SolanaSwapPanel from './SolanaSwapPanel.vue'
 
 // Which panel serves which adapter. A new exchange protocol adds its panel here.
 const PANELS: SwapPanels = {
-  evm: { 'uniswap-v4': EvmSwapPanel },
+  evm: { 'uniswap-v4': EvmSwapPanel, 'hyperswap-v2': EvmSwapPanel },
   solana: SolanaSwapPanel,
 }
 

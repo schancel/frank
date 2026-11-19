@@ -22,7 +22,7 @@ import { join } from 'path'
 import { formatUnits, parseUnits } from 'ethers'
 import type { DomainPurpose, DomainRoot } from '../../domain-roots/src'
 import type { MonadRootBundle } from '../chain/active-chain'
-import { getEvmDexDeployment } from '../chain/dex-deployments'
+import { getUniswapV4Deployment } from '../chain/dex-deployments'
 import { loadMonadChainConfigFromEnv } from '../chain/evm-chain'
 import { createRelayPricedEvmChain } from '../chain/evm-host'
 import { registerMonadIdentity } from '../evm-identity'
@@ -77,7 +77,7 @@ async function main(): Promise<void> {
     )
   const [fromSymbol, toSymbol, amount, slippage = '100'] = process.argv.slice(2)
   const chainIdentifier = 'monad-testnet'
-  const deployment = getEvmDexDeployment(chainIdentifier)!
+  const deployment = getUniswapV4Deployment(chainIdentifier)!
   // The network's facts, its spend rule among them, from the registry row the app's wallet
   // reads (`loadMonadChainConfigFromEnv`); `isTestnet` pins Monad testnet whatever the
   // environment names. Without the spend rule its transfers at consecutive nonces are mined

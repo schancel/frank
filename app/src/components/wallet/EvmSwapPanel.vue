@@ -490,7 +490,10 @@ import {
   type SwapProgress,
   type SwapResult,
 } from '@frank/wallet/swap/swap-execution'
-import { minimumOutput, MAX_SLIPPAGE_BPS } from '@frank/wallet/swap/uniswap-v4'
+import {
+  minimumOutput,
+  MAX_SLIPPAGE_BPS,
+} from '@frank/wallet/swap/evm-swap-call'
 import {
   EvmSwapUnavailableError,
   openEvmSwapSession,

@@ -32,7 +32,7 @@ import { join } from 'path'
 import { formatUnits, parseUnits } from 'ethers'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import type { MonadRootBundle } from '@frank/wallet/chain/active-chain'
-import { getEvmDexDeployment } from '@frank/wallet/chain/dex-deployments'
+import { getUniswapV4Deployment } from '@frank/wallet/chain/dex-deployments'
 import { swapRecordId } from '@frank/wallet/swap-record-id'
 import { installMessageItemRegistry } from '@frank/wallet/chain/canonical-dm'
 import {
@@ -143,7 +143,7 @@ async function openWallet(relayBaseUrl: string, dir: string, state: string) {
       pluginCapabilitiesNotYetAvailable,
     ),
   )
-  const dex = new UniswapV4Dex(CHAIN, getEvmDexDeployment(CHAIN)!, {
+  const dex = new UniswapV4Dex(CHAIN, getUniswapV4Deployment(CHAIN)!, {
     reader: wallet.evmReader!,
     sendContractCall: params => wallet.sendContractCall!(params),
     getContractCallFunds: () => wallet.getContractCallFunds!(),
@@ -181,7 +181,7 @@ async function main(): Promise<void> {
   // SWAP_LIVECHECK_RUN names an earlier run to continue (its swap is already on chain).
   const run = process.env.SWAP_LIVECHECK_RUN ?? `run-${Date.now()}`
   console.log(`run ${run}`)
-  const deployment = getEvmDexDeployment(CHAIN)!
+  const deployment = getUniswapV4Deployment(CHAIN)!
 
   const first = await openWallet(relayBaseUrl, dir, `${run}-a`)
   let txHash: string | undefined

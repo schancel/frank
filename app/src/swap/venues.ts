@@ -33,7 +33,7 @@ function evmVenues(
         id: venue.id,
         label: venue.displayName,
         // The contracts are the protocol's; say so when someone else runs this deployment.
-        ...(venue.officialUniswapDeployment
+        ...(venue.adapter !== 'uniswap-v4' || venue.officialUniswapDeployment
           ? {}
           : {
               note: {

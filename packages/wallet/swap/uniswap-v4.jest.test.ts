@@ -26,7 +26,6 @@ import {
   encodeSwap,
   findToken,
   interfaceFeeAmount,
-  minimumOutput,
   outputAtMidPrice,
   PERMIT2_ALLOWANCE_SECONDS,
   permit2Interface,
@@ -36,6 +35,7 @@ import {
   routesFor,
   universalRouterInterface,
 } from './uniswap-v4'
+import { minimumOutput } from './evm-swap-call'
 import {
   callRevert,
   cannedNode,
@@ -53,7 +53,10 @@ const account = vectors.account
 
 describe('swap deployments', () => {
   it('are keyed by canonical EVM testnet identifiers and name no default', () => {
-    expect(listEvmDexDeploymentChains()).toEqual(['monad-testnet'])
+    expect(listEvmDexDeploymentChains()).toEqual([
+      'monad-testnet',
+      'hyperliquid-testnet',
+    ])
     for (const id of listEvmDexDeploymentChains()) {
       expect(PROTOCOL_CHAINS[id]).toMatchObject({
         family: 'evm',
@@ -592,9 +595,10 @@ describe('venues', () => {
 
   it('is the dex list of the network’s registry row, and of no other row', () => {
     expect(PROTOCOL_CHAINS['monad-testnet']!.dex).toEqual(MONAD_TESTNET_DEX)
-    // No other EVM row lists one; a Solana row lists its own family's entries, never these.
+    // No other EVM row lists one but Hyperliquid testnet's own (HyperSwap V2, its own test); a
+    // Solana row lists its own family's entries, never these.
     for (const [id, entry] of Object.entries(PROTOCOL_CHAINS)) {
-      if (id === 'monad-testnet') continue
+      if (id === 'monad-testnet' || id === 'hyperliquid-testnet') continue
       if (entry.family === 'evm') expect(entry.dex).toBeUndefined()
       expect(listEvmSwapVenues(id)).toEqual([])
     }
@@ -615,7 +619,7 @@ describe('venues', () => {
       const config = require('../chain/dex-deployments')
       expect(config.listEvmSwapVenues('monad-testnet')).toEqual([])
       expect(config.getEvmDexDeployment('monad-testnet')).toBeUndefined()
-      expect(config.listEvmDexDeploymentChains()).toEqual([])
+      expect(config.listEvmDexDeploymentChains()).not.toContain('monad-testnet')
     })
     jest.dontMock('../chain/dex-entries')
   })

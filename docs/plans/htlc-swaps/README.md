@@ -191,7 +191,8 @@ app/src/swap/live-swap-execution.ts (+tests, SwapExecutionDisabledError, localSt
   - `packages/docs/protocol/in-chat-swaps.md`: a note that `swap-handshake-v1` is not the swap that runs and is deleted in PR 9.
 - No other doc described the old escrow or live-swap-execution flow (grep for `live-swap-execution`, `swap-execution-runtime`, `useSwapEscrow`, `Lock button`, escrow).
 - Testnet evidence: GenericHTLC v2's deployment and live `htlc-round` (#2070) only. The app's testnet happy path with tXEC is pending owner QA.
-- Open issues named in the docs: #2087 (a withdraw stuck in the mempool past its cutoff can leak the secret while A refunds) and #2084 (a second device cannot fund from the first device's eCash change).
+- Issues named in the docs: #2087 (open: a withdraw stuck in the mempool past its cutoff can leak the secret while A refunds) and #2084 (fixed by #2090: a second device could not fund from the first device's eCash change).
+- Review fixes: the docs say that recovery depends on Frank running in time (B must claim before T_A or loses the MON), that A's runner keeping B's output after T_A is honest-runner behaviour and not chain-enforced, that only A gets the gas warning, when `claimOwed` runs, that the pre-act cutoff re-check uses the device clock only, and that identical offer facts give the same swapId (the first swap is shown again; no second swap and no secret reuse across swaps). The spec section gained a short glossary.
 
 ## Follow-ups
 - Table escrow (owner design 2026-11-18), as landed on the poker and liars-dice bots (registered in the demo stack: `targets/all-bots.ts`, `bot-directory.ts`, `demo/demo-config.ts`; not smoke-checked):

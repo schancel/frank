@@ -1237,6 +1237,37 @@ describe("FrankBotHost Reliability Features", () => {
       expect("fundAhead" in (host as any).chain.directMessages).toBe(false);
     });
 
+    it("a retry that does not answer never holds the mailbox: polls read and go on, and it is not started again beside itself", async () => {
+      let answer!: (value: Record<string, string>) => void;
+      const reconcileAttempts = jest.fn(
+        () =>
+          new Promise<Record<string, string>>((resolve) => {
+            answer = resolve;
+          })
+      );
+      const { host, instance } = await registered("slow", reconcileAttempts);
+      let fetches = 0;
+      mockDirectMessagesFetchSince.mockImplementation(async () => {
+        fetches++;
+        return [];
+      });
+      // The tick's pass (`pollDueBots`), which never waits for the wallet's questions.
+      const tick = () => (host as any).pollBot("whole-wallet-bot", instance) as Promise<void>;
+      await tick();
+      await tick();
+      expect(fetches).toBe(2);
+      expect(reconcileAttempts).toHaveBeenCalledTimes(1);
+      expect(instance.walletQuestions).toBeDefined();
+      answer({});
+      await instance.walletQuestions;
+      expect(instance.walletQuestions).toBeUndefined();
+      await tick();
+      expect(fetches).toBe(3);
+      expect(reconcileAttempts).toHaveBeenCalledTimes(2);
+      answer({});
+      await instance.walletQuestions;
+    });
+
     it("pin: a row that points at a reply is the one question of its poll", async () => {
       const reconcileAttempts = jest.fn(async () => ({}));
       const { host, instance } = await registered("linked", reconcileAttempts);

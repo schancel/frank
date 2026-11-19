@@ -5,14 +5,25 @@ import {
   bool,
   cborItemCodec,
   evmAddress,
+  hash32,
+  int,
   listOf,
   oneOf,
   opt,
+  recordOf,
   req,
   str,
   struct,
 } from '@frank/cashweb/message-items/cbor-fields'
-import { card, cardOrHidden, chips, id, players } from '../shared/limits'
+import {
+  MAX_PLAYERS,
+  card,
+  cardOrHidden,
+  chips,
+  id,
+  players,
+  secret,
+} from '../shared/limits'
 import {
   tableBuyInLock,
   tableEscrowTerms,
@@ -88,5 +99,13 @@ export const pokerCodec = withBuyInLockRule<PokerItem>(
   stealthAddress: opt(18, evmAddress),
   escrow: opt(19, tableEscrowTerms),
   buyInLock: opt(20, tableBuyInLock),
+  // The dealer's commit-reveal fairness proof: what `foldPokerState` and `verifyPokerReveal` check.
+  serverCommit: opt(21, hash32),
+  serverSeed: opt(22, secret),
+  playerCommits: opt(23, recordOf(evmAddress, hash32, MAX_PLAYERS)),
+  playerSeeds: opt(24, recordOf(evmAddress, secret, MAX_PLAYERS)),
+  holeCardCommits: opt(25, recordOf(evmAddress, hash32, MAX_PLAYERS)),
+  holeCardSalts: opt(26, recordOf(evmAddress, secret, MAX_PLAYERS)),
+  handNumber: opt(27, int(0, 1_000_000)),
   }),
 )

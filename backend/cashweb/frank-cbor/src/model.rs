@@ -27,6 +27,29 @@ pub enum ForumEntry {
         /// Original compatible extension fields.
         unknown: Vec<(u64, CborValue)>,
     },
+    /// Known kind 2: a game table announcement (docs/protocol/cbor/topic.cddl#forum-game-entry).
+    Game {
+        /// Game type, 1..64 bytes (e.g. `poker`, `liars-dice`).
+        game_type: String,
+        /// Table identifier, 1..128 bytes.
+        table_id: String,
+        /// Host address text, 1..128 bytes.
+        host_address: String,
+        /// Optional buy-in text, 0..64 bytes.
+        buy_in_amount: Option<String>,
+        /// Optional seated players, at most 1000.
+        current_players: Option<u64>,
+        /// Optional table capacity, at most 1000.
+        max_players: Option<u64>,
+        /// Optional bot address text, 0..128 bytes.
+        bot_address: Option<String>,
+        /// Optional title, 0..512 bytes.
+        title: Option<String>,
+        /// Optional message or rules text.
+        message: Option<String>,
+        /// Original compatible extension fields.
+        unknown: Vec<(u64, CborValue)>,
+    },
     /// Never interpret fields as text or URLs. Display only `Unsupported content`.
     Unsupported {
         /// Unrecognized numeric entry kind.

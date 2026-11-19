@@ -6,10 +6,14 @@ import { testBlob } from '../../../wallet/message-item-plugins/blob/blob.testuti
  */
 import type { BotContext, BotMessageContext } from "@frank/bot-framework";
 import type {
+  LiarsDiceItem,
   MessageItem,
+  PokerItem,
   RpsItem,
   SatoshiDiceItem,
 } from "@frank/cashweb/types/messages";
+import { commitSeed as commitPokerSeed } from "@frank/wallet/message-item-plugins/poker";
+import { commitSeed as commitDiceSeed } from "@frank/wallet/message-item-plugins/liars-dice";
 import { MessageItemNotCarriedError } from "@frank/wallet/message-item-plugins/wire";
 
 import { harness as botHarness } from "./bot-harness.testutil";
@@ -18,6 +22,9 @@ import { RaffleBot } from "./raffle-bot";
 import { RpsBot } from "./rps-bot";
 import { SatoshiDiceBot } from "./satoshi-dice-bot";
 import { VendorBot } from "./vendor-bot";
+import { PokerBot } from "./poker-bot";
+import { LiarsDiceBot } from "./liars-dice-bot";
+import { seatingEscrowBook } from "./table-escrow-book.testutil";
 
 const ALICE = "0x" + "a1".repeat(20);
 const BOB = "0x" + "b2".repeat(20);
@@ -26,14 +33,16 @@ const BOT = "0x" + "dd".repeat(20);
 
 /** A bot's table: `say` delivers one message from a player, with the payments it came with, and
  * `sent` is every message the bot sent, in order. */
-function harness() {
+function harness(options: { hostStampedReplies?: boolean } = {}) {
   const h = botHarness();
   const sent: MessageItem[][] = [];
   const sync = () => {
     sent.length = 0;
     sent.push(...h.sent.map((message) => message.items));
-    // No bot leaves a message of its own to the host's paid stamp.
-    expect(h.sent.filter((message) => message.hostStamp)).toEqual([]);
+    // No bot leaves a message of its own to the host's paid stamp. The table bots (poker, liar's
+    // dice) answer through `msgCtx.reply`, which the host stamps; their tests are about items.
+    if (!options.hostStampedReplies)
+      expect(h.sent.filter((message) => message.hostStamp)).toEqual([]);
   };
   const say = async (
     bot: { onMessage(m: BotMessageContext, c: BotContext): Promise<void> },
@@ -179,6 +188,68 @@ describe("game bot replies cross the canonical wire", () => {
     await say(bot, ALICE, { ...buy, itemId: "missing" }, priceWei);
     expectCarried(sent, "digital-goods", ["catalog", "fulfill", "error"]);
     expect(sent.flat().some((i) => i.type === "blob")).toBe(true);
+  });
+
+  it("poker: create, status, seeds, joins, a hand played to showdown and its settlement", async () => {
+    const bot = new PokerBot({ escrows: seatingEscrowBook("poker").book });
+    const { sent, say } = harness({ hostStampedReplies: true });
+    const last = () =>
+      sent[sent.length - 1].find((i) => i.type === "poker") as PokerItem | undefined;
+    await say(bot, ALICE, "/poker create");
+    await say(bot, BOB, "/poker status");
+    await say(bot, ALICE, "/poker join");
+    await say(bot, BOB, "/poker join");
+    const seeds = { [ALICE]: "a5".repeat(32), [BOB]: "b5".repeat(32) };
+    for (const [player, seed] of Object.entries(seeds))
+      await say(bot, player, `/poker commit ${commitPokerSeed(seed)}`);
+    for (const [player, seed] of Object.entries(seeds))
+      await say(bot, player, `/poker seed ${seed}`);
+    await say(bot, ALICE, "/poker start");
+    expect(last()?.serverCommit).toBeDefined();
+    expect(last()?.holeCardCommits).toBeDefined();
+    // Check, or call when there is a bet to match, until the hand is settled.
+    for (let turn = 0; turn < 20 && last()?.street !== "settled"; turn++) {
+      const active = last()!.activePlayer!;
+      await say(bot, active, "/check");
+      if (!last()) await say(bot, active, "/call");
+    }
+    expect(last()?.street).toBe("settled");
+    // Revealed at settlement: what the app's fold verifies.
+    expect(last()?.serverSeed).toBeDefined();
+    expect(last()?.playerSeeds).toBeDefined();
+    expect(last()?.holeCardSalts).toBeDefined();
+    await say(bot, ALICE, "/poker status");
+    expectCarried(sent, "poker", ["create", "action", "settle"]);
+  });
+
+  it("liar's dice: create, status, seeds, joins, rounds of bids and challenges to a winner", async () => {
+    const bot = new LiarsDiceBot({ escrows: seatingEscrowBook("liars-dice").book });
+    const { sent, say } = harness({ hostStampedReplies: true });
+    const last = () =>
+      sent[sent.length - 1].find((i) => i.type === "liars-dice") as LiarsDiceItem | undefined;
+    await say(bot, ALICE, "/status");
+    await say(bot, ALICE, "/table create 0.05");
+    await say(bot, BOB, "/status");
+    await say(bot, ALICE, "/table join");
+    await say(bot, BOB, "/table join");
+    let winner: string | undefined;
+    for (let round = 0; round < 20 && !winner; round++) {
+      await say(bot, ALICE, "/start");
+      // Each seated player commits to and reveals a seed: the cups are then dealt and committed.
+      for (const player of last()?.players ?? []) {
+        const seed = (player === ALICE ? "a5" : "b5").repeat(31) + round.toString(16).padStart(2, "0");
+        await say(bot, player, `/commit ${commitDiceSeed(seed)}`);
+        await say(bot, player, `/seed ${seed}`);
+      }
+      await say(bot, ALICE, "/status");
+      const bidder = last()!.activePlayer!;
+      await say(bot, bidder, "/bid 1 2");
+      await say(bot, last()!.activePlayer!, "/liar");
+      winner = last()?.winnerAddress;
+    }
+    expect(winner).toBeDefined();
+    expect(sent.flat().some((i) => i.type === "liars-dice" && i.cupCommits && Object.keys(i.cupCommits).length > 0)).toBe(true);
+    expectCarried(sent, "liars-dice", ["create", "join", "round_start", "bid", "showdown"]);
   });
 
   it("a swap offer as the app's dialog builds it is not carried: refused before any payment", () => {

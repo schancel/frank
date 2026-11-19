@@ -4,6 +4,7 @@ import {
   encodeFrame,
   encodeCanonical,
   decodeCanonical,
+  encodeForumPostContent,
   fromHex,
   toHex,
   Encodable,
@@ -11,6 +12,8 @@ import {
 } from '../src'
 import {
   FORUM_AGGREGATE,
+  FORUM_CONTENT,
+  FORUM_GAME_ENTRY,
   FORUM_DISCOVERY_PAGE,
   FORUM_SINGLE_VIEW,
   FORUM_TOPIC_PAGE,
@@ -278,6 +281,50 @@ export function buildForumCorpus() {
     ),
   )
   add('nested-network-grammar', TYPE_FORUM_VIEW, view, false, 'schema@8.2')
+  // Kind 2, a game table announcement, as the game bots write it (`encodeForumPostContent`).
+  const authored = { seconds: 1_760_000_000n, nanoseconds: 0 }
+  const game = {
+    kind: 'game' as const,
+    gameType: 'liars-dice',
+    tableId: 'a1'.repeat(16),
+    hostAddress: '0x' + 'a1'.repeat(20),
+    buyInAmount: '0.05 MON',
+    currentPlayers: 0,
+    maxPlayers: 4,
+    botAddress: '0x' + 'b0'.repeat(20),
+    title: "🎮 [Liar's Dice] Table (0/4 players)",
+    message: '🎮 **Liar\'s Dice Table Created!**',
+  }
+  add('game-entry', TYPE_TOPIC_POST, contentPayload(decodeCanonical(
+    encodeForumPostContent(authored, [game]),
+  ) as FrankValue), true)
+  add('game-and-post-entries', TYPE_TOPIC_POST, contentPayload(decodeCanonical(
+    encodeForumPostContent(authored, [
+      { kind: 'game', gameType: 'poker', tableId: 't', hostAddress: 'h' },
+      { title: 'post' },
+    ]),
+  ) as FrankValue), true)
+  const gameContent = (edit: (entry: Map<bigint, FrankValue>) => void) => {
+    const content = decodeCanonical(
+      encodeForumPostContent(authored, [game]),
+    ) as Map<bigint, FrankValue>
+    const entries = content.get(BigInt(FORUM_CONTENT.entries)) as Map<bigint, FrankValue>[]
+    edit(entries[0])
+    return contentPayload(content)
+  }
+  add('game-entry-missing-table', TYPE_TOPIC_POST, gameContent(e => {
+    e.delete(BigInt(FORUM_GAME_ENTRY.tableId))
+  }), false, 'schema@8.2')
+  add('game-entry-long-game-type', TYPE_TOPIC_POST, gameContent(e => {
+    e.set(BigInt(FORUM_GAME_ENTRY.gameType), 'g'.repeat(65))
+  }), false, 'schema@8.2')
+  add('game-entry-too-many-players', TYPE_TOPIC_POST, gameContent(e => {
+    e.set(BigInt(FORUM_GAME_ENTRY.maxPlayers), 1001n)
+  }), false, 'schema@8.2')
+  add('game-entry-unknown-key-current', TYPE_TOPIC_POST, gameContent(e => {
+    // raw-cbor-key: key 10 is undeclared in the schema-2 game entry
+    e.set(10n, 'extra')
+  }), false, 'schema@8.2')
   return {
     format: 'active-forum-content-read-v1',
     chainFacts: proposal.chainFacts,

@@ -226,14 +226,7 @@ export class PokerBot implements FrankBotDefinition {
   private buildPokerItem(
     table: PokerGameState,
     recipientAddress?: string,
-  ): PokerItem & {
-    serverCommit?: string;
-    serverSeed?: string;
-    playerCommits?: Record<string, string>;
-    playerSeeds?: Record<string, string>;
-    holeCardCommits?: Record<string, string>;
-    holeCardSalts?: Record<string, string>;
-  } {
+  ): PokerItem {
     const active = table.players[table.activePlayerIndex];
     const localPlayer = recipientAddress
       ? table.players.find(p => p.address.toLowerCase() === recipientAddress.toLowerCase())
@@ -360,7 +353,17 @@ export class PokerBot implements FrankBotDefinition {
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
 
-        // Announce table to public discovery topic
+        const item = this.buildPokerItem(table, sender);
+        await msgCtx.reply([
+          {
+            type: "text",
+            text: `♠️ Poker Table **${tableId}** created! Buy-in: ${ctx.formatAmount(POKER_DEFAULT_BUY_IN_WEI)} for 1000 chips (Blinds: 10/20). Players: 0/${table.maxPlayers}. Join from the app: it locks your buy-in, then sits you down.`,
+          },
+          item,
+        ]);
+
+        // Announced on the public discovery topic after the player has the table: the post pays
+        // on chain and may be slow or fail, and the reply never waits for it.
         await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
           gameName: "Texas Hold'em Poker",
           gameType: "poker",
@@ -371,15 +374,6 @@ export class PokerBot implements FrankBotDefinition {
           maxPlayers: table.maxPlayers,
           botAddress: ctx.address,
         });
-
-        const item = this.buildPokerItem(table, sender);
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: `♠️ Poker Table **${tableId}** created! Buy-in: ${ctx.formatAmount(POKER_DEFAULT_BUY_IN_WEI)} for 1000 chips (Blinds: 10/20). Players: 0/${table.maxPlayers}. Join from the app: it locks your buy-in, then sits you down.`,
-          },
-          item,
-        ]);
         return;
       }
 

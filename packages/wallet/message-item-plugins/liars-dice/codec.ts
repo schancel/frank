@@ -91,5 +91,8 @@ export const liarsDiceCodec = withBuyInLockRule<LiarsDiceItem>(
   stealthAddress: opt(22, evmAddress),
   escrow: opt(23, tableEscrowTerms),
   buyInLock: opt(24, tableBuyInLock),
+  // Each cup's commitment and, once revealed, its salt: what `verifyLiarsDiceReveal` checks.
+  cupCommits: opt(25, recordOf(evmAddress, hash32, MAX_PLAYERS)),
+  cupSalts: opt(26, recordOf(evmAddress, secret, MAX_PLAYERS)),
   }),
 )

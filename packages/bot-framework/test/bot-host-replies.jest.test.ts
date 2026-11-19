@@ -607,6 +607,8 @@ describe("FrankBotHost replies", () => {
       const wrongTo = inbound("b", { stampValueWei: STAMP });
       onChain.get(wrongTo.stampPayments[1].txHash)!.to = "0x" + "00".repeat(20);
       await poll(host, [wrongValue]);
+      // The same conversation: its next message is taken once the reply before it is out.
+      await drain(instance);
       await poll(host, [wrongTo]);
       await drain(instance);
       expect(stampsSent()).toEqual([STAMP / 2n + 1n, STAMP / 2n]);

@@ -220,10 +220,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
     game: LiarsDiceGameState,
     action: LiarsDiceItem["action"],
     recipientAddress?: string,
-  ): LiarsDiceItem & {
-    cupCommits?: Record<string, string>;
-    cupSalts?: Record<string, string>;
-  } {
+  ): LiarsDiceItem {
     const active = getActivePlayer(game);
     const isRevealed = game.status === "showdown" || game.status === "resolved";
     const revealedCups: Record<string, number[]> = {};
@@ -369,7 +366,17 @@ export class LiarsDiceBot implements FrankBotDefinition {
         this.conversationTables.set(conversationId, tableId);
         this.latestTableId = tableId;
 
-        // Announce table to public discovery topic
+        const item = this.buildLiarsDiceItem(game, "create", sender);
+        await msgCtx.reply([
+          {
+            type: "text",
+            text: `🎲 Table **${tableId}** created! Buy-in: ${ctx.formatAmount(buyInWei)}. Joined: 0/${game.maxPlayers}. Join from the app: it locks your buy-in, then sits you down.`,
+          },
+          item,
+        ]);
+
+        // Announced on the public discovery topic after the player has the table: the post pays
+        // on chain and may be slow or fail, and the reply never waits for it.
         await this.announceTableToTopic(ctx, DEFAULT_GAMES_TOPIC, {
           gameName: "Liar's Dice",
           gameType: "liars-dice",
@@ -380,15 +387,6 @@ export class LiarsDiceBot implements FrankBotDefinition {
           maxPlayers: game.maxPlayers,
           botAddress: ctx.address,
         });
-
-        const item = this.buildLiarsDiceItem(game, "create", sender);
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: `🎲 Table **${tableId}** created! Buy-in: ${ctx.formatAmount(buyInWei)}. Joined: 0/${game.maxPlayers}. Join from the app: it locks your buy-in, then sits you down.`,
-          },
-          item,
-        ]);
         return;
       }
 

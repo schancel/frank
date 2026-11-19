@@ -47,7 +47,7 @@ jest.mock("@frank/wallet/chain/evm-chain", () => ({
     chainIdentifier: "monad-testnet",
     directMessages: { reconcileAttempts: jest.fn().mockResolvedValue({}) },
     nativeTransfers: {},
-    topics: {},
+    topics: { reconcileOperations: async () => undefined },
     createWallet: jest.fn(async (roots: MonadRootBundle) => {
       const { MonadIdentity } = jest.requireActual(
         "@frank/wallet/evm-identity"

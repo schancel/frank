@@ -27,6 +27,8 @@ jest.mock("@frank/wallet/chain/evm-chain", () => {
       },
       topics: {
         post: jest.fn(),
+        // A wallet with no kept forum operations: reconciling them has nothing to do.
+        reconcileOperations: async () => undefined,
       },
       createWallet: jest
         .fn()

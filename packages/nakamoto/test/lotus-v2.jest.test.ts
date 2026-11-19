@@ -789,6 +789,50 @@ describe('Lotus v2 strict parse rejections', () => {
     )
   })
 
+  test('C16a MoneyRange: spendable native outputs at most 2^62 atoms; token amounts full u64', () => {
+    expect(LOTUS_V2_MAX_MONEY).toBe(2n ** 62n)
+    const native = (value: bigint): LotusV2Output => ({
+      value,
+      branches: [root],
+      paths: [[0]],
+    })
+    const wire = encodeLotusV2Output(native(LOTUS_V2_MAX_MONEY))
+    expect(decodeLotusV2Output(wire).value).toBe(LOTUS_V2_MAX_MONEY)
+    expect(() => encodeLotusV2Output(native(LOTUS_V2_MAX_MONEY + 1n))).toThrow(
+      new LotusV2FormatError('native output value'),
+    )
+    // The same bytes with value 2^62 + 1 (u64 little-endian at offset 1).
+    const over = Uint8Array.from(wire)
+    over[1] = 1
+    expect(() => decodeLotusV2Output(over)).toThrow(
+      new LotusV2FormatError('native output value'),
+    )
+    // And inside a transaction.
+    const tx = mutate(b => {
+      b[OUTPUT + 1] = 1
+      b.set([0, 0, 0, 0, 0, 0, 0x40], OUTPUT + 2)
+    })
+    expect(() => decodeLotusV2Transaction(chain, tx)).toThrow(
+      new LotusV2FormatError('native output value'),
+    )
+    // Token amounts are not native: above 2^63 is valid.
+    const token: LotusV2Output = {
+      ...native(2n ** 64n - 1n),
+      tokenId: new Uint8Array(32).fill(3),
+    }
+    expect(decodeLotusV2Output(encodeLotusV2Output(token)).value).toBe(
+      2n ** 64n - 1n,
+    )
+    expect(
+      decodeLotusV2Output(
+        encodeLotusV2Output({ ...token, value: 2n ** 63n + 1n }),
+      ).value,
+    ).toBe(2n ** 63n + 1n)
+    expect(() => encodeLotusV2Output({ ...token, value: 2n ** 64n })).toThrow(
+      new LotusV2FormatError('output value'),
+    )
+  })
+
   test('output flag rules: state with burn, a zero state root, the legacy 0x80 entry', () => {
     expect(() =>
       encodeLotusV2Output({

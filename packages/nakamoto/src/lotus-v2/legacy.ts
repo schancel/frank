@@ -22,14 +22,13 @@ import { lengthPrefixed, lotusV2TaggedHash } from './hash.js'
 import {
   decodeLotusV2Output,
   encodeLotusV2Output,
+  LOTUS_V2_MAX_MONEY,
   type LotusV2BranchWitness,
   LotusV2FormatError,
   type LotusV2Input,
   type LotusV2Output,
 } from './transaction.js'
 
-/** C16a `MAX_MONEY` (recommended, awaiting owner sign-off): `MoneyRange(v)` is `0 <= v <= 2^62`. */
-export const LOTUS_V2_MAX_MONEY = 1n << 62n
 /** P01: a legacy scriptPubKey is at most 10,000 bytes. */
 export const LOTUS_V2_MAX_LEGACY_SCRIPT_BYTES = 10_000
 

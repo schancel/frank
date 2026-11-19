@@ -141,7 +141,8 @@ not the spec"):
    Implemented as above; all nine `v2_legacy_bridge.json` messages and the worked example's
    coin wire, bridge leaf, CoinLeaf, OwnInputHash and TxID are nakamoto test vectors. The node's
    `DecodeCoinOutput` does not check `MoneyRange` on a legacy coin's value (import does, in
-   `legacy_coin.h`); nakamoto follows P01 and checks it in the codec.
+   `legacy_coin.h`); nakamoto follows P01 and checks it in the codec. lotusd is adding the check
+   (ruling 10).
 5. Address decode order. **Ruling:** prefix, length, alphabet, checksum, version, padding, with
    the spec's reason strings; "wrong network" is a caller-side check after a successful decode
    against the string's own prefix, and a corrupted string with a known prefix is `bad checksum`.
@@ -163,9 +164,17 @@ Second batch of rulings (lotus-86 spec update, relayed by the coordinator, 2026-
    an invalid signature (fixes pending). Nakamoto implements the spec; tests cover every case.
 9. Token output amounts take the full u64 range; the node rejects amounts above `INT64_MAX`
    (bug). Nakamoto's codec accepts the full range. No regtest case relies on it, since it would
-   fail on the current node. The native `MoneyRange` limit for spendable outputs (C16a, `2^62`,
-   "awaiting owner sign-off") is a validation rule nakamoto does not apply to V2 outputs yet;
-   it applies only where P01 states it in the codec (a legacy coin's value).
+   fail on the current node.
+10. C16a `MAX_MONEY` (lotus-86, 2026-11-19). **Ruling:** apply `MAX_MONEY = 2^62` atoms to
+    native output values now. The number is "recommended, awaiting owner sign-off" and may
+    change; the structure will not, and the node enforces a native money range. Nakamoto defines
+    it once, `LOTUS_V2_MAX_MONEY` in `src/lotus-v2/transaction.ts`, and the output codec rejects a
+    spendable native output above it (`native output value`) on encode and parse; the legacy
+    coin codec uses the same constant. Token amounts keep the full u64 range. Burn outputs are
+    not bounded: C16a names spendable native outputs, and a burn output is unspendable (to
+    confirm with lotus-86 if the node bounds them too). lotusd is adding `MoneyRange` to
+    `DecodeCoinOutput`/`ValidLegacyCoin`, so the node will match P01 and nakamoto on legacy coin
+    values.
 
 Review follow-ups (independent review, 2026-11-19): an address checksum constant is checked
 against `addresses.md`'s prefix table (a descriptor that disagrees throws instead of silently

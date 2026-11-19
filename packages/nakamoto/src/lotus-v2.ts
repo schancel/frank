@@ -45,6 +45,7 @@ export {
   LOTUS_V2_MAX_OUTPUTS,
   LOTUS_V2_MAX_OUTPUT_BRANCHES,
   LOTUS_V2_MAX_OUTPUT_PATHS,
+  LOTUS_V2_MAX_MONEY,
   LOTUS_V2_NO_LOCK,
   LOTUS_V2_SEQUENCE_FINAL,
   LotusV2FormatError,
@@ -79,7 +80,6 @@ export {
 } from './lotus-v2/sign.js'
 export {
   LOTUS_V2_MAX_LEGACY_SCRIPT_BYTES,
-  LOTUS_V2_MAX_MONEY,
   decodeLotusV2CoinOutput,
   encodeLotusV2CoinOutput,
   isLotusV2LegacyCoin,

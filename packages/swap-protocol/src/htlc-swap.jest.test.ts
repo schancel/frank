@@ -344,7 +344,20 @@ describe('swap record v1', () => {
       ...base,
       fundingAuthorizedAt: 5,
       xecLockOperationId: `swap:${'11'.repeat(32)}:xec-lock`,
-      xecSpend: { branch: 'refund', rawTx: '0200', txid: '55'.repeat(32) },
+      xecSpends: [
+        {
+          funding: { txid: '66'.repeat(32), vout: 0 },
+          branch: 'refund',
+          rawTx: '0200',
+          txid: '55'.repeat(32),
+        },
+        {
+          funding: { txid: '66'.repeat(32), vout: 2 },
+          branch: 'refund',
+          rawTx: '0201',
+          txid: '57'.repeat(32),
+        },
+      ],
     }
     const raw = serializeHtlcSwapRecord(full)
     expect(raw).toBe(
@@ -358,9 +371,15 @@ describe('swap record v1', () => {
         32,
       )}","fundingAuthorizedAt":5,"xecLockOperationId":"swap:${'11'.repeat(
         32,
-      )}:xec-lock","xecSpend":{"branch":"refund","rawTx":"0200","txid":"${'55'.repeat(
+      )}:xec-lock","xecSpends":[{"funding":{"txid":"${'66'.repeat(
         32,
-      )}"}}`,
+      )}","vout":0},"branch":"refund","rawTx":"0200","txid":"${'55'.repeat(
+        32,
+      )}"},{"funding":{"txid":"${'66'.repeat(
+        32,
+      )}","vout":2},"branch":"refund","rawTx":"0201","txid":"${'57'.repeat(
+        32,
+      )}"}]}`,
     )
     expect(parseHtlcSwapRecord(raw)).toEqual(full)
     expect(parseHtlcSwapRecord(serializeHtlcSwapRecord(base))).toEqual(base)
@@ -386,9 +405,30 @@ describe('swap record v1', () => {
     expect(
       bad({
         ...base,
-        xecSpend: { branch: 'claim', rawTx: '00', txid: '55'.repeat(32) },
+        xecSpends: [
+          {
+            funding: FUNDING,
+            branch: 'claim',
+            rawTx: '00',
+            txid: '55'.repeat(32),
+          },
+        ],
       }),
-    ).toThrow(/xecSpend/)
+    ).toThrow(/xecSpends/)
+    // One spend per outpoint, in outpoint order.
+    const spend = (vout: number) => ({
+      funding: { txid: 'ab'.repeat(32), vout },
+      branch: 'refund',
+      rawTx: '00',
+      txid: '55'.repeat(32),
+    })
+    expect(bad({ ...base, xecSpends: [spend(1), spend(1)] })).toThrow(
+      /xecSpends order/,
+    )
+    expect(bad({ ...base, xecSpends: [spend(2), spend(1)] })).toThrow(
+      /xecSpends order/,
+    )
+    expect(bad({ ...base, xecSpends: [] })).toThrow(/xecSpends/)
     expect(
       bad({ ...base, owner: { accountIncarnation: '', localPublicKey: '02' } }),
     ).toThrow(/owner/)
@@ -536,13 +576,53 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
       'claiming/withdraw-evm',
     ],
     [
-      `withdraw reverted ${HTLC_CALL_MAX_REVERTS} times: stops`,
+      `withdraw reverted ${HTLC_CALL_MAX_REVERTS} times: the preimage is public, keeps withdrawing`,
       {
         xec: xecObs([output()]),
         evm: both('open'),
         calls: [call('withdraw', 'reverted'), call('withdraw', 'reverted')],
       },
-      'xecLocked/none',
+      'claiming/withdraw-evm',
+    ],
+    [
+      'withdraw sent before: keeps withdrawing past T_B − M_evm until T_B',
+      {
+        now: T_B - 1,
+        xec: xecObs([output()]),
+        evm: { ...both('open'), blockTimestamp: T_B - 1 },
+        calls: [call('withdraw', 'ended')],
+      },
+      'claiming/withdraw-evm',
+    ],
+    [
+      'withdraw sent before: stops at T_B',
+      {
+        now: T_B,
+        xec: xecObs([output()]),
+        evm: { ...both('open'), blockTimestamp: T_B },
+        calls: [call('withdraw', 'reverted')],
+      },
+      'awaitRefund/none',
+    ],
+    [
+      'a lagging node shows the lock open, the journal says the withdraw landed: claimed, never refunds after T_A',
+      {
+        now: T_A + 1000,
+        xec: xecObs([output()], T_A + 1000),
+        evm: { ...both('open'), blockTimestamp: T_B - 100 },
+        calls: [call('withdraw', 'landed')],
+      },
+      'claimed/none',
+    ],
+    [
+      'the journal says landed, the node shows no lock at all: claimed, never refunds',
+      {
+        now: T_A + 1000,
+        xec: xecObs([output()], T_A + 1000),
+        evm: { blockTimestamp: T_A + 1000 },
+        calls: [call('withdraw', 'landed')],
+      },
+      'claimed/none',
     ],
     [
       'withdraw landed: claimed',
@@ -581,6 +661,32 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
       },
       'claimedByPeer/withdraw-evm',
     ],
+    [
+      'B claimed: A withdraws past T_B − M_evm, until T_B',
+      {
+        now: T_B - 1,
+        xec: xecObs([
+          output({
+            spentBy: { txid: 'cd'.repeat(32), branch: 'claim', final: true },
+          }),
+        ]),
+        evm: { ...both('open'), blockTimestamp: T_B - 1 },
+      },
+      'claimedByPeer/withdraw-evm',
+    ],
+    [
+      'B claimed, T_B reached: nothing left to withdraw',
+      {
+        now: T_B,
+        xec: xecObs([
+          output({
+            spentBy: { txid: 'cd'.repeat(32), branch: 'claim', final: true },
+          }),
+        ]),
+        evm: { ...both('open'), blockTimestamp: T_B },
+      },
+      'claimedByPeer/none',
+    ],
     // Refund.
     [
       'B refunded, MTP ≤ T_A: waits',
@@ -616,7 +722,14 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
         xec: xecObs([output()], T_A + 1),
         evm: both('refunded'),
         record: {
-          xecSpend: { branch: 'refund', rawTx: '00', txid: 'ee'.repeat(32) },
+          xecSpends: [
+            {
+              funding: FUNDING,
+              branch: 'refund',
+              rawTx: '00',
+              txid: 'ee'.repeat(32),
+            },
+          ],
         },
       },
       'refunding/broadcast-xec-spend',
@@ -722,6 +835,170 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
       kind: 'sign-xec-spend',
       funding: { txid: '02'.repeat(32), vout: 1 },
     })
+  })
+})
+
+describe('call deadlines are the runner cutoffs', () => {
+  it('A withdraws with deadline T_B − M_evm, or T_B − 1 once the preimage may be public', () => {
+    expect(
+      run('A', { xec: xecObs([output()]), evm: both('open') }).action,
+    ).toEqual({ kind: 'withdraw-evm', deadline: T_B - 5 })
+    expect(
+      run('A', {
+        xec: xecObs([output()]),
+        evm: both('open'),
+        calls: [call('withdraw', 'reverted')],
+      }).action,
+    ).toEqual({ kind: 'withdraw-evm', deadline: T_B - 1 })
+  })
+  it('B locks with deadline T_B − evmLockMargin', () => {
+    expect(run('B', { xec: xecObs([output()]) }).action).toEqual({
+      kind: 'lock-evm',
+      deadline: T_B - 20,
+    })
+  })
+})
+
+describe('a double-funded XEC script: every exact output is a separate fund', () => {
+  const first = { txid: '01'.repeat(32), vout: 0 }
+  const second = { txid: '02'.repeat(32), vout: 0 }
+  const claimedBy = (txid: string) => ({
+    spentBy: { txid, branch: 'claim' as const, final: true },
+  })
+  const refundedBy = (txid: string) => ({
+    spentBy: { txid, branch: 'refund' as const, final: true },
+  })
+  const stored = (
+    funding: { txid: string; vout: number },
+    branch: 'claim' | 'refund',
+  ) => ({ funding, branch, rawTx: '00', txid: 'ee'.repeat(32) })
+  const two = (
+    a: Partial<XecHtlcOutputObservation> = {},
+    b: Partial<XecHtlcOutputObservation> = {},
+    mtp = E,
+  ) => xecObs([output({ ...first, ...a }), output({ ...second, ...b })], mtp)
+
+  it('B claims each unspent exact output, one after another', () => {
+    const withdrawn = both('withdrawn')
+    expect(run('B', { xec: two(), evm: withdrawn }).action).toMatchObject({
+      kind: 'sign-xec-spend',
+      funding: first,
+    })
+    expect(
+      run('B', {
+        xec: two(),
+        evm: withdrawn,
+        record: { xecSpends: [stored(first, 'claim')] },
+      }).action,
+    ).toMatchObject({ kind: 'sign-xec-spend', funding: second })
+    expect(
+      run('B', {
+        xec: two(),
+        evm: withdrawn,
+        record: {
+          xecSpends: [stored(first, 'claim'), stored(second, 'claim')],
+        },
+      }).action,
+    ).toEqual({ kind: 'broadcast-xec-spend', funding: first })
+    const d = run('B', {
+      xec: two(claimedBy('c1'.repeat(32))),
+      evm: withdrawn,
+    })
+    expect(summary(d)).toBe('claimingXec/sign-xec-spend:claim')
+    expect(d.action).toMatchObject({ funding: second })
+    expect(
+      summary(
+        run('B', {
+          xec: two(claimedBy('c1'.repeat(32)), claimedBy('c2'.repeat(32))),
+          evm: withdrawn,
+        }),
+      ),
+    ).toBe('complete/none')
+    // One claimed and A refunded the other after T_A: B still got its principal.
+    expect(
+      summary(
+        run('B', {
+          xec: two(claimedBy('c1'.repeat(32)), refundedBy('r2'.repeat(32))),
+          evm: withdrawn,
+        }),
+      ),
+    ).toBe('complete/none')
+  })
+
+  it('A, withdrawn, before T_A: refunds nothing', () => {
+    expect(
+      summary(run('A', { xec: two({}, {}, T_A), evm: both('withdrawn') })),
+    ).toBe('claimed/none')
+  })
+
+  it('A, withdrawn, after T_A, B claimed nothing yet: refunds the extra output, keeps the first for B', () => {
+    const d = run('A', {
+      xec: two({}, {}, T_A + 1),
+      evm: both('withdrawn'),
+    })
+    expect(summary(d)).toBe('claimed/sign-xec-spend:refund')
+    expect(d.action).toMatchObject({ funding: second })
+    expect(
+      run('A', {
+        xec: two({}, {}, T_A + 1),
+        evm: both('withdrawn'),
+        record: { xecSpends: [stored(second, 'refund')] },
+      }).action,
+    ).toEqual({ kind: 'broadcast-xec-spend', funding: second })
+    // The extra one refunded: the first stays for B, A never touches it.
+    expect(
+      summary(
+        run('A', {
+          xec: two({}, refundedBy('r2'.repeat(32)), T_A + 1),
+          evm: both('withdrawn'),
+        }),
+      ),
+    ).toBe('claimed/none')
+  })
+
+  it('A, withdrawn, after T_A, B claimed one: refunds every other unspent output', () => {
+    const d = run('A', {
+      xec: two(claimedBy('c1'.repeat(32)), {}, T_A + 1),
+      evm: both('withdrawn'),
+    })
+    expect(summary(d)).toBe('claimed/sign-xec-spend:refund')
+    expect(d.action).toMatchObject({ funding: second })
+  })
+
+  it('A, never withdrew, after T_A: refunds each output in turn', () => {
+    const refunded = both('refunded')
+    expect(
+      run('A', { xec: two({}, {}, T_A + 1), evm: refunded }).action,
+    ).toMatchObject({ kind: 'sign-xec-spend', funding: first })
+    expect(
+      run('A', {
+        xec: two({}, {}, T_A + 1),
+        evm: refunded,
+        record: { xecSpends: [stored(first, 'refund')] },
+      }).action,
+    ).toMatchObject({ kind: 'sign-xec-spend', funding: second })
+    expect(
+      summary(
+        run('A', {
+          xec: two(
+            refundedBy('r1'.repeat(32)),
+            refundedBy('r2'.repeat(32)),
+            T_A + 1,
+          ),
+          evm: refunded,
+        }),
+      ),
+    ).toBe('refunded/none')
+  })
+
+  it('A, B claimed one and A could not withdraw, after T_A: refunds the other', () => {
+    const d = run('A', {
+      now: T_A + 1,
+      xec: two(claimedBy('c1'.repeat(32)), {}, T_A + 1),
+      evm: { ...both('refunded'), blockTimestamp: T_A + 1 },
+    })
+    expect(summary(d)).toBe('claimedByPeer/sign-xec-spend:refund')
+    expect(d.action).toMatchObject({ funding: second })
   })
 })
 
@@ -855,7 +1132,14 @@ describe('nextAction, B (MON depositor)', () => {
         xec: xecObs([output()]),
         evm: withdrawn,
         record: {
-          xecSpend: { branch: 'claim', rawTx: '00', txid: 'dd'.repeat(32) },
+          xecSpends: [
+            {
+              funding: FUNDING,
+              branch: 'claim',
+              rawTx: '00',
+              txid: 'dd'.repeat(32),
+            },
+          ],
         },
       },
       'claimingXec/broadcast-xec-spend',

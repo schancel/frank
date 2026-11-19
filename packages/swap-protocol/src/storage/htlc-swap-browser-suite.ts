@@ -25,7 +25,14 @@ const record: HtlcSwapRecord = {
 }
 const withSpend = (txid: string): HtlcSwapRecord => ({
   ...record,
-  xecSpend: { branch: 'claim', rawTx: '0200' + txid, txid },
+  xecSpends: [
+    {
+      funding: { txid: 'cd'.repeat(32), vout: 0 },
+      branch: 'claim',
+      rawTx: '0200' + txid,
+      txid,
+    },
+  ],
 })
 
 export async function runHtlcSwapBrowserPhase(

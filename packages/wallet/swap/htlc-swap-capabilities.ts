@@ -325,6 +325,7 @@ export function createEvmHtlcSwapCapability(params: {
         hashLock: string;
         expiresAt: number;
       };
+      deadline: number;
     }) {
       const terms = {
         ...input.terms,
@@ -333,11 +334,12 @@ export function createEvmHtlcSwapCapability(params: {
       };
       if (htlcLockId(mainAccount(), terms).toLowerCase() !== input.lockId.toLowerCase())
         throw new Error("The lock's terms do not give its lock id from this main account");
-      // A lock needs block.timestamp < expiresAt: given up once the chain reaches it.
+      // Given up once the chain passes the runner's lock cutoff (never later than the last
+      // second the contract accepts a lock).
       return send(
         { action: "lock", swapId: input.swapId, lockId: input.lockId },
         encodeHtlcLock(contract, terms),
-        input.terms.expiresAt - 1
+        Math.min(input.deadline, input.terms.expiresAt - 1)
       );
     },
 
@@ -345,12 +347,13 @@ export function createEvmHtlcSwapCapability(params: {
       swapId: string;
       lockId: string;
       preimage: Uint8Array;
-      expiresAt: number;
+      deadline: number;
     }) {
+      // Given up once the chain passes the runner's withdraw cutoff.
       return send(
         { action: "withdraw", swapId: input.swapId, lockId: input.lockId },
         encodeHtlcWithdraw(contract, input.lockId, input.preimage),
-        input.expiresAt - 1
+        input.deadline
       );
     },
 

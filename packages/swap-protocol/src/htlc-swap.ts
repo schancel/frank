@@ -167,16 +167,19 @@ export interface EvmHtlcCapability {
   observe(lockId: string): Promise<EvmHtlcObservation>
   /** This wallet's HTLC calls for the swap, from its native journal. */
   ownCalls(swapId: string): Promise<readonly EvmHtlcOwnCall[]>
+  /** `deadline` (block-time seconds, the runner's cutoff): the wallet gives the call up once the
+   * chain passes it rather than landing it late. */
   lock(input: {
     readonly swapId: string
     readonly lockId: string
     readonly terms: EvmHtlcLockTerms
+    readonly deadline: number
   }): Promise<{ readonly operationId: string }>
   withdraw(input: {
     readonly swapId: string
     readonly lockId: string
     readonly preimage: Uint8Array
-    readonly expiresAt: number
+    readonly deadline: number
   }): Promise<{ readonly operationId: string }>
   refund(input: {
     readonly swapId: string
@@ -366,12 +369,32 @@ export interface HtlcSwapRecord {
   readonly fundingAuthorizedAt?: number
   /** A only: `swap:<swapId>:xec-lock`, written before the funding is prepared. */
   readonly xecLockOperationId?: string
-  /** The signed eCash claim (B) or refund (A), written before it is broadcast. */
-  readonly xecSpend?: {
-    readonly branch: XecHtlcBranch
-    readonly rawTx: string
-    readonly txid: string
-  }
+  /** The signed eCash claims (B) or refunds (A), one per funding output, each written before it
+   * is broadcast; sorted by outpoint. */
+  readonly xecSpends?: readonly HtlcSwapXecSpend[]
+}
+
+export interface HtlcSwapXecSpend {
+  readonly funding: { readonly txid: string; readonly vout: number }
+  readonly branch: XecHtlcBranch
+  readonly rawTx: string
+  readonly txid: string
+}
+
+/** At most this many funding outputs of one swap get a signed spend in its record. */
+export const HTLC_SWAP_MAX_XEC_SPENDS = 16
+
+export const outpointKey = (funding: { txid: string; vout: number }) =>
+  `${funding.txid}:${String(funding.vout).padStart(10, '0')}`
+
+/** The record's signed spend of `funding`, if there is one. */
+export function storedXecSpendOf(
+  record: HtlcSwapRecord | undefined,
+  funding: { txid: string; vout: number },
+): HtlcSwapXecSpend | undefined {
+  return record?.xecSpends?.find(
+    s => s.funding.txid === funding.txid && s.funding.vout === funding.vout,
+  )
 }
 
 export const HTLC_SWAP_RECORD_MAX_BYTES = 16384
@@ -384,7 +407,7 @@ const RECORD_KEYS = new Set([
   'termsHash',
   'fundingAuthorizedAt',
   'xecLockOperationId',
-  'xecSpend',
+  'xecSpends',
 ])
 
 function fail(detail: string): never {
@@ -437,18 +460,39 @@ export function parseHtlcSwapRecord(raw: string): HtlcSwapRecord {
       value.xecLockOperationId !== `swap:${value.swapId}:xec-lock`)
   )
     fail('xecLockOperationId')
-  if (value.xecSpend !== undefined) {
-    const spend = value.xecSpend as Record<string, unknown> | null
+  if (value.xecSpends !== undefined) {
+    const spends = value.xecSpends as unknown
     if (
-      typeof spend !== 'object' ||
-      spend === null ||
-      Object.keys(spend).length !== 3 ||
-      spend.branch !== (value.role === 'A' ? 'refund' : 'claim') ||
-      typeof spend.rawTx !== 'string' ||
-      !/^(?:[0-9a-f]{2})+$/.test(spend.rawTx) ||
-      !isHex(spend.txid, 32)
+      !Array.isArray(spends) ||
+      spends.length === 0 ||
+      spends.length > HTLC_SWAP_MAX_XEC_SPENDS
     )
-      fail('xecSpend')
+      fail('xecSpends')
+    let previous = ''
+    for (const entry of spends as unknown[]) {
+      const spend = entry as Record<string, unknown> | null
+      const funding = spend?.funding as Record<string, unknown> | undefined
+      if (
+        typeof spend !== 'object' ||
+        spend === null ||
+        Object.keys(spend).length !== 4 ||
+        typeof funding !== 'object' ||
+        funding === null ||
+        Object.keys(funding).length !== 2 ||
+        !isHex(funding.txid, 32) ||
+        !Number.isSafeInteger(funding.vout) ||
+        (funding.vout as number) < 0 ||
+        (funding.vout as number) > 0xffffffff ||
+        spend.branch !== (value.role === 'A' ? 'refund' : 'claim') ||
+        typeof spend.rawTx !== 'string' ||
+        !/^(?:[0-9a-f]{2})+$/.test(spend.rawTx) ||
+        !isHex(spend.txid, 32)
+      )
+        fail('xecSpends')
+      const key = outpointKey(funding as { txid: string; vout: number })
+      if (key <= previous) fail('xecSpends order')
+      previous = key
+    }
   }
   return value as unknown as HtlcSwapRecord
 }
@@ -470,12 +514,18 @@ export function serializeHtlcSwapRecord(record: HtlcSwapRecord): string {
     ordered.fundingAuthorizedAt = record.fundingAuthorizedAt
   if (record.xecLockOperationId !== undefined)
     ordered.xecLockOperationId = record.xecLockOperationId
-  if (record.xecSpend !== undefined)
-    ordered.xecSpend = {
-      branch: record.xecSpend.branch,
-      rawTx: record.xecSpend.rawTx,
-      txid: record.xecSpend.txid,
-    }
+  if (record.xecSpends !== undefined)
+    ordered.xecSpends = record.xecSpends
+      .slice()
+      .sort((a, b) =>
+        outpointKey(a.funding) < outpointKey(b.funding) ? -1 : 1,
+      )
+      .map(spend => ({
+        funding: { txid: spend.funding.txid, vout: spend.funding.vout },
+        branch: spend.branch,
+        rawTx: spend.rawTx,
+        txid: spend.txid,
+      }))
   const raw = JSON.stringify(ordered)
   parseHtlcSwapRecord(raw)
   return raw
@@ -521,10 +571,10 @@ export type HtlcSwapAction =
   | { readonly kind: 'fund-xec'; readonly resume: boolean }
   /** A: the lock was prepared but never exposed, and the funding cutoff has passed. */
   | { readonly kind: 'release-xec-lock' }
-  /** B: write the authorization, then lock MON. */
-  | { readonly kind: 'lock-evm' }
-  /** A: withdraw MON with the preimage. */
-  | { readonly kind: 'withdraw-evm' }
+  /** B: write the authorization, then lock MON; the call is given up after `deadline`. */
+  | { readonly kind: 'lock-evm'; readonly deadline: number }
+  /** A: withdraw MON with the preimage; the call is given up after `deadline`. */
+  | { readonly kind: 'withdraw-evm'; readonly deadline: number }
   /** B: refund MON after T_B. */
   | { readonly kind: 'refund-evm' }
   /** Sign the eCash claim (B, with the preimage read from the EVM lock) or refund (A), write
@@ -535,8 +585,11 @@ export type HtlcSwapAction =
       readonly funding: { readonly txid: string; readonly vout: number }
       readonly preimage?: Uint8Array
     }
-  /** Hand the record's signed spend to the network again. */
-  | { readonly kind: 'broadcast-xec-spend' }
+  /** Hand the record's signed spend of `funding` to the network again. */
+  | {
+      readonly kind: 'broadcast-xec-spend'
+      readonly funding: { readonly txid: string; readonly vout: number }
+    }
   | { readonly kind: 'claim-owed' }
 
 export type HtlcSwapWarning =
@@ -597,12 +650,12 @@ export const HTLC_CALL_MAX_REVERTS = 2
 
 const NONE: HtlcSwapAction = Object.freeze({ kind: 'none' })
 
-/** The exact-value funding output: unspent first, then by txid:vout (deterministic). */
+/** The exact-value funding outputs: unspent first, then by txid:vout (deterministic). */
 function fundingOf(
   terms: HtlcSwapTerms,
   xec: XecHtlcObservation,
-): { output?: XecHtlcOutputObservation; count: number } {
-  const exact = xec.outputs
+): readonly XecHtlcOutputObservation[] {
+  return xec.outputs
     .filter(o => o.valueSats === terms.xec.fundingValueSats)
     .slice()
     .sort(
@@ -610,7 +663,6 @@ function fundingOf(
         Number(a.spentBy !== undefined) - Number(b.spentBy !== undefined) ||
         (a.txid < b.txid ? -1 : a.txid > b.txid ? 1 : a.vout - b.vout),
     )
-  return { output: exact[0], count: exact.length }
 }
 
 function calls(
@@ -619,16 +671,51 @@ function calls(
 ) {
   const mine = observations.evmCalls.filter(c => c.action === action)
   return {
+    any: mine.length > 0,
     pending: mine.some(c => c.state === 'pending'),
     landed: mine.some(c => c.state === 'landed'),
     reverts: mine.filter(c => c.state === 'reverted').length,
   }
 }
 
+const outpointOf = (o: XecHtlcOutputObservation) => ({
+  txid: o.txid,
+  vout: o.vout,
+})
+
+/**
+ * The next eCash spend among `candidates` (unspent exact outputs, in order): sign the first one
+ * the record has no spend for, else re-broadcast the first stored one. Signing first keeps one
+ * output whose stored spend the network refuses from holding up the others.
+ */
+function xecSpendAction(
+  candidates: readonly XecHtlcOutputObservation[],
+  record: HtlcSwapRecord | undefined,
+  branch: XecHtlcBranch,
+  preimage?: Uint8Array | null,
+): HtlcSwapAction {
+  const unsigned = candidates.find(o => !storedXecSpendOf(record, o))
+  if (unsigned)
+    return {
+      kind: 'sign-xec-spend',
+      branch,
+      funding: outpointOf(unsigned),
+      ...(preimage ? { preimage } : {}),
+    }
+  const first = candidates[0]
+  return first
+    ? { kind: 'broadcast-xec-spend', funding: outpointOf(first) }
+    : NONE
+}
+
 /**
  * What the runner does next for one swap. Pure: every input is passed in. Cutoffs pass when
  * either this device's clock or the EVM chain's says so; the refund branches follow the chains'
  * own clocks (MTP > T_A for eCash, block.timestamp ≥ T_B for EVM).
+ *
+ * Every exact-value output at the HTLC script is a separate fund: B claims each one it can once
+ * the preimage is public, and A refunds each one after MTP > T_A, except that once A's withdraw
+ * landed one output stays for B until B has claimed one.
  */
 export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
   const decide = (
@@ -655,34 +742,64 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
   const { xec, evm } = observations
   const now = Math.max(input.now, evm.blockTimestamp)
   const cut = htlcSwapCutoffs(terms)
-  const { output, count } = fundingOf(terms, xec)
-  const warnings: HtlcSwapWarning[] = count > 1 ? ['xec-double-funded'] : []
-  const funding = output ? { txid: output.txid, vout: output.vout } : undefined
+  const exact = fundingOf(terms, xec)
+  const output = exact[0]
+  const unspent = exact.filter(o => o.spentBy === undefined)
+  const claimed = exact.filter(o => o.spentBy?.branch === 'claim')
+  const refunded = exact.filter(o => o.spentBy?.branch === 'refund')
+  const warnings: HtlcSwapWarning[] =
+    exact.length > 1 ? ['xec-double-funded'] : []
+  const funding = output ? outpointOf(output) : undefined
   const owed =
     evm.owedWei > 0n
       ? ({ kind: 'claim-owed' } as const)
       : (NONE as HtlcSwapAction)
+  const mtpPassed = xec.tipMedianTime > terms.xecRefundTime
 
   if (input.role === 'A') {
     const withdraw = calls(observations, 'withdraw')
-    if (
-      evm.latest?.state !== 'withdrawn' &&
-      evm.mainBalanceWei < evm.callCostWei
-    )
+    // A landed withdraw is known from the chain or from A's own journal: a lagging node that
+    // still shows the lock open must never lead A to refund after revealing the preimage.
+    const withdrawn = evm.latest?.state === 'withdrawn' || withdraw.landed
+    if (!withdrawn && evm.mainBalanceWei < evm.callCostWei)
       warnings.push('claim-gas-low')
-    // The MON leg: once A's withdraw landed, A never refunds.
-    if (evm.latest?.state === 'withdrawn')
-      return decide('claimed', owed, warnings, funding)
+    if (withdrawn) {
+      // A never refunds what B is owed: until B has claimed an output, the first unspent one
+      // stays for B. Any other exact output is A's own extra funding, refundable after T_A.
+      const refundable = mtpPassed
+        ? claimed.length > 0
+          ? unspent
+          : unspent.slice(1)
+        : []
+      return decide(
+        'claimed',
+        refundable.length > 0
+          ? xecSpendAction(refundable, record, 'refund')
+          : owed,
+        warnings,
+        funding,
+      )
+    }
+    const peerClaimed = claimed.length > 0
     const lockOpen = evm.latest?.state === 'open'
+    // Once a withdraw was sent (it may have reverted, been given up or still be pending) or B
+    // claimed, the preimage may be public: A then withdraws for as long as the lock can pay,
+    // whatever the margin or earlier reverts.
+    const secretPublic = peerClaimed || withdraw.any
+    const withdrawDeadline = secretPublic
+      ? terms.evmExpiry - 1
+      : cut.evmWithdrawBy
     const canWithdraw =
       lockOpen &&
-      evm.final?.state === 'open' &&
-      now <= cut.evmWithdrawBy &&
       !withdraw.pending &&
-      withdraw.reverts < HTLC_CALL_MAX_REVERTS
+      ((secretPublic && now < terms.evmExpiry) ||
+        (evm.final?.state === 'open' &&
+          now <= cut.evmWithdrawBy &&
+          withdraw.reverts < HTLC_CALL_MAX_REVERTS))
     // A withdraw in flight can still land until block.timestamp reaches T_B.
     const withdrawInFlight =
       withdraw.pending && evm.blockTimestamp < terms.evmExpiry
+    const claiming = peerClaimed ? 'claimedByPeer' : 'claiming'
 
     if (!output) {
       const op = observations.xecLockOperation
@@ -711,30 +828,26 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
         warnings,
       )
     }
-    const spent = output.spentBy
-    if (spent?.branch === 'refund')
-      return decide(
-        spent.final ? 'refunded' : 'refunding',
-        NONE,
-        warnings,
-        funding,
-      )
-    if (spent?.branch === 'claim')
-      return decide(
-        'claimedByPeer',
-        canWithdraw ? { kind: 'withdraw-evm' } : NONE,
-        warnings,
-        funding,
-      )
     if (canWithdraw)
-      return decide('claiming', { kind: 'withdraw-evm' }, warnings, funding)
-    if (withdrawInFlight) return decide('claiming', NONE, warnings, funding)
-    if (xec.tipMedianTime > terms.xecRefundTime)
       return decide(
-        'refunding',
-        record?.xecSpend
-          ? { kind: 'broadcast-xec-spend' }
-          : { kind: 'sign-xec-spend', branch: 'refund', funding: funding! },
+        claiming,
+        { kind: 'withdraw-evm', deadline: withdrawDeadline },
+        warnings,
+        funding,
+      )
+    if (withdrawInFlight) return decide(claiming, NONE, warnings, funding)
+    if (mtpPassed && unspent.length > 0)
+      return decide(
+        peerClaimed ? 'claimedByPeer' : 'refunding',
+        xecSpendAction(unspent, record, 'refund'),
+        warnings,
+        funding,
+      )
+    if (peerClaimed) return decide('claimedByPeer', NONE, warnings, funding)
+    if (unspent.length === 0)
+      return decide(
+        refunded.every(o => o.spentBy!.final) ? 'refunded' : 'refunding',
+        NONE,
         warnings,
         funding,
       )
@@ -762,7 +875,12 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
       !output.spentBy &&
       lock.reverts < HTLC_CALL_MAX_REVERTS
     )
-      return decide('locking', { kind: 'lock-evm' }, warnings, funding)
+      return decide(
+        'locking',
+        { kind: 'lock-evm', deadline: cut.evmLockBy },
+        warnings,
+        funding,
+      )
     return decide('awaitXecLock', NONE, warnings, funding)
   }
   if (latest.state === 'refunded')
@@ -779,31 +897,26 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
       )
     return decide('evmLocked', NONE, warnings, funding)
   }
-  // Withdrawn: A revealed the preimage on chain; B claims the XEC with it.
-  const spent = output?.spentBy
-  if (spent?.branch === 'refund')
-    return decide('lostToRefund', owed, warnings, funding)
-  if (spent?.branch === 'claim')
+  // Withdrawn: A revealed the preimage on chain; B claims every exact output it can with it.
+  if (unspent.length > 0)
     return decide(
-      spent.final ? 'complete' : 'claimingXec',
-      spent.final ? owed : NONE,
+      'claimingXec',
+      xecSpendAction(unspent, record, 'claim', latest.preimage),
       warnings,
       funding,
     )
-  if (!output) return decide('claimingXec', NONE, warnings)
-  return decide(
-    'claimingXec',
-    record?.xecSpend
-      ? { kind: 'broadcast-xec-spend' }
-      : {
-          kind: 'sign-xec-spend',
-          branch: 'claim',
-          funding: funding!,
-          ...(latest.preimage ? { preimage: latest.preimage } : {}),
-        },
-    warnings,
-    funding,
-  )
+  if (claimed.length > 0) {
+    const final = claimed.every(o => o.spentBy!.final)
+    return decide(
+      final ? 'complete' : 'claimingXec',
+      final ? owed : NONE,
+      warnings,
+      funding,
+    )
+  }
+  if (refunded.length > 0)
+    return decide('lostToRefund', owed, warnings, funding)
+  return decide('claimingXec', NONE, warnings)
 }
 
 /** Lowercase-hex helpers shared with the runner. */

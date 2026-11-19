@@ -156,7 +156,9 @@ function harness(
     broadcast: async raw => {
       const r = await recordAt()
       log.push(
-        `broadcast ${raw} (record has it: ${r?.xecSpend?.rawTx === raw})`,
+        `broadcast ${raw} (record has it: ${
+          r?.xecSpends?.some(s => s.rawTx === raw) ?? false
+        })`,
       )
     },
   }
@@ -175,7 +177,7 @@ function harness(
         `withdraw ${
           bytesToHex(input.preimage) ===
           bytesToHex(preimageOf(n.context.swapId))
-        }`,
+        } by ${input.deadline}`,
       )
       return { operationId: 'op-withdraw' }
     },
@@ -271,7 +273,8 @@ describe('HtlcSwapRunner', () => {
       lastAction: 'withdraw-evm',
       lockId: terms.evm.lockId,
     })
-    expect(h.log).toEqual(['withdraw true'])
+    // The call carries the runner's cutoff, T_B − M_evm, as its deadline.
+    expect(h.log).toEqual([`withdraw true by ${terms.evmExpiry - 5}`])
     expect(h.asked.every(id => id === bytesToHex(n.context.swapId))).toBe(true)
   })
 

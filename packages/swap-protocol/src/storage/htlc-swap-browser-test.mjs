@@ -194,11 +194,14 @@ try {
   assert.equal(reopened.revision, 2)
   assert.equal(reopened.record.role, 'B')
   assert.equal(reopened.record.fundingAuthorizedAt, 1_800_000_000)
-  assert.deepEqual(reopened.record.xecSpend, {
-    branch: 'claim',
-    rawTx: '0200' + String(winner).repeat(64),
-    txid: String(winner).repeat(64),
-  })
+  assert.deepEqual(reopened.record.xecSpends, [
+    {
+      funding: { txid: 'cd'.repeat(32), vout: 0 },
+      branch: 'claim',
+      rawTx: '0200' + String(winner).repeat(64),
+      txid: String(winner).repeat(64),
+    },
+  ])
   assert.deepEqual(reopened.listed, ['ab'.repeat(32)])
   assert.equal(reopened.otherRows, 0)
   assert.equal(reopened.stale, false)

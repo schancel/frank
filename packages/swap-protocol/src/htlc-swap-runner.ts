@@ -15,6 +15,7 @@ import { sha256 } from '@noble/hashes/sha256.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
 import {
   htlcSwapCutoffs,
+  storedXecSpendOf,
   htlcSwapTermsOf,
   nextAction,
   parseHtlcSwapRecord,
@@ -93,7 +94,12 @@ export interface HtlcSwapView {
   }
   readonly lockId?: string
   readonly funding?: { readonly txid: string; readonly vout: number }
-  readonly xecSpend?: { readonly branch: string; readonly txid: string }
+  /** The signed eCash spends in the record, one per funding output. */
+  readonly xecSpends?: readonly {
+    readonly funding: { readonly txid: string; readonly vout: number }
+    readonly branch: string
+    readonly txid: string
+  }[]
   /** The step taken on the last tick, if any. */
   readonly lastAction?: HtlcSwapAction['kind']
   /** Why the last tick could not observe or act (it is retried on the next). */
@@ -397,12 +403,13 @@ export class HtlcSwapRunner {
       deadlines,
       lockId: terms.evm.lockId,
       ...(decision.funding ? { funding: decision.funding } : {}),
-      ...(stored?.xecSpend
+      ...(stored?.xecSpends
         ? {
-            xecSpend: {
-              branch: stored.xecSpend.branch,
-              txid: stored.xecSpend.txid,
-            },
+            xecSpends: stored.xecSpends.map(spend => ({
+              funding: spend.funding,
+              branch: spend.branch,
+              txid: spend.txid,
+            })),
           }
         : {}),
       ...(decision.action.kind === 'none'
@@ -469,18 +476,19 @@ export class HtlcSwapRunner {
           swapId,
           lockId: terms.evm.lockId,
           terms: terms.evm.terms,
+          deadline: action.deadline,
         })
         return
       }
       case 'withdraw-evm': {
-        if (clock.now() > htlcSwapCutoffs(terms).evmWithdrawBy) return
+        if (clock.now() > action.deadline) return
         const preimage = this.preimage(context)
         try {
           await evm.withdraw({
             swapId,
             lockId: terms.evm.lockId,
             preimage,
-            expiresAt: terms.evmExpiry,
+            deadline: action.deadline,
           })
         } finally {
           preimage.fill(0)
@@ -509,20 +517,31 @@ export class HtlcSwapRunner {
           ...(action.branch === 'claim' ? { preimage: action.preimage } : {}),
         })
         // Write-ahead: the signed spend is durable before any broadcaster sees it.
-        const written = await this.writeRecord(terms, role, current => ({
-          ...current,
-          xecSpend: current.xecSpend ?? {
-            branch: action.branch,
-            rawTx: spend.rawTx,
-            txid: spend.txid,
-          },
-        }))
-        await xec.broadcast(written.xecSpend!.rawTx)
+        // An outpoint keeps the first spend written for it.
+        const written = await this.writeRecord(terms, role, current =>
+          storedXecSpendOf(current, action.funding)
+            ? current
+            : {
+                ...current,
+                xecSpends: [
+                  ...(current.xecSpends ?? []),
+                  {
+                    funding: action.funding,
+                    branch: action.branch,
+                    rawTx: spend.rawTx,
+                    txid: spend.txid,
+                  },
+                ],
+              },
+        )
+        await xec.broadcast(storedXecSpendOf(written, action.funding)!.rawTx)
         return
       }
-      case 'broadcast-xec-spend':
-        if (record?.xecSpend) await xec.broadcast(record.xecSpend.rawTx)
+      case 'broadcast-xec-spend': {
+        const stored = storedXecSpendOf(record, action.funding)
+        if (stored) await xec.broadcast(stored.rawTx)
         return
+      }
       case 'claim-owed': {
         const last = this.claimOwedAt.get(swapId)
         if (last !== undefined && clock.now() - last < CLAIM_OWED_BACKOFF)

@@ -628,12 +628,19 @@ export class TableEscrows implements TableEscrowBook {
       }
       // In a block with the locks still open, it can only have reverted: the same payouts, sent
       // again. A successful call that left them open is not GenericHTLC v2; nothing is sent.
-      if (receipt.status !== 0)
-        return {
-          status: "not-settleable",
-          tableId,
-          reason: "the settlement landed and the buy-in locks are still open",
-        };
+      if (receipt.status !== 0) {
+        // The locks were read before the receipt: the settlement may have landed in between.
+        const again = await Promise.all(
+          record.seats.map(s => readHtlcLock(ctx.provider, contract, s.lockId))
+        );
+        if (again.every(l => l?.state === "withdrawn")) {
+          await this.forget(ctx, tableId);
+          return { status: "settled", tableId };
+        }
+        // Still open after a successful settlement: looked at again later (a node behind the
+        // receipt), never cleared and never sent twice.
+        throw new Error("the settlement landed and the buy-in locks still read open");
+      }
     }
     if (settlement) return this.sendSettlement(ctx, tableId, gameGone);
     // Nothing was written down: the game is gone, so each player gets its buy-in back.

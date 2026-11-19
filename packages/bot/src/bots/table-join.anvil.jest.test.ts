@@ -352,6 +352,14 @@ suite("joining a poker table from the player's wallet: lock, join, play, payout,
     const gained =
       (await chain.getBalance(alice.main)) - balances.alice + ((await chain.getBalance(bob.main)) - balances.bob);
     expect(gained).toBe(2n * buyIn);
+    // The table is settled and its escrow forgotten, yet the card Carol gets for it still states
+    // the terms: her lock was never seated and is hers to refund from that card.
+    for (let i = 0; i < 200 && poker.getTableEscrow(table.tableId); i++)
+      await new Promise(resolve => setTimeout(resolve, 50));
+    expect(poker.getTableEscrow(table.tableId)).toBeUndefined();
+    const status = pokerItem(await say(poker, ctx, carol, [{ type: "text", text: "/poker status" }]));
+    expect(status.tableId).toBe(table.tableId);
+    expect(status.escrow).toEqual(table.escrow);
 
     // Carol's other device knows the lock from her note to self, and nothing else.
     const record = await recordOf(carol, "lock", c.lock.lockId);

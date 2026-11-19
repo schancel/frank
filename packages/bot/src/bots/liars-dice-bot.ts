@@ -80,6 +80,9 @@ export class LiarsDiceBot implements FrankBotDefinition {
   private readonly escrows: TableEscrowBook;
   /** Tables that have ended (won, or a reveal failed verification): nothing more is played. */
   private readonly closedTables = new Set<string>();
+  /** Every table's escrow terms as opened, kept after the escrow forgets a settled table: a
+   * player whose lock was never seated still needs them on the table's card to refund it. */
+  private readonly openedEscrows = new Map<string, Readonly<TableEscrowRecord>>();
 
   constructor(options: { escrows?: TableEscrowBook } = {}) {
     this.escrows = options.escrows ?? new TableEscrows("liars-dice");
@@ -243,7 +246,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
       ? game.players.find(p => p.address.toLowerCase() === recipientAddress.toLowerCase())
       : undefined;
 
-    const escrow = this.escrows.get(game.tableId);
+    const escrow = this.escrows.get(game.tableId) ?? this.openedEscrows.get(game.tableId);
     return {
       type: "liars-dice",
       tableId: game.tableId,
@@ -355,6 +358,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
           return;
         }
         const tableId = escrow.tableId;
+        this.openedEscrows.set(tableId, escrow);
         const game = createLiarsDiceGame({
           tableId,
           hostAddress: sender,

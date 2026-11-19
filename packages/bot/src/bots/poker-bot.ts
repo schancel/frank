@@ -79,6 +79,9 @@ export class PokerBot implements FrankBotDefinition {
   private readonly escrows: TableEscrowBook;
   /** Tables whose escrowed hand has ended: no other hand, no join, whatever the escrow keeps. */
   private readonly closedTables = new Set<string>();
+  /** Every table's escrow terms as opened, kept after the escrow forgets a settled table: a
+   * player whose lock was never seated still needs them on the table's card to refund it. */
+  private readonly openedEscrows = new Map<string, Readonly<TableEscrowRecord>>();
 
   constructor(options: { escrows?: TableEscrowBook } = {}) {
     this.escrows = options.escrows ?? new TableEscrows("poker");
@@ -237,7 +240,7 @@ export class PokerBot implements FrankBotDefinition {
       : undefined;
 
     const totalPot = table.pot + table.players.reduce((sum, p) => sum + p.currentStreetBet, 0);
-    const escrow = this.escrows.get(table.tableId);
+    const escrow = this.escrows.get(table.tableId) ?? this.openedEscrows.get(table.tableId);
     const isRevealed = table.street === "settled" || table.street === "showdown";
 
     const playerViews: PokerPlayerView[] = table.players.map((p, idx) => ({
@@ -350,6 +353,7 @@ export class PokerBot implements FrankBotDefinition {
           return;
         }
         const tableId = escrow.tableId;
+        this.openedEscrows.set(tableId, escrow);
         const table = createPokerTable({ tableId, buyInChips: 1000, smallBlind: 10, bigBlind: 20 });
 
         this.tables.set(tableId, table);

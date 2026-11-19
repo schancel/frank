@@ -60,6 +60,8 @@ export const LOTUS_V2_FEE_PER_BYTE = 1n;
 /** No output below this is made (the node's candidate dust limit). */
 export const LOTUS_V2_DUST_ATOMS = 546n;
 const ADDRESS_GAP = 20;
+/** A coinbase output may be spent by a block this many above its own (the node rule `nSpendHeight - height >= 100`). */
+export const LOTUS_V2_COINBASE_MATURITY = 100;
 
 /** The network a registry row lets the wallet build for, or an explicit refusal. */
 export function lotusV2NetworkOf(chainIdentifier: string): LotusV2Network {
@@ -174,6 +176,7 @@ export interface LotusV2Coin {
   readonly origin: "receive" | "change";
   /** `pending` while a recorded send of this wallet claims it. */
   readonly state: "unspent" | "pending";
+  /** The key that spends it, carried on the coin (owner wallet model: never reused). */
   readonly secret: Uint8Array;
 }
 
@@ -289,14 +292,6 @@ export class LotusV2Wallet implements NativeWalletHandle {
     return this.unresolved?.transaction;
   }
 
-  async retryUnresolvedNativeTransaction(): Promise<ChainTransaction> {
-    const unresolved = this.unresolved;
-    if (!unresolved) throw new Error("No unresolved Lotus transaction");
-    await this.finishPending();
-    if (this.unresolved) throw this.unresolved;
-    return { txHash: unresolved.transaction.txHash };
-  }
-
   localReceiveAddress(): ChainAddress {
     return { raw: this.addressAt(0, this.state.receiveIndex) };
   }
@@ -314,9 +309,14 @@ export class LotusV2Wallet implements NativeWalletHandle {
   }
 
   async estimateFee(params: { recipient: ChainAddress; value: bigint }): Promise<bigint> {
+    return (await this.planSend(params)).fee;
+  }
+
+  /** The plan a send of `value` would use now: its fee and the coins it spends. */
+  async planSend(params: { recipient: ChainAddress; value: bigint }): Promise<LotusV2SendPlan> {
     this.recipientRoot(params.recipient.raw);
     await this.sync();
-    return planLotusV2Send(this.coinList, params.value).fee;
+    return planLotusV2Send(this.coinList, params.value);
   }
 
   /** `confirmed`/`pending` from the node; `unknown` while it lacks the transaction. */
@@ -385,13 +385,26 @@ export class LotusV2Wallet implements NativeWalletHandle {
       await params.onSigned?.(transaction);
       await this.indexer.broadcast(signed.raw);
     } catch (reason) {
-      if (reason instanceof LotusV2BroadcastRefused) {
-        // Refused outright: nothing was accepted, so the coins are free again.
+      if (!(reason instanceof LotusV2BroadcastRefused)) {
+        this.unresolved = new NativeTransactionSubmissionError({ transaction, reason });
+        throw this.unresolved;
+      }
+      // A refusal is not proof that nothing landed: the recorded bytes were exposed (onSigned,
+      // another tab) and may already be in the mempool or a block ("already in block chain").
+      // As in finishPending, free the coins only when the node does not have the transaction.
+      let state: "confirmed" | "pending" | "unknown";
+      try {
+        state = await this.indexer.transactionState(signed.txid);
+      } catch (lookup) {
+        this.unresolved = new NativeTransactionSubmissionError({ transaction, reason: lookup });
+        throw this.unresolved;
+      }
+      if (state === "unknown") {
         await this.exclusive(async () => this.dropPending(signed.txid, false));
         throw new NativeTransactionRefusedError(reason.reason);
       }
-      this.unresolved = new NativeTransactionSubmissionError({ transaction, reason });
-      throw this.unresolved;
+      // Mined: settled now. In the mempool: the record and its claim stay until it is mined.
+      if (state === "confirmed") await this.exclusive(async () => this.dropPending(signed.txid, true));
     } finally {
       this.inFlight.delete(signed.txid);
     }
@@ -548,6 +561,7 @@ export class LotusV2Wallet implements NativeWalletHandle {
   /** Rebuild the coin list; reads unlocked, applied in one short locked step. */
   private async sync(): Promise<void> {
     await this.ensureDiscovered();
+    const tip = await this.indexer.tipHeight();
     const coins: LotusV2Coin[] = [];
     let receiveIndex = this.state.receiveIndex;
     const changeIndex = this.state.changeIndex;
@@ -555,7 +569,10 @@ export class LotusV2Wallet implements NativeWalletHandle {
       const found = await this.indexer.listUnspent(this.rootAt(chain, index));
       if (found.length === 0) return false;
       const secret = this.secretAt(chain, index);
-      for (const coin of found)
+      for (const coin of found) {
+        // An immature coinbase output is neither balance nor spendable: the next block (tip + 1) must
+        // be at least LOTUS_V2_COINBASE_MATURITY above it.
+        if (coin.coinbase && tip + 1 - coin.height < LOTUS_V2_COINBASE_MATURITY) continue;
         coins.push({
           txid: coin.txid,
           outIdx: coin.outIdx,
@@ -564,6 +581,7 @@ export class LotusV2Wallet implements NativeWalletHandle {
           state: "unspent",
           secret,
         });
+      }
       return true;
     };
     // The address on show is `receiveIndex`; once it is paid, show the next one.

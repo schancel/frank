@@ -1,5 +1,5 @@
 /**
- * Lotus v2 native (version 7) transactions and `xpi1` addresses: the pure codec.
+ * Lotus v2 native (version 7) transactions and regtest `rxpi1` addresses: the pure codec.
  *
  * This file is the only place Frank encodes, hashes or signs a Lotus v2 transaction. It covers
  * exactly what an ordinary wallet needs and nothing else:
@@ -9,13 +9,14 @@
  *   address (an explicit branch root);
  * - native spendable outputs (`flags = 0`) with one branch and path `[[0]]`;
  * - spending such outputs with FULL-mode BIP340 signatures;
- * - the BLAKE3 TxID (`H_txid`) and complete hash (`H_txhash`).
+ * - the BLAKE3 TxID (`H_txid`) and complete hash (`H_txhash`) of what it signs. It never parses
+ *   a transaction it did not build.
  *
  * Sources: the node's `docs/lotus-v2/addresses.md`, `consensus.md` (C07, C18) and the
  * `@lotus/v2-payment-compiler` transaction runtime in the Lotus repository
  * (`tools/lotus-v2-compiler/src/transaction-runtime.ts`), whose framing this follows. That
  * package is not published, so it is not a dependency; the real-node tests in
- * `lotus-v2-wallet.regtest.jest.test.ts` are what prove these bytes against `lotusd`.
+ * `wallet.regtest.jest.test.ts` and `relay.regtest.jest.test.ts` are what prove these bytes against `lotusd`.
  *
  * Hex conventions: a transaction id here is the BLAKE3 output in wire order, as the node's
  * Chronik `/v2/*` routes print it. The node's JSON-RPC prints ids byte-reversed (Bitcoin
@@ -227,16 +228,14 @@ export function decodeAddress(network: LotusV2Network, input: string): LotusV2De
   const hrp = text.slice(0, split);
   requireLotusV2Network(network);
   if (split < 0 || CHECKSUM_CONSTANT[hrp] === undefined) throw new Error("unknown prefix");
-  if (hrp !== HRP) {
-    const other = PREFIX_NETWORK[hrp]!;
-    // A well-formed address of a network Frank does not support is unsupported, not a typo.
-    throw new LotusV2UnsupportedNetworkError(other);
-  }
   const body = text.slice(split + 1);
   if (body.length !== 61) throw new Error("bad length");
   const symbols = [...body].map((ch) => CHARSET.indexOf(ch));
   if (symbols.some((s) => s < 0)) throw new Error("bad character");
   if (polymod(symbols) !== CHECKSUM_CONSTANT[hrp]) throw new Error("bad checksum");
+  // A well-formed address of a network Frank does not support is unsupported, not a typo; a
+  // malformed one of any prefix is reported as malformed.
+  if (hrp !== HRP) throw new LotusV2UnsupportedNetworkError(PREFIX_NETWORK[hrp]!);
   const type = symbols[0]!;
   if (type !== 0 && type !== 1) throw new Error("unknown version");
   let p = 0n;
@@ -400,71 +399,4 @@ export function signNativeTransaction(params: {
   if (raw.length !== nativeTransactionSize(prepared.length, outputs.length))
     throw new Error("Unexpected native transaction size");
   return { txid: toHex(txid), txhash: toHex(txhash), raw: toHex(raw), size: raw.length };
-}
-
-/** The id a raw transaction from {@link signNativeTransaction} commits to, recomputed from bytes. */
-export function nativeTransactionId(network: LotusV2Network, raw: string): string {
-  requireLotusV2Network(network);
-  const bytes = fromHex(raw);
-  let at = 0;
-  const take = (n: number) => {
-    if (at + n > bytes.length) throw new Error("Truncated native transaction");
-    const out = bytes.subarray(at, at + n);
-    at += n;
-    return out;
-  };
-  const readCompact = () => {
-    const first = take(1)[0]!;
-    if (first < 253) return first;
-    if (first === 253) {
-      const b = take(2);
-      return b[0]! | (b[1]! << 8);
-    }
-    throw new Error("Unsupported CompactSize in a wallet transaction");
-  };
-  const header = take(16);
-  const version = header[0]! | (header[1]! << 8) | (header[2]! << 16) | (header[3]! << 24);
-  if (version !== TX_VERSION) throw new Error("Not a native v7 transaction");
-  const inputCount = header[12]! | (header[13]! << 8);
-  const outputCount = header[14]! | (header[15]! << 8);
-  const cores: Uint8Array[] = [];
-  for (let i = 0; i < inputCount; i++) {
-    const start = at;
-    take(32 + 4 + 4);
-    if (take(1)[0] !== 1) throw new Error("Only spend inputs are supported");
-    readCompact();
-    const witnesses = readCompact();
-    for (let w = 0; w < witnesses; w++) {
-      take(readCompact());
-      take(32 * readCompact());
-    }
-    cores.push(bytes.slice(start, at));
-    for (let w = 0; w < witnesses; w++) {
-      const args = readCompact();
-      for (let a = 0; a < args; a++) take(readCompact());
-    }
-  }
-  const outputs: Uint8Array[] = [];
-  for (let i = 0; i < outputCount; i++) {
-    const start = at;
-    const flags = take(1)[0]!;
-    take(8);
-    if (flags & 1) take(32);
-    take(32 * readCompact());
-    const paths = readCompact();
-    for (let p = 0; p < paths; p++) take(readCompact());
-    outputs.push(bytes.slice(start, at));
-  }
-  if (at !== bytes.length) throw new Error("Trailing bytes after a native transaction");
-  return toHex(
-    tagged(
-      "txid",
-      concat(
-        fromHex(LOTUS_V2_REGTEST_CHAIN_ID, 32),
-        header,
-        indexedRoot(cores.map((c) => tagged("inputcore", c))),
-        indexedRoot(outputs.map((o) => tagged("output", lengthPrefixed(o))))
-      )
-    )
-  );
 }

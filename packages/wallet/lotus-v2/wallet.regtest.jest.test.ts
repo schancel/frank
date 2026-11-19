@@ -7,10 +7,14 @@
  */
 import { randomBytes } from "crypto";
 
-import { NativeTransactionRefusedError, NativeTransactionSubmissionError } from "../chain/chain-wallet";
+import {
+  NativeFeeExceededError,
+  NativeTransactionRefusedError,
+  NativeTransactionSubmissionError,
+} from "../chain/chain-wallet";
 import { nodeSuiteReady } from "../node-binaries.testutil";
 import { createLotusV2Chain } from "./chain";
-import { chronikLotusV2Indexer, type LotusV2Indexer } from "./chronik";
+import { chronikLotusV2Indexer, LotusV2BroadcastRefused, type LotusV2Indexer } from "./chronik";
 import { findLotusd, lotusdBinary, startLotusRegtest, type LotusRegtest } from "./lotusd-regtest.testutil";
 import { nativeTransactionSize } from "./native";
 import { LotusV2Wallet, memoryLotusV2WalletStore, type LotusV2WalletStore } from "./wallet";
@@ -174,6 +178,80 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     expect(await deviceOne.getBalance()).toBe(remaining);
     expect(await deviceTwo.getBalance()).toBe(remaining);
   }, 60_000);
+
+  it("recorded bytes another party mined before the wallet's own broadcast settle the send; nothing is paid twice", async () => {
+    const alice = await fresh();
+    const bob = await fresh();
+    await node.fund((await alice.wallet.getReceiveAddress()).raw, 4n * XPI);
+    const recipient = await bob.wallet.getReceiveAddress();
+    let exposed: string | undefined;
+    const sent = await alice.wallet.sendNative({
+      recipient,
+      value: XPI,
+      // Another tab (or a relay) holding the recorded bytes broadcasts them and a block mines
+      // them before this wallet's broadcast: the node then refuses that broadcast.
+      onSigned: async (signed) => {
+        exposed = signed.rawTransactions![0]!;
+        await node.rpc("sendrawtransaction", [exposed]);
+        await node.mine(1);
+      },
+    });
+    expect(exposed).toBeDefined();
+    expect(await indexer.transactionState(sent.txHash)).toBe("confirmed");
+    // What the wallet's own broadcast met: a refusal, not an acceptance.
+    await expect(indexer.broadcast(exposed!)).rejects.toBeInstanceOf(LotusV2BroadcastRefused);
+    // Settled as mined: the claim is not released, so its coin is never offered again.
+    expect(alice.wallet.pendingSends()).toEqual([]);
+    const fee = BigInt(nativeTransactionSize(1, 2));
+    expect(await alice.wallet.getBalance()).toBe(4n * XPI - XPI - fee);
+    // The remaining coin pays a second send; nothing spends the first coin again.
+    await alice.wallet.sendNative({ recipient, value: XPI });
+    await node.mine(1);
+    expect(await bob.wallet.getBalance()).toBe(2n * XPI);
+    expect(await alice.wallet.getBalance()).toBe(4n * XPI - 2n * XPI - 2n * fee);
+  }, 90_000);
+
+  it("a coinbase the wallet mined is neither balance nor spendable until the next block is 100 above it", async () => {
+    const miner = await fresh();
+    await node.mine(1, (await miner.wallet.getReceiveAddress()).raw);
+    expect(await miner.wallet.getBalance()).toBe(0n);
+    const recipient = await (await fresh()).wallet.getReceiveAddress();
+    await expect(miner.wallet.sendNative({ recipient, value: XPI })).rejects.toThrow(/Insufficient funds/);
+    await node.mine(98);
+    expect(await miner.wallet.getBalance()).toBe(0n);
+    await node.mine(1);
+    const matured = await miner.wallet.getBalance();
+    expect(matured).toBeGreaterThan(XPI);
+    // Once mature the node accepts the spend.
+    await miner.wallet.sendNative({ recipient, value: XPI });
+    await node.mine(1);
+    expect(await miner.wallet.getBalance()).toBe(matured - XPI - BigInt(nativeTransactionSize(1, 2)));
+  }, 120_000);
+
+  it("gathers several coins into one send, and refuses a send whose fee is above the reviewed maximum", async () => {
+    const alice = await fresh();
+    const bob = await fresh();
+    for (let i = 0; i < 3; i++) await node.fund((await alice.wallet.getReceiveAddress()).raw, XPI);
+    const recipient = await bob.wallet.getReceiveAddress();
+    const quote = await createLotusV2Chain({
+      chainIdentifier: "lotus-v2-regtest",
+      indexer,
+      checkpoint: node.checkpoint,
+      storeFor: () => memoryLotusV2WalletStore(),
+    }).nativeTransfers.estimateLegacyFee!({ wallet: alice.wallet, recipient, value: (5n * XPI) / 2n });
+    const fee = BigInt(nativeTransactionSize(3, 2));
+    expect(quote).toEqual({ totalFee: fee, inputCount: 3, deliveryFee: fee });
+    await expect(
+      alice.wallet.sendNative({ recipient, value: (5n * XPI) / 2n, maxFee: fee - 1n })
+    ).rejects.toThrow(NativeFeeExceededError);
+    expect(alice.wallet.pendingSends()).toEqual([]);
+    const sent = await alice.wallet.sendNative({ recipient, value: (5n * XPI) / 2n, maxFee: fee });
+    expect(alice.wallet.pendingSends()[0]!.inputs).toHaveLength(3);
+    await node.mine(1);
+    expect(await indexer.transactionState(sent.txHash)).toBe("confirmed");
+    expect(await bob.wallet.getBalance()).toBe((5n * XPI) / 2n);
+    expect(await alice.wallet.getBalance()).toBe(3n * XPI - (5n * XPI) / 2n - fee);
+  }, 120_000);
 
   it("the chain adapter (what openRelayUtxoChain hands the app) reads, sends and reports status", async () => {
     const chain = createLotusV2Chain({

@@ -80,8 +80,8 @@ export function createLotusV2Chain(config: LotusV2ChainConfig): LotusV2Chain {
         return requireLotusWallet(wallet, chainIdentifier).getNativeTransactionStatus(transaction);
       },
       async estimateLegacyFee({ wallet, recipient, value }) {
-        const totalFee = await requireLotusWallet(wallet, chainIdentifier).estimateFee({ recipient, value });
-        return { totalFee, inputCount: 1, deliveryFee: totalFee };
+        const plan = await requireLotusWallet(wallet, chainIdentifier).planSend({ recipient, value });
+        return { totalFee: plan.fee, inputCount: plan.inputs.length, deliveryFee: plan.fee };
       },
     },
   };

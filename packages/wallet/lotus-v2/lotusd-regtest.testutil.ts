@@ -63,7 +63,8 @@ export interface LotusRegtest {
   rpc<T = unknown>(method: string, params?: unknown[]): Promise<T>;
   /** Pays `atoms` to `address` from a matured coinbase, mines it, returns the wire txid. */
   fund(address: string, atoms: bigint): Promise<string>;
-  mine(blocks?: number): Promise<void>;
+  /** Mines `blocks` blocks; their coinbases pay `address` (default the faucet). */
+  mine(blocks?: number, address?: string): Promise<void>;
   stop(): Promise<void>;
 }
 
@@ -150,8 +151,8 @@ export async function startLotusRegtest(lotusd: string): Promise<LotusRegtest> {
       }
       throw new Error("Chronik did not index the tip in time");
     };
-    const mine = async (blocks = 1) => {
-      await rpc("generatetoaddress", [blocks, faucetAddress]);
+    const mine = async (blocks = 1, address = faucetAddress) => {
+      await rpc("generatetoaddress", [blocks, address]);
       await waitIndexed();
     };
     await mine(COINBASE_MATURITY + 40);

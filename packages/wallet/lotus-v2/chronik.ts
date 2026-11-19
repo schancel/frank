@@ -22,6 +22,8 @@ export interface LotusV2IndexedCoin {
   readonly outIdx: number;
   readonly value: bigint;
   readonly height: number;
+  /** A coinbase output (the block's first transaction): spendable only once mature. */
+  readonly coinbase: boolean;
 }
 
 /** The node answered and refused the transaction; it was not accepted by this call. */
@@ -43,6 +45,8 @@ export interface LotusV2Indexer {
   broadcast(rawHex: string): Promise<void>;
   /** Hash of the block at `height`, in the node's display order. */
   blockHash(height: number): Promise<string>;
+  /** Height of the tip the confirmed `/v2` index has reached. */
+  tipHeight(): Promise<number>;
 }
 
 interface V2Record {
@@ -53,7 +57,7 @@ interface V2Record {
   token_id: string;
   branches: string[];
   paths: number[][];
-  creation: { height: string };
+  creation: { height: string; tx_index: number };
   spend: unknown;
 }
 
@@ -67,13 +71,15 @@ export function chronikLotusV2Indexer(params: {
   const base = params.url.replace(/\/+$/, "");
   const doFetch = params.fetch ?? fetch;
   const chronik = new ChronikClient([base]);
-  const post = async (path: string, body: unknown) => {
+  const read = async (path: string, body?: unknown): Promise<unknown> => {
     const request = () =>
-      doFetch(`${base}${path}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      body === undefined
+        ? doFetch(`${base}${path}`)
+        : doFetch(`${base}${path}`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          });
     let response = await request();
     // Lotus v2 Chronik answers 503 `index_unavailable` at once, without waiting, while its writer
     // holds the confirmed database (connecting a block); a relay passes that on as 502. These reads
@@ -84,12 +90,14 @@ export function chronikLotusV2Indexer(params: {
     }
     if (!response.ok)
       throw new Error(`Lotus Chronik ${path}: HTTP ${response.status}`);
-    return (await response.json()) as {
+    return response.json();
+  };
+  const post = async (path: string, body: unknown) =>
+    (await read(path, body)) as {
       confirmed_only?: boolean;
       cursor: string | null;
       outputs: { record: V2Record }[];
     };
-  };
   const matches = (root: string, record: V2Record) =>
     record.flags === 0 &&
     record.token_id === ZERO_TOKEN &&
@@ -114,6 +122,7 @@ export function chronikLotusV2Indexer(params: {
             outIdx: record.out_idx,
             value: BigInt(record.value),
             height: Number(record.creation.height),
+            coinbase: record.creation.tx_index === 0,
           });
         }
         cursor = result.cursor;
@@ -147,6 +156,13 @@ export function chronikLotusV2Indexer(params: {
     },
     async blockHash(height) {
       return (await chronik.block(height)).blockInfo.hash;
+    },
+    async tipHeight() {
+      const status = (await read("/v2/status")) as { ready?: boolean; snapshot?: { height?: string } };
+      const height = Number(status.snapshot?.height);
+      if (!status.ready || !Number.isSafeInteger(height))
+        throw new Error("Lotus Chronik /v2 index is not ready");
+      return height;
     },
   };
 }

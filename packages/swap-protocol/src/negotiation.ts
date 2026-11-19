@@ -64,6 +64,12 @@ export interface NegotiationDeadlineRules {
   readonly xecTimeSkew: number
   /** W: tolerated watcher downtime. */
   readonly watcherDowntime: number
+  /**
+   * B locks MON only while now ≤ T_B − evmLockMargin, leaving A time to see the lock final and
+   * withdraw before T_B − evmFinality. The plan fixes it at 2 h on testnet without a formula;
+   * regtest-proof uses 2·W.
+   */
+  readonly evmLockMargin: number
   /** R1 = M_xec + S_xec + W. */
   readonly minRefundGap: number
   /** R2 (T_B − E). */
@@ -87,6 +93,7 @@ const DEADLINE_RULES: Readonly<
     xecFinality: 3 * HOUR,
     xecTimeSkew: 2 * HOUR,
     watcherDowntime: HOUR,
+    evmLockMargin: 2 * HOUR,
     minRefundGap: 6 * HOUR,
     minClaimWindow: 8 * HOUR,
     maxSpan: 72 * HOUR,
@@ -102,6 +109,7 @@ const DEADLINE_RULES: Readonly<
     xecFinality: 30,
     xecTimeSkew: 0,
     watcherDowntime: 10,
+    evmLockMargin: 20,
     minRefundGap: 40,
     minClaimWindow: 60,
     maxSpan: 72 * HOUR,

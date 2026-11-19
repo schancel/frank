@@ -347,13 +347,30 @@ sends live in that device's store, as eCash sends do today (follow-up F4).
 
 - Registry row `lotus-v2-regtest` (protocol). Editing `v1.json` changes the Solana WASM package
   that embeds it; see "Verification" for the regeneration status.
-- Browser storage key `frank:lotus-v2-wallet:v1:<chainIdentifier>:<firstAddress>`: JSON
-  `{version: 2, chainIdentifier, receiveIndex, changeIndex, pending[], consumedInputs[], sends[]}`.
-  `sends[]` (stage 3, History) is `{txid, recipient, value, fee, recordedAt}` for every send
-  that is pending or mined; a send that never went out is removed with its claim. A `version: 1`
-  record (stages 1-2) is refused with the reset message (remove the browser's
-  `frank:lotus-v2-wallet:v1:*` keys; each regtest run is a new chain anyway). No reader of an
-  older format exists or is added.
+- Browser storage key (stage 3) `frank:lotus-v2-wallet:v2:<chainIdentifier>:<checkpointHash>:<firstAddress>`
+  (`lotusV2StoreKey`, `browserLotusV2WalletStore` in `lotus-v2/wallet.ts`): one record per chain,
+  regtest run (its operator checkpoint block) and account. JSON, version 2:
+
+  ```
+  {
+    version: 2,
+    chainIdentifier: string,
+    checkpoint: { height: number, hash: string },      // the run; a record of another run is refused
+    receiveIndex: number, changeIndex: number,
+    pending: { txid, raw, inputs: { txid, outIdx }[] }[],  // signed, not yet seen mined; inputs claimed
+    consumedInputs: { txid, outIdx }[],                  // inputs of mined sends
+    sends: { txid, recipient, value, fee, recordedAt }[] // History: pending or mined sends (atoms as decimal strings)
+  }
+  ```
+
+  Other branches extend this record by adding fields (the HTLC/escrow branch adds `operations[]`):
+  writes spread the parsed record, so a field survives, but `parseState` validates only the fields
+  it lists, so extend `parseState` and this list together. Refusals, each with `LOTUS_V2_STORE_RESET` (remove the
+  browser's `frank:lotus-v2-wallet:*` keys; each regtest run is a new chain): a record that is not
+  this shape, a record whose `checkpoint` is not the run's, and, on open, a stage 1-2 record of the
+  same account under `frank:lotus-v2-wallet:v1:<chainIdentifier>:<firstAddress>` (never silently
+  left behind: it may hold an unmined send). No reader of an older format exists or is added.
+
 - No wire/message format changes.
 
 ## Base chain seam

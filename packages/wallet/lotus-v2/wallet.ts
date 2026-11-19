@@ -85,8 +85,29 @@ export function memoryLotusV2WalletStore(): LotusV2WalletStore {
   return { load: () => value, save: (text) => void (value = text) };
 }
 
-/** Browser storage. Throws where there is none, so a send is never recorded only in memory. */
-export function browserLotusV2WalletStore(key: string): LotusV2WalletStore {
+/** The development reset for a Lotus wallet record this code cannot use. */
+export const LOTUS_V2_STORE_RESET =
+  "reset this development wallet: remove the browser's frank:lotus-v2-wallet:* local storage keys (each regtest run is a new chain; nothing on it outlives the run)";
+
+/** The wallet's record for one chain, one regtest run (its checkpoint block) and one account. */
+export function lotusV2StoreKey(params: {
+  chainIdentifier: string;
+  checkpointHash: string;
+  firstAddress: string;
+}): string {
+  return `frank:lotus-v2-wallet:v2:${params.chainIdentifier}:${params.checkpointHash}:${params.firstAddress}`;
+}
+
+/**
+ * Browser storage. Throws where there is none, so a send is never recorded only in memory. A
+ * stage 1-2 record of this account (`frank:lotus-v2-wallet:v1:<chain>:<first address>`) is
+ * refused with the reset, never silently left behind: it may hold a send not yet mined.
+ */
+export function browserLotusV2WalletStore(params: {
+  chainIdentifier: string;
+  checkpointHash: string;
+  firstAddress: string;
+}): LotusV2WalletStore {
   const storage = () => {
     const host = globalThis as {
       localStorage?: { getItem(k: string): string | null; setItem(k: string, v: string): void };
@@ -94,9 +115,14 @@ export function browserLotusV2WalletStore(key: string): LotusV2WalletStore {
     if (!host.localStorage) throw new Error("Lotus wallet storage is unavailable");
     return host.localStorage;
   };
-  const name = `frank:lotus-v2-wallet:v1:${key}`;
+  const name = lotusV2StoreKey(params);
+  const retired = `frank:lotus-v2-wallet:v1:${params.chainIdentifier}:${params.firstAddress}`;
   return {
-    load: () => storage().getItem(name) ?? undefined,
+    load: () => {
+      if (storage().getItem(retired) !== null)
+        throw new Error(`Unsupported Lotus wallet record ${retired}; ${LOTUS_V2_STORE_RESET}`);
+      return storage().getItem(name) ?? undefined;
+    },
     save: (text) => storage().setItem(name, text),
   };
 }
@@ -126,6 +152,8 @@ interface SendRecord {
 interface StoredState {
   readonly version: 2;
   readonly chainIdentifier: string;
+  /** The regtest run this record belongs to: its operator checkpoint block. */
+  readonly checkpoint: { readonly height: number; readonly hash: string };
   readonly receiveIndex: number;
   readonly changeIndex: number;
   /** Signed sends not yet seen mined. Their inputs are claimed. */
@@ -150,11 +178,16 @@ function validOutpoint(o: unknown): o is Outpoint {
   );
 }
 
-function parseState(text: string | undefined, chainIdentifier: string): StoredState {
+function parseState(
+  text: string | undefined,
+  chainIdentifier: string,
+  checkpoint: { readonly height: number; readonly hash: string }
+): StoredState {
   if (text === undefined)
     return {
       version: 2,
       chainIdentifier,
+      checkpoint: { height: checkpoint.height, hash: checkpoint.hash },
       receiveIndex: 0,
       changeIndex: 0,
       pending: [],
@@ -164,6 +197,10 @@ function parseState(text: string | undefined, chainIdentifier: string): StoredSt
   const state = JSON.parse(text) as StoredState;
   if (
     state.version !== 2 ||
+    typeof state.checkpoint !== "object" ||
+    state.checkpoint === null ||
+    !Number.isSafeInteger(state.checkpoint.height) ||
+    typeof state.checkpoint.hash !== "string" ||
     !Number.isSafeInteger(state.receiveIndex) ||
     state.receiveIndex < 0 ||
     !Number.isSafeInteger(state.changeIndex) ||
@@ -188,11 +225,14 @@ function parseState(text: string | undefined, chainIdentifier: string): StoredSt
         Number.isSafeInteger(send.recordedAt)
     )
   )
-    throw new Error(
-      "Unsupported Lotus wallet record; reset this development wallet's local storage (frank:lotus-v2-wallet:v1:*)"
-    );
+    throw new Error(`Unsupported Lotus wallet record; ${LOTUS_V2_STORE_RESET}`);
   if (state.chainIdentifier !== chainIdentifier)
     throw new Error("Stored Lotus wallet record belongs to another chain");
+  // Another regtest run is another chain: its sends, claims and indices mean nothing here.
+  if (state.checkpoint.height !== checkpoint.height || state.checkpoint.hash !== checkpoint.hash)
+    throw new Error(
+      `Stored Lotus wallet record belongs to another regtest run (checkpoint ${state.checkpoint.height}:${state.checkpoint.hash}); ${LOTUS_V2_STORE_RESET}`
+    );
   return state;
 }
 
@@ -254,11 +294,12 @@ export class LotusV2Wallet implements NativeWalletHandle {
     chainIdentifier: string,
     private readonly account: HdPrivateNode,
     private readonly indexer: LotusV2Indexer,
-    private store: LotusV2WalletStore
+    private store: LotusV2WalletStore,
+    private readonly checkpoint: { readonly height: number; readonly hash: string }
   ) {
     this.chainIdentifier = chainIdentifier;
     this.networkId = chainIdentifier;
-    this.state = parseState(undefined, chainIdentifier);
+    this.state = parseState(undefined, chainIdentifier, checkpoint);
   }
 
   /**
@@ -269,8 +310,12 @@ export class LotusV2Wallet implements NativeWalletHandle {
     chainIdentifier: string;
     seed: Uint8Array;
     indexer: LotusV2Indexer;
-    /** Durable storage for this wallet, named by its first receive address. */
-    storeFor: (firstAddress: string) => LotusV2WalletStore;
+    /** Durable storage for this wallet, named by its first receive address (and the run's
+     * checkpoint, which the record also carries: a record of another run is refused). */
+    storeFor: (
+      firstAddress: string,
+      checkpoint: { readonly height: number; readonly hash: string }
+    ) => LotusV2WalletStore;
     /** The operator checkpoint of this regtest run; the node must have this block. */
     checkpoint: { readonly height: number; readonly hash: string };
   }): Promise<LotusV2Wallet> {
@@ -289,9 +334,10 @@ export class LotusV2Wallet implements NativeWalletHandle {
       params.chainIdentifier,
       account.value,
       params.indexer,
-      memoryLotusV2WalletStore()
+      memoryLotusV2WalletStore(),
+      params.checkpoint
     );
-    wallet.store = params.storeFor(wallet.addressAt(0, 0));
+    wallet.store = params.storeFor(wallet.addressAt(0, 0), params.checkpoint);
     wallet.reload();
     // A restart finishes what it interrupted: the same recorded bytes, never a new payment.
     // An unreachable indexer must not refuse the wallet; the next send tries again first.
@@ -328,6 +374,8 @@ export class LotusV2Wallet implements NativeWalletHandle {
    * receive addresses.
    */
   async getNativeTransfers(): Promise<readonly NativeTransferRecord[]> {
+    // Settle what the node has mined first, so a mined send is not shown as pending.
+    await this.finishPending().catch(() => undefined);
     await this.ensureDiscovered();
     const { sends, pending, receiveIndex, changeIndex } = await this.exclusive(async () => this.state);
     const unmined = new Set(pending.map((send) => send.txid));
@@ -555,7 +603,7 @@ export class LotusV2Wallet implements NativeWalletHandle {
   }
 
   private reload(): void {
-    this.state = parseState(this.store.load(), this.chainIdentifier);
+    this.state = parseState(this.store.load(), this.chainIdentifier, this.checkpoint);
   }
 
   private persist(next: StoredState): void {

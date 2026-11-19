@@ -22,6 +22,7 @@ import type { EcashNativeOperation } from "./ecash-operation-store";
 import { buildXecHtlcSpend, xecAddressPrefix } from "./ecash-htlc";
 import type { XecHtlcBranch, XecHtlcSpend } from "./ecash-htlc";
 import { deriveXecHtlcSecretKey } from "./ecash-htlc-keys";
+import { describeWalletFailure, recordWalletFailure } from "./wallet-failure";
 import type { ChainTransaction } from "./chain/chain-wallet";
 import type { EcashAddressPrefix, EcashWalletBackend } from "./ecash-wallet";
 import { ecashStealthPoint, assertEcashStealthChain } from "./ecash-stealth";
@@ -94,6 +95,36 @@ export interface EcashNativeConstruction {
 
 /** BIP44 gap limit, the SDK's DEFAULT_GAP_LIMIT (Electrum ABC's GAP_LIMIT). */
 const ECASH_HD_GAP_LIMIT = 20;
+
+/**
+ * An ordinary refresh could not tell whether another device used the next HD addresses: the
+ * indexer did not answer the gap probe ("unavailable") or answered with the wrong number of
+ * rows ("protocol"). The refresh publishes nothing; the previous balance observation stays.
+ */
+export class EcashGapProbeError extends Error {
+  constructor(
+    readonly reason: "unavailable" | "protocol",
+    readonly cause?: unknown
+  ) {
+    super(
+      reason === "unavailable"
+        ? "The eCash indexer did not answer the address probe; the balance was not refreshed."
+        : "The eCash indexer answered the address probe with the wrong number of rows; the balance was not refreshed."
+    );
+    this.name = "EcashGapProbeError";
+    recordWalletFailure(
+      this,
+      {
+        observationUnavailable: true,
+        ...(reason === "unavailable" &&
+        describeWalletFailure(cause).retry === "transient"
+          ? { transientTransport: true }
+          : {}),
+      },
+      { cause: cause ?? this }
+    );
+  }
+}
 
 function outpointKey(input: EcashInputReference): string {
   if (
@@ -423,8 +454,10 @@ export class EcashSdkBackend implements EcashWalletBackend {
    * Whether any of the GAP_LIMIT addresses from each chain's known index on has history
    * (Chronik's numTxs counts mempool) or coins: one batchSummary of 2 × GAP_LIMIT scripts.
    * The SDK's own discovery always sends 500 scripts per chain, and the relay charges per
-   * script, so it runs only after this probe finds something. Fails safe: an unavailable
-   * batch endpoint falls back to the SDK's discovery, which has its own fallback.
+   * script, so it runs only after this probe finds something. A failed probe (for example a
+   * relay quota) or a reply with the wrong row count fails the refresh with an
+   * EcashGapProbeError: callers keep their last observation and back off, and nothing falls
+   * through to the full scan, whose ~1000 requests the relay would reject too.
    */
   private async gapWindowUsed(): Promise<boolean> {
     const scripts: Array<{ scriptType: "p2pkh"; payload: string }> = [];
@@ -444,10 +477,11 @@ export class EcashSdkBackend implements EcashWalletBackend {
     let rows: Awaited<ReturnType<ChronikClient["batchSummary"]>>;
     try {
       rows = await this.chronik.batchSummary(scripts);
-    } catch {
-      return true;
+    } catch (cause) {
+      throw new EcashGapProbeError("unavailable", cause);
     }
-    if (rows.length !== scripts.length) return true;
+    if (!Array.isArray(rows) || rows.length !== scripts.length)
+      throw new EcashGapProbeError("protocol");
     return rows.some((row) => row.numTxs > 0 || row.numUtxos > 0);
   }
 

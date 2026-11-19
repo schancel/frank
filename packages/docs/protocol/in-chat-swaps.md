@@ -3,6 +3,8 @@
 > **Issue**: `#1705` — In-chat P2P OTC Swap & Escrow Handshake Cards with multi-device execution leases  
 > **Plugin ID**: `swap-handshake-v1`  
 > **Schema Version**: `1`
+>
+> **Not the swap that runs.** Frank's XEC ↔ MON swap is the HTLC swap in [Cross-Chain Atomic Swaps](./atomic-swaps.md), negotiated with `swap-negotiation-v1`. This older plugin, its card and this page are to be deleted (HTLC swap plan, follow-up PR 9).
 
 ## 1. Overview
 

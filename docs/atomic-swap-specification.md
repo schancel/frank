@@ -2,13 +2,336 @@
 
 ## Status
 
-This document defines the design target for atomic swaps negotiated through a Frank plugin. It is
-a protocol specification and research plan, not a claim that atomic swaps are currently shipped.
-The first implementation target is a single-lane swap between eCash testnet and Monad testnet.
+What runs today is the **HTLC swap** described in the next section: native XEC on eCash testnet
+(`xec-testnet`) for native MON on Monad testnet (`monad-testnet`), two parties, one lane. It was
+built by the plan in [docs/plans/htlc-swaps/README.md](plans/htlc-swaps/README.md) (owner approval
+2026-11-17) and replaces the earlier escrow and live-swap-execution code, which is deleted. Owner QA
+of the app on testnet with tXEC is still pending.
 
-The implementation must remain testnet-only until the security gates in this document are met.
-The existing `@frank/adaptor-signatures` package is experimental, has not received an external
-cryptographic or side-channel audit, and must not protect assets of real value.
+The rest of this document, from "Goals" on, is the original research specification: the
+chain-pair matrix, adaptor-signature and threshold-ECDSA custody modes, bundles, and the B0
+StateChannel experiment. None of that is the running swap. The research packages it names
+(`stage0`, `state-channel-pair`, `@frank/adaptor-signatures`, `@frank/threshold-ecdsa`) are kept
+as research only.
+
+Everything here is testnet-only. The research cryptography has had no external cryptographic or
+side-channel audit and must not protect assets of real value.
+
+## Implemented: the HTLC swap (xec-testnet ↔ monad-testnet)
+
+This section describes the code at the time of writing. File references are relative to the
+repository root.
+
+### Shape
+
+- **A** makes the offer, puts up XEC and holds the secret. **B** accepts and puts up MON.
+- A locks XEC first, with the long deadline T_A. B locks MON second, with the short deadline T_B.
+  A withdraws the MON with the secret, which puts the secret on chain. B reads it from the Monad
+  contract and claims the XEC.
+- After the accept, the parties send each other no messages. Both compute the lock identities
+  from the signed terms (eCash: the P2SH script of the terms; Monad: `lockIdOf(B's account, terms)`)
+  and find the locks on chain. Chain state is read again on every tick and never stored as
+  authority.
+- The relay only carries the signed negotiation events. It holds no coins and no secret.
+
+### The secret, the keys and the swap ID
+
+- Secret: 32 bytes, `frank/swap-htlc-preimage/v1` (`packages/wallet/swap-preimage.ts`):
+  HKDF-SHA256 from the account's messaging root, with info = u8(length of policy name) ‖ policy
+  name ‖ swapId. It is never
+  stored. Hosts reach it only through `swapSecretCapabilityOf(wallet)`, which returns preimages
+  and nothing else. The hash lock is `sha256(preimage)`.
+- Per-swap eCash keys: `frank/xec-htlc-key/v1` (`packages/wallet/ecash-htlc-keys.ts`): HKDF from
+  the eCash account key with info = chainIdentifier ‖ swapId ‖ role (`refund` for A, `claim` for
+  B). Keys never leave the wallet; `EcashWallet.htlcPublicKey` / `signHtlcSpend` use them.
+- Swap ID: A derives it itself. `deriveOfferSwapId` (`packages/swap-protocol/src/negotiation.ts`)
+  takes a keyed hash of the `frank/swap-offer-id/v1` transcript of the offer facts (policy,
+  chains, conversation, ordered parties, both principals, E, T_A, T_B, A's MON address, the
+  contract). The app keys it with HMAC-SHA256 under the account's conversation-ID salt
+  (`offerSwapId` in `app/src/swap/htlc-swap-execution.ts`). Every device of A's account gets the
+  same swap ID for the same offer and nobody else can compute it. `authorizeNegotiation` signs an
+  offer only for the swap ID the account derives from that offer, and the runner treats party 0
+  as A only when the swap ID re-derives (`resolveHtlcSwapRole` in
+  `packages/swap-protocol/src/htlc-swap.ts`). So the secret is never asked for a swap ID that a
+  peer supplied or that was used before.
+
+### Wire format (negotiation payload v2)
+
+The message item type is still `swap-negotiation-v1`; the payload carries its own version. Code
+and golden vectors: `packages/swap-protocol/src/negotiation.ts` and `negotiation.jest.test.ts`.
+Policies: `xec-monad-testnet-v2` (`TESTNET_NEGOTIATION_POLICY`) and `xec-monad-regtest-proof-v2`
+(`REGTEST_PROOF_NEGOTIATION_POLICY`).
+
+- Offer keys 0–14: payload version 2, pair-policy version 2, conversationId, parties, XEC chain,
+  EVM chain, xecPrincipal (u64 sats), evmPrincipal (32-byte big-endian wei), expiry E (u64 s),
+  hashLock (32 B), xecRefundPublicKey (A, 33 B), evmRecipient (A's main account, 20 B),
+  xecRefundTime T_A (u64 s), evmExpiry T_B (u64 s), evmHtlcContract (20 B).
+- Accept keys 0–6: version, conversationId, responder, offerEventId, termsHash,
+  xecClaimPublicKey (B, 33 B), evmSender (B's main account, which is also its refund address,
+  20 B). A reject has keys 0–4 only.
+- The terms hash label is `frank/swap-negotiation-terms/v2`.
+- The reducer treats terms that cannot execute as a violation, never as an accepted swap: the
+  rules R1–R3 below, T_A a CLTV timestamp (≥ 500 000 000 and ≤ 2^32 − 1), xecPrincipal ≥ 546,
+  valid and distinct eCash keys, non-zero addresses, and evmSender ≠ evmRecipient.
+- A v1 payload fails decode as `bad-version` and is kept as unsupported. A stored v1 journal row
+  fails as `corrupt-record` with the reset (delete the account's `frank-swap-negotiation-v1-…`
+  namespace).
+
+### eCash HTLC
+
+`packages/wallet/ecash-htlc.ts`:
+
+```text
+OP_IF
+  OP_SIZE <0x20> OP_EQUALVERIFY OP_SHA256 <hashLock:32> OP_EQUALVERIFY <B.xecClaimPublicKey:33>
+OP_ELSE
+  <T_A> OP_CHECKLOCKTIMEVERIFY OP_DROP <A.xecRefundPublicKey:33>
+OP_ENDIF OP_CHECKSIG
+```
+
+- Claim scriptSig `<sig‖0x41> <preimage:32> OP_1 <redeem>`, nLockTime 0, sequence `0xffffffff`.
+- Refund scriptSig `<sig‖0x41> OP_0 <redeem>`, nLockTime T_A, sequence `0xfffffffe`.
+- A's funding output holds exactly `xecPrincipal + 1000` sats (`XEC_HTLC_SPEND_FEE_SATS`). A
+  claim or refund spends one funding output into one output of exactly `xecPrincipal` to the
+  spender's own address, so its fee is exactly 1000 sats. Signatures are SIGHASH_ALL | FORKID with
+  RFC 6979 nonces, so two devices of one account produce the same bytes and txid.
+- A funds through the eCash wallet's native operation `swap:<swapId>:xec-lock`
+  (prepare → expose → submit). The wallet re-submits the same bytes until they land.
+- The runner reads the script's history from Chronik (through the relay,
+  `<relay>/chain-rpc/xec-testnet/chronik`). Finality is Avalanche finality (`isFinal`). The median
+  time is taken over the last 11 blocks. A spend that reveals a preimage for these terms is a
+  claim; any other spend is a refund (`packages/wallet/swap/htlc-swap-capabilities.ts`).
+
+### GenericHTLC v2 (Monad)
+
+`packages/contracts/contracts/GenericHTLC.sol`, deployed once to `monad-testnet` at
+`0x67C3231b8F28309a84004643C592FFc9eAd939cB` (`packages/contracts/deployments/monad-testnet.json`,
+commit "deploy(contracts): GenericHTLC v2 on monad-testnet" #2070).
+
+- `lockIdOf(sender, recipient, refundAddress, token, amount, hashLock, expiresAt)` is
+  `keccak256(abi.encode(...))` of all seven. The sender is `msg.sender`, so nobody can occupy
+  another party's lock ID; the same lock twice reverts with `LockAlreadyExists`.
+- Swap lock terms (`htlcSwapTermsOf`): sender and refund address = B's `evmSender`, recipient =
+  A's `evmRecipient`, native MON (token = zero address), amount = evmPrincipal, hash lock from the
+  offer, `expiresAt` = T_B.
+- `lock` requires `block.timestamp < expiresAt ≤ block.timestamp + 30 days`
+  (`MAX_LOCK_DURATION`). `withdraw` works strictly before `expiresAt` and requires
+  `sha256(abi.encodePacked(preimage)) == hashLock` for a 32-byte preimage; the preimage is stored
+  in `locks(lockId)` and emitted in `Withdrawn`. `refund` works from `expiresAt` on and anyone may
+  send it.
+- Native payouts forward `PAYMENT_GAS` (100 000). A destination that refuses the payment is credited in
+  `owed` instead of blocking the call, and `claimOwed(token, to)` collects it.
+- The app sends lock, withdraw and refund with `sendContractCall` from the EVM main account
+  (`htlcMainAccountOf`), journaled as `htlc` contract-call records (`kind: 'htlc'`, action, swapId,
+  lockId). The wallet refuses an `htlc` call whose calldata does not match its record or whose
+  target is not this network's GenericHTLC. A lock read counts as final 10 blocks below the latest
+  (`MONAD_HTLC_FINALITY_DEPTH`).
+- Poker and liar's dice table escrow use the same contract (`batchDistribute`); see the plan's
+  follow-ups. Solana's `generic-htlc` program is unchanged and not part of this swap.
+
+### Deadlines
+
+The offer signs three absolute times: E (accept by), T_B (MON lock expiry) and T_A (XEC refund
+time). Margins come from `negotiationDeadlineRules(policy)`:
+
+| Margin | Testnet | Regtest proof |
+| --- | --- | --- |
+| M_evm (Monad finality) | 600 s | 5 s |
+| M_xec (eCash finality) | 3 h | 30 s |
+| S_xec (eCash median-time skew) | 2 h | 0 |
+| W (watcher downtime) | 1 h | 10 s |
+| B's lock margin (`evmLockMargin`) | 2 h | 20 s |
+
+Rules the reducer enforces:
+
+| Rule | Testnet | Regtest proof |
+| --- | --- | --- |
+| R1 `T_A − T_B ≥ M_xec + S_xec + W` | 6 h | 40 s |
+| R2 `T_B − E ≥` | 8 h | 60 s |
+| R3 `T_A − E ≤` | 72 h | 72 h |
+
+UI defaults (`defaultNegotiationDeadlines`): testnet E = now + 1 h, T_B = E + 12 h,
+T_A = T_B + 12 h; regtest proof E = now + 60 s, T_B = E + 120 s, T_A = T_B + 120 s.
+
+**Lock window.** GenericHTLC refuses `expiresAt` more than 30 days after the lock's block, and B
+locks only after the accept. So the offer and accept writers refuse to sign when
+T_B − now > 30 days − 1 h (`negotiationLockWindow`, `EVM_HTLC_MAX_LOCK_SECONDS`, 1 h clock
+margin), and `OfferSwapDialog` caps E at `latestNegotiationExpiry`. Without this, A's automatic
+XEC lock could fund a swap B can never lock, and the XEC would be tied up until T_A. This check
+depends on the clock, so it is applied when signing, not by the reducer.
+
+**Cutoffs** (`htlcSwapCutoffs`; the runner checks them again on a fresh clock just before it acts):
+
+- A funds XEC only while now ≤ T_B − (M_xec + S_xec + W): T_B − 6 h on testnet.
+- B locks MON only when A's XEC output is final with the exact script and value, unspent, and
+  now ≤ T_B − lock margin: T_B − 2 h on testnet. The call is given up if it has not landed by then.
+- A withdraws only while now ≤ T_B − M_evm: T_B − 600 s on testnet. Once the secret may be public
+  (a withdraw was signed, whatever became of it, or B already claimed an XEC output), A keeps
+  withdrawing while the lock is open and block time < T_B, with deadline T_B − 1.
+- B claims XEC whenever it knows the secret and the output is unspent.
+- B refunds MON once block.timestamp ≥ T_B and the lock is open.
+- A refunds XEC once the median time of the tip > T_A and the output is unspent, and never the
+  output B is owed after A's withdraw landed.
+
+"now" is the later of the device clock and the latest Monad block time, so a cutoff has passed
+when either says so. The refunds follow only the chains' own clocks.
+
+### Runner state machines
+
+`HtlcSwapRunner` (`packages/swap-protocol/src/htlc-swap-runner.ts`) ticks over every negotiation of
+the account. For each, it validates the terms against this device (chains match the policy, the
+contract equals this network's GenericHTLC, the keys, addresses and hash lock are its own), reads
+the record and both chains, and calls the pure `nextAction` (`htlc-swap.ts`), which returns one
+phase, at most one action and any warnings. A failed call or observation is retried on the next
+tick. A lock or refund call that reverted twice (`HTLC_CALL_MAX_REVERTS`) is not sent again
+automatically, nor is a withdraw while the secret cannot yet be public.
+
+**A (offerer):**
+
+- `offered` until E; `expired` if no accept by E; `rejected` on a reject.
+- `accepted`: the XEC lock is automatic when the accept arrives. There is no Lock button; the
+  signed offer is A's authorization. Before funding, the runner checks the cutoff and that no
+  output already pays the HTLC script (otherwise warning `xec-foreign-output`, and A does not
+  fund). If the EVM main account holds less than one HTLC call's gas it shows `claim-gas-low`,
+  a warning only. It writes `fundingAuthorizedAt` and `xecLockOperationId` to the record, then funds.
+- `xecLockPending`: the funding operation exists but its output is not final. An exposed,
+  submitted or confirmed operation is resumed (same bytes) whatever the clock says. An operation
+  only prepared when the cutoff passes is released, and the swap is `abandoned`; so is a released one.
+- `xecLocked`: the output is final; waiting for B's lock.
+- `claiming`: B's lock is open at the final block and the withdraw cutoff has not passed: withdraw
+  MON with A's own derived secret (zeroed after use).
+- `claimed` (terminal): the withdraw landed, seen on chain or in A's own EVM journal, so a lagging
+  node that still shows the lock open never leads A to refund. Afterwards A only refunds extra
+  outputs of a double funding (below) and collects `owed`.
+- `claimedByPeer`: B already claimed XEC before A's withdraw landed (the secret is public); A keeps
+  withdrawing until T_B.
+- `awaitRefund`: B's lock was refunded, or the withdraw cutoff passed without a withdraw. A waits
+  for median time > T_A.
+- `refunding` → `refunded`: sign the refund, write it to the record, broadcast it, and re-broadcast
+  the same bytes until it is final.
+
+**B (responder):**
+
+- `offerReceived`: the user accepts or rejects in the swap card (`SignedNegotiationCard.vue`).
+  The accept writer (`buildResponseIntent`, `app/src/swap/negotiation-commands.ts`) refuses an
+  offer that does not name this network's GenericHTLC; the reducer checks R1–R3. The accept is B's
+  authorization to lock MON.
+- `awaitXecLock`: waiting for A's exact, final, unspent funding output.
+- `locking`: write `fundingAuthorizedAt`, then lock MON. The runner reads `locks(lockId)` first; a
+  lock that already exists counts as locked. Past the lock cutoff with no lock: `abandoned`.
+- `evmLocked`: the lock is open and block time < T_B.
+- `refunding` → `refunded`: block time ≥ T_B and the lock still open: refund MON.
+- `claimingXec`: the lock is withdrawn. B reads the preimage from `locks(lockId)`, checks that it
+  hashes to the hash lock, signs the claim, writes it to the record, broadcasts it, and
+  re-broadcasts until it is final.
+- `complete`: the claim is final.
+- `lostToRefund`: A refunded the XEC before B claimed it. This happens only if B was away from
+  A's withdraw until after T_A.
+
+Both roles call `claimOwed` when the contract owes their main account, at most once per 600 s.
+
+**Double funding: one principal for B.** Several exact funding outputs at one script can appear
+(for example two of A's devices both funded). B is owed exactly one principal: it claims one
+output, the one it already signed a claim for, else the first unspent exact output by outpoint.
+A refunds every unspent output once median time > T_A, except that after its withdraw landed,
+and until a claim of B's is final, the first unspent output stays for B. A claim still in the
+mempool can lose to a refund of its output, so it does not count until final. The runner reports
+the warning `xec-double-funded`. The record keeps one signed spend per funding outpoint
+(`xecSpends`, sorted, at most 16).
+
+### Active device
+
+Only the account's active device starts new swap work (`activeForSwaps`,
+`app/src/swap/htlc-swap-execution.ts`):
+
+- Before the session's first mailbox read (which brings the other devices' claims) a device starts
+  nothing.
+- After it, a device is active when the account's latest device claim names it, or when no device
+  of the account holds a claim at all. With no claim nobody else acts, and an untouched background
+  tab must still claim and refund in time.
+- A claim naming another device keeps this one observing.
+- An inactive device only finishes work it already authorized and exposed itself. It resumes its
+  own exposed, submitted or confirmed `swap:<swapId>:xec-lock` operation, and re-broadcasts a
+  spend stored in its own record when the active rule would spend that output now. It starts no
+  lock, withdraw, refund, new signature or `claimOwed`.
+- Only one tab per browser runs Frank (`app/src/stores/tab-coordinator.ts`), so one runner acts per device.
+
+Each device has its own eCash operation ledger, so the deterministic operation ID does not stop
+two devices from both funding. Only one active device does. Two devices that both believe they
+are active (a claim not yet seen) can both fund; the second output is then handled by the
+double-funding rule above and refunded after T_A.
+
+### Restart and write-ahead
+
+Each tick re-derives every swap from the negotiation journal, the swap record and the chains, and
+every action reads the chain first. The record holds only what the chains cannot give back:
+
+- Store `frank-swap-htlc-v1-<namespace>` (IndexedDB, revision compare-and-swap under a Web Lock;
+  `packages/swap-protocol/src/storage/htlc-swap-browser.ts`). The namespace is
+  `<chain>:<identity address>:<revision>`.
+- Record v1: `{version, swapId, conversationId, owner {accountIncarnation, localPublicKey}, role,
+  termsHash, fundingAuthorizedAt?, xecLockOperationId?, xecSpends?}`. Parsing is strict.
+- `fundingAuthorizedAt` and `xecLockOperationId` are written before `xec.fund`. Every signed
+  eCash claim or refund is written before it is broadcast; later ticks re-broadcast those same
+  bytes, and an outpoint keeps the first spend written for it.
+- EVM call facts are not copied into the record. The EVM native journal's `htlc` records own
+  them; the runner reads them back with `ownCalls(swapId)`. That journal keeps exposed signed
+  calls and re-sends the same bytes after a restart.
+- A device with no record continues from the journal and the chains.
+
+An old `frank-swap-execution-v1-<same namespace>` database stops the runner. The console and
+every swap card name it; the reset is to delete it in the browser's developer tools and reload.
+
+### App composition
+
+`startAppSwapExecution` (`app/src/swap/htlc-swap-execution.ts`) is started by
+`app/src/utils/identity-session.ts` when the messaging session activates, after the session's
+negotiation recovery, and stopped with the session. It binds the session's `monad-testnet` EVM
+wallet, the same account's `xec-testnet` eCash wallet, the session's relay and the session's own
+negotiation journals. On any other network it does not start. The runner ticks every 15 s and is
+poked when a recovery pass changes the journals or the page becomes visible. A wallet that cannot
+be opened is retried every 30 s. The card reads the runner's state
+(`app/src/swap/swap-execution-state.ts`) and shows the phase, warnings and the deadlines E, T_B and
+T_A. It has no Lock, Claim, Refund or Cancel button.
+
+### Evidence
+
+- `packages/swap-protocol/src/htlc-swap.jest.test.ts`: table tests of every A and B transition
+  and cutoff boundary, on testnet and regtest margins.
+- `packages/swap-protocol/src/htlc-swap-runner.jest.test.ts`: write-ahead order, no secret for a
+  swap ID that does not re-derive, claim persisted before broadcast, inactive device.
+- `yarn --cwd packages/swap-protocol test:storage-browser`: the record store in real Chrome.
+- `yarn --cwd packages/bot regtest:htlc-swap` (`packages/bot/demo/regtest/htlc-swap.livecheck.ts`):
+  two parties, each its own process with real wallets, on xec-regtest and anvil: happy path with
+  restarts, B never locks, A never claims, B offline past T_A, two devices of A, and double funding
+  with B online and offline.
+- `app/src/swap/htlc-swap-execution.jest.test.ts`: B claims with the card unmounted; A locks on
+  the accept with no button and refunds after a reload past T_A.
+- `packages/contracts/test/GenericHTLC.jest.test.ts` (anvil acceptance tests of GenericHTLC v2),
+  and at deployment (#2070) the on-chain runtime code was checked against the artifact and a live
+  `scripts/htlc-round.ts` passed on monad-testnet (lock and withdraw with the preimage; refund
+  refused before the deadline, then accepted).
+
+### Known gaps
+
+- No owner QA on testnet with tXEC yet.
+- [#2087](https://github.com/schancel/frank/issues/2087) (open): if A's withdraw stays in the
+  mempool past its cutoff and never lands, the secret is visible there while A goes on to refund
+  at T_A, so a hostile B could take both sides. The runner already keeps withdrawing until T_B
+  once the secret may be public; the remaining window is a withdraw that never lands at all.
+- [#2084](https://github.com/schancel/frank/issues/2084) (open): a second device of the account
+  cannot fund from eCash change the first device created, because it does not discover those
+  change addresses.
+- The runner acts only while Frank is open on the active device. There are no wallet block
+  events; it runs on ticks and pokes.
+- A claim held by a device that is gone keeps the other devices observing until the user acts on
+  one of them.
+- B's MON lock and A's withdraw are sent from the EVM main account. MON held only in other
+  accounts is not moved there; a call that cannot be paid is retried on each tick.
+- `claimOwed` is not exercised on chain. The `htlc-record` note-to-self item has no consumer.
+- The `packages/contracts` suites are not run by hosted CI.
+- The older `swap-handshake-v1` plugin and `packages/docs/protocol/in-chat-swaps.md` are not part
+  of this swap and are to be deleted (plan PR 9).
 
 ## Goals
 
@@ -601,7 +924,12 @@ settlement, and recovery key in the path has a specified post-quantum replacemen
 Each unordered pair is specified below. Reversing who offers which asset changes sequencing and
 deadlines but does not add another matrix cell.
 
-## eCash/BCH <-> EVM: initial implementation target
+## eCash/BCH <-> EVM: research designs
+
+This pair is the one that now runs, but as the HTLC swap in "Implemented: the HTLC swap" above:
+hash locks on both chains, with the GenericHTLC contract on the EVM side. That is the
+"smart-account or escrow, recoverable mode" below. The contractless key-share and threshold
+designs in this section were not built for the app and remain research.
 
 ### Rationale
 
@@ -679,9 +1007,8 @@ for native ECDSA. The repository primitives and their cross-chain composition ar
 reviewed; durable signing/recovery and malicious-secure financial composition remain separate gates.
 
 **Smart-account or escrow, recoverable mode.** A minimal contract enforces claim and refund branches
-and permits recovery-time fee policy. This requires contract support that the present wallet does
-not yet expose, so it is a later implementation mode, but it is the only currently specified EVM
-path eligible for a recoverable-atomic claim.
+and permits recovery-time fee policy. This is the mode that was implemented: GenericHTLC v2 with a
+sha256 hash lock and an absolute deadline (see "GenericHTLC v2 (Monad)" above).
 
 **Cooperative EOA prototype.** One participant retains the complete EOA key and promises not to
 invalidate a pre-signed transaction. This may demonstrate encoding and secret extraction on
@@ -1041,6 +1368,13 @@ must not market encrypted negotiation as on-chain unlinkability.
 
 ## Implementation boundaries
 
+For the HTLC swap that runs, the split is: `@frank/swap-protocol` owns the negotiation, the pure
+decision core and the runner, and declares the capabilities it needs; `@frank/wallet` owns the
+keys, the eCash script and spends, the EVM calls and the journals that record them; `app` composes
+them and shows the card. `@frank/swap-protocol` never imports `@frank/wallet`
+(`packages/swap-protocol/src/runtime-boundary.jest.test.ts`). The list below is the original
+research layout for the wider protocol.
+
 The code should separate:
 
 - `swap-protocol`: canonical messages, transcript hashes, state transitions, amount invariants;
@@ -1226,6 +1560,11 @@ research demonstration.
 
 ## Decisions recorded
 
+- 2026-11-17 (owner): rebuild the xec-testnet ↔ monad-testnet swap on HTLCs, fix GenericHTLC's
+  edge cases and redeploy it once. A offers XEC and holds the secret; B offers MON.
+- 2026-11-18 (owner): the deadline margins are approved as written; A's XEC lock is automatic
+  when the accept arrives; A never refunds after its MON withdraw landed; the claim-gas check is a
+  warning only; on a double funding B is owed exactly one principal.
 - Frank will specify the full chain-pair matrix but implement eCash testnet to Monad testnet first.
 - Native assets and one lane come before tokens, routing, bundles, or multiple users.
 - A plain pre-signed transaction from a counterparty-controlled EVM EOA is not atomic custody.

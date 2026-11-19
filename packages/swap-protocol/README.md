@@ -1,20 +1,68 @@
 # `@frank/swap-protocol`
 
-Experimental, testnet-only Stage-0 atomic-swap protocol core. It implements the specification's
-exact v1 coordination-event bytes, domain-separated hashes, sender hash chains, bounded event
-budgets, prerequisite ordering, deterministic semantic reduction, and conservative cancel cutoff.
+Testnet-only atomic swaps between eCash testnet XEC and Monad testnet MON. The package holds:
 
-`advanceStage0` is a deterministic fake-adapter lifecycle model for preparation gates, local
-authorization cutoffs, funding/reveal readiness, custody-mode-specific settlement, restart, and
-explicit recovery outcomes. It consumes facts that a caller has already authenticated or observed;
-it does not turn peer reports into chain authority.
+- the signed negotiation (offer, accept, reject; payload v2), its journal and its account-scoped
+  storage;
+- the HTLC swap: the pure decision core `src/htlc-swap.ts`, the headless runner
+  `src/htlc-swap-runner.ts` and its record store `src/storage/htlc-swap-browser.ts`;
+- the research models `src/stage0.ts` and `src/state-channel-pair.ts`, which no app or bot runs.
 
-It deliberately does not allocate message type IDs or payload schemas. A pair manifest supplies
-those values, authorized producers, canonical payload interpretation, and state transitions. It
-also does not sign transactions, broadcast, persist secrets, watch chains, or claim recoverable
-atomic settlement. Those remain separate typed boundaries in `docs/atomic-swap-specification.md`.
+The protocol, deadlines, state machines and known gaps are described in
+`docs/atomic-swap-specification.md` ("Implemented: the HTLC swap") and in the plan
+`docs/plans/htlc-swaps/README.md`. This README covers the package's entry points.
 
-## Authenticated negotiation predecessor
+This package never imports `@frank/wallet`. It declares the capabilities it needs (`Clock`,
+`SwapSecretCapability`, `XecHtlcCapability`, `EvmHtlcCapability`); the wallet implements them and
+the host composes them (`src/runtime-boundary.jest.test.ts`, `check-deps`).
+
+## HTLC swap runner
+
+A offers XEC and holds the secret; B offers MON. A locks XEC first (refund after T_A), B locks MON
+second (refund from T_B), A withdraws MON with the secret, and B reads the secret from the
+contract and claims XEC. Nothing is sent between the parties after the accept.
+
+- `htlcSwapTermsOf` builds both locks' terms from the journal's `usableAcceptance`: the eCash
+  P2SH script terms and GenericHTLC's lock id (`htlcLockIdOf`, the contract's `lockIdOf` with B's
+  main account as sender).
+- `resolveHtlcSwapRole`: party 1 is B. Party 0 is A only if the swapId re-derives from the offer
+  under the account's keyed hash (`deriveOfferSwapId`), so the secret is never asked for a swapId
+  this account did not create.
+- `htlcSwapCutoffs`: A funds XEC while now ≤ T_B − (M_xec + S_xec + W), B locks MON while
+  now ≤ T_B − `evmLockMargin`, A withdraws while now ≤ T_B − M_evm. On testnet that is T_B − 6 h,
+  T_B − 2 h and T_B − 600 s; on regtest proof T_B − 40 s, T_B − 20 s and T_B − 5 s.
+- `nextAction(input)` is pure. From the negotiation state, the swap record, both chains'
+  observations, the device clock and whether this is the active device, it returns one phase, at
+  most one action (`fund-xec`, `release-xec-lock`, `lock-evm`, `withdraw-evm`, `refund-evm`,
+  `sign-xec-spend`, `broadcast-xec-spend`, `claim-owed`) and warnings (`claim-gas-low`,
+  `xec-double-funded`, `xec-foreign-output`). An inactive device gets only the actions that finish
+  its own exposed work: resuming an exposed XEC lock and re-broadcasting a spend it stored.
+- `HtlcSwapRunner` (`start`, `poke`, `tick`, `stop`, `subscribe`, `snapshot`) ticks over every
+  negotiation of one account. Ticks never overlap. It checks the terms against this device's keys,
+  addresses and contract, then observes the chains and performs the one action. Write-ahead:
+  `fundingAuthorizedAt` and `xecLockOperationId` are written before funding, and each signed eCash
+  claim or refund is written before it is broadcast; later ticks re-broadcast the same bytes.
+- Swap record v1 (`parseHtlcSwapRecord` / `serializeHtlcSwapRecord`, strict, canonical): the
+  keys `version`, `swapId`, `conversationId`, `owner`, `role`, `termsHash`, and optionally
+  `fundingAuthorizedAt`, `xecLockOperationId` and `xecSpends`. EVM call facts are not stored here; the wallet's EVM journal
+  owns them and the runner reads them with `EvmHtlcCapability.ownCalls`.
+- `BrowserHtlcSwapRecordStore` stores records in IndexedDB `frank-swap-htlc-v1-<namespace>` with
+  revision compare-and-swap under a Web Lock. `MemoryHtlcSwapRecordStore` is for tests and
+  single-process hosts.
+
+The app starts the runner in `app/src/swap/htlc-swap-execution.ts`. Verification:
+
+```sh
+yarn --cwd packages/swap-protocol test --runInBand
+yarn --cwd packages/swap-protocol test:htlc-swap-browser
+yarn --cwd packages/bot regtest:htlc-swap
+```
+
+The last command needs Bitcoin ABC binaries (`FRANK_BITCOIN_ABC_BIN_DIR`, or
+`yarn --cwd packages/bot regtest:fetch`) and anvil. It runs two parties, each in its own
+process with real wallets, on xec-regtest and anvil.
+
+## Authenticated negotiation
 
 `@frank/swap-protocol/src/negotiation` is a separate pure entry point. The existing package entry
 and Stage-0/pair experiments are unchanged. It freezes offer/accept/reject payload version 2,
@@ -77,7 +125,8 @@ Reduction preserves historical offer/decision evidence and reports violations se
 `usableAcceptance` is always null on a violation. `negotiationEligibility` accepts an explicit
 Unix-seconds clock, requires `now < expiry`, and does not erase old acceptance. Eligibility means
 only that further preparation may be considered: it never authorizes funding, signature release,
-reservation release, data deletion or cancellation of financial recovery. Authenticated host/runtime installation, UI, durable custody and execution remain separate work.
+reservation release, data deletion or cancellation of financial recovery. Execution belongs to
+the HTLC swap runner above, which reads `usableAcceptance` from the journal.
 
 The package's declared runtime dependency check can be run with:
 
@@ -91,8 +140,9 @@ its validation cache and never registers globally. It projects exact signed byte
 `{eventHex: string}` for ordinary JSON persistence, validates restored projections fully, and
 continues the enclosing receive budget. Its factual previews and hydration have no admission,
 signing, funding or settlement authority. App and the concrete all-bots target explicitly install
-the testnet policy. Wallet defaults and other bot targets do not install this feature. There is no
-proposal UI or automatic negotiation writer yet. A wire change requires coordinated feature
+the testnet policy. Wallet defaults and other bot targets do not install this feature. The app's
+writers are `app/src/swap/negotiation-commands.ts` (offer dialog `OfferSwapDialog.vue`, answers
+in `SignedNegotiationCard.vue`). A wire change requires coordinated feature
 writer/reader changes; no compatibility reader or migration is provided.
 
 ## Authenticated single-negotiation journal
@@ -103,7 +153,7 @@ writer/reader changes; no compatibility reader or migration is provided.
 canonical messaging chain. Inputs, including Buffers, are copied before storage
 awaits. Incarnation is an opaque nonempty scalar UTF-8 string of at most256 bytes;
 it is not derived from a key or automatically rebound after account restoration.
-No app/bot installs this engine yet.
+The app and bot hosts use it through `NegotiationRecovery` (`src/runtime.ts`).
 
 The host supplies `read(key): Promise<string | undefined>` and
 `compareAndSwap(key, expectedRaw, nextRaw): Promise<boolean>`. This capability must
@@ -191,7 +241,8 @@ Both require `hostDiscriminator`, `accountIncarnation` and a valid compressed `l
 Native additionally requires an approved existing `rootLocation`; it creates no ancestors.
 The returned capability exposes `read`, `compareAndSwap`, `listRecords`, `readCoverage`,
 `compareAndSwapCoverage`, `namespace` and `close`.
-No app or bot installs these adapters yet.
+The app uses the browser adapter (`app/src/utils/negotiation-recovery.ts`) and the bot host the
+native one (`packages/bot-framework/src/negotiation-recovery.ts`).
 
 One deterministic versioned namespace belongs to that host/account incarnation/public key,
 across messaging chains. Complete binding metadata is validated separately from journal rows.
@@ -226,8 +277,8 @@ This is an additive local storage format with a reversal limitation: older adapt
 `coverage-v1`. Reverting code must preserve the namespace rather than delete or repair it.
 There is no migration, fallback, separate index, wire change, or derivation change. An explicitly
 authorized development reset may remove only this host/account negotiation namespace; it must
-never delete keys, funded wallets or unrelated application data. Host installation and scan
-scheduling remain successor work. The composed regression exercises signed admission, failed
+never delete keys, funded wallets or unrelated application data. Scan scheduling belongs to the
+hosts' `NegotiationRecovery` installations. The composed regression exercises signed admission, failed
 coverage consumption, reopen, duplicate replay and discovery; it proves this storage seam.
 
 Browser storage uses direct IndexedDB schema version 1, one out-of-line `records` store and

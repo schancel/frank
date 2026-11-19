@@ -1,8 +1,6 @@
 /** Real isolated Anvil; actual received owner, canonical derivation, durable stores and spend inventory. Relay delivery is not exercised here. */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
 import { JsonRpcProvider, Wallet, Transaction, getBytes, hexlify, parseEther } from 'ethers'
 import { canonicalStampDestination } from '@frank/cashweb/relay/canonical-dm-stamp'
 import { fixture, roots, type Fixture } from './canonical-two-wallets.testutil'
@@ -11,6 +9,7 @@ import { EvmNativeStampRecoveryReader } from '../evm-native-stamp-recovery'
 import { MAX_CHANGES_PER_REFRESH } from '../evm-deposit-scan'
 import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
+import { anvilBinary, findAnvil, nodeSuiteReady } from '../node-binaries.testutil'
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
   const actual = jest.requireActual('../evm-provider')
@@ -23,18 +22,6 @@ jest.mock('../evm-provider', () => {
 jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN
-  try {
-    const root = dirname(dirname(require.resolve('@foundry-rs/anvil/package.json')))
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil')
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -47,7 +34,7 @@ const freePort = () =>
 
 const DEV_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 const anvilBin = findAnvil()
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('native-stamp-recovery.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 suite('repaid native stamp receiver (real Anvil)', () => {
   jest.setTimeout(120000)
   let child: ChildProcess

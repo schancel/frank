@@ -44,4 +44,6 @@ module.exports = {
   },
   transformIgnorePatterns: ['/node_modules/(?!@noble/|superjson/|copy-anything/|is-what/)'],
   testPathIgnorePatterns: ['/node_modules/'],
+  // Under FRANK_REQUIRE_NODES=1, fails a run that skipped a test or ran none.
+  ...require('../../scripts/jest/require-nodes-reporter.cjs').requireNodesReporters(),
 }

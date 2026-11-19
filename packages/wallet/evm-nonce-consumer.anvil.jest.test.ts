@@ -7,27 +7,15 @@
  * say nothing for a nonce the account has not used yet.
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
+ * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN, or fails
+ * under FRANK_REQUIRE_NODES=1.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
 import { JsonRpcProvider, Wallet } from 'ethers'
 import { findNonceConsumer } from './evm-nonce-consumer'
+import { anvilBinary, findAnvil, nodeSuiteReady } from './node-binaries.testutil'
 
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN
-  try {
-    const root = dirname(dirname(require.resolve('@foundry-rs/anvil/package.json')))
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil')
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -41,10 +29,7 @@ const freePort = () =>
 /** anvil's first well-known development key: holds the node's test ether. */
 const DEV_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 const anvilBin = findAnvil()
-if (!anvilBin)
-  // eslint-disable-next-line no-console
-  console.warn('NOT RUN: evm-nonce-consumer.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.')
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('evm-nonce-consumer.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 
 suite('the transaction that used a nonce, on a real EVM node (anvil)', () => {
   jest.setTimeout(60_000)

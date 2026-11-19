@@ -170,4 +170,6 @@ module.exports = {
     '<rootDir>/test/jest/__tests__/App.spec.ts',
     '<rootDir>/test/jest/__tests__/QBtn-demo.spec.ts',
   ],
+  // Under FRANK_REQUIRE_NODES=1, fails a run that skipped a test or ran none.
+  ...require('../scripts/jest/require-nodes-reporter.cjs').requireNodesReporters(),
 }

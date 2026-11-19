@@ -2,38 +2,17 @@
  * A local dev node of a real EVM client (`anvil`) for a test file.
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. `findAnvil()` returns undefined without one, and a suite
- * should then report itself as NOT RUN.
+ * installed, or `anvil` on PATH. `findAnvil()` returns undefined without one; a suite then
+ * decides with `nodeSuiteReady` (@frank/wallet/node-binaries.testutil).
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
 import { JsonRpcProvider, Wallet } from 'ethers'
 
 export const ANVIL_DEV_KEY =
   '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
 
-export function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN))
-    return process.env.ANVIL_BIN
-  try {
-    const root = dirname(
-      dirname(require.resolve('@foundry-rs/anvil/package.json')),
-    )
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(
-      root,
-      `anvil-${process.platform}-${arch}`,
-      'bin',
-      'anvil',
-    )
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
+export { findAnvil } from '@frank/wallet/node-binaries.testutil'
 
 const freePort = () =>
   new Promise<number>((resolve, reject) => {

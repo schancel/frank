@@ -4,20 +4,18 @@
  * SDK's WASM ESM glue); that file holds every check and its own description.
  *
  * Needs a Chronik-enabled `bitcoind`: FRANK_BITCOIN_ABC_BIN_DIR, or the verified release fetched
- * by `yarn --cwd packages/bot regtest:fetch`. Without one the suite reports itself as NOT RUN.
+ * by `yarn --cwd packages/bot regtest:fetch`. Without one the suite reports itself as NOT RUN,
+ * or fails under FRANK_REQUIRE_NODES=1.
  */
 import { execFile } from 'child_process'
 import { resolve } from 'path'
 
-import { availableBitcoinAbc } from './bitcoin-abc'
+import { nodeSuiteReady } from '@frank/wallet/node-binaries.testutil'
+
+import { availableBitcoinAbc, bitcoinAbcBinary } from './bitcoin-abc'
 
 const bitcoind = availableBitcoinAbc()
-if (!bitcoind)
-  // eslint-disable-next-line no-console
-  console.warn(
-    'NOT RUN: ecash-shared-seed.regtest needs a Chronik-enabled bitcoind (set FRANK_BITCOIN_ABC_BIN_DIR or run `yarn --cwd packages/bot regtest:fetch`).',
-  )
-const suite = bitcoind ? describe : describe.skip
+const suite = nodeSuiteReady('ecash-shared-seed.regtest', [bitcoinAbcBinary(bitcoind)]) ? describe : describe.skip
 
 suite('two devices of one eCash seed on a real xec-regtest node', () => {
   it("discovers the other device's change, unconfirmed too, and spends it, also after a wiped operation store", async () => {

@@ -12,12 +12,11 @@
  * to a relay; the delivered case submits its payments to the real node itself.
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
+ * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN, or fails
+ * under FRANK_REQUIRE_NODES=1.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
 import { JsonRpcProvider, Transaction, Wallet, toQuantity } from 'ethers'
 import { toHex } from '@frank/codec'
 import { evmWalletInternals } from '../evm-wallet'
@@ -29,6 +28,7 @@ import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/steal
 import { NativeFeeExceededError } from './chain-wallet'
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import type { StealthPaymentIntent } from '../stealth-payment'
+import { anvilBinary, findAnvil, nodeSuiteReady } from '../node-binaries.testutil'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -43,18 +43,6 @@ jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN
-  try {
-    const root = dirname(dirname(require.resolve('@foundry-rs/anvil/package.json')))
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil')
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -79,10 +67,7 @@ const STAMP = 10n ** 15n
 const MESSAGE = (n: number) => `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`
 
 const anvilBin = findAnvil()
-if (!anvilBin)
-  // eslint-disable-next-line no-console
-  console.warn('NOT RUN: evm-stealth-fee-bound.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.')
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('evm-stealth-fee-bound.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 
 suite('a stealth payment and its message stamp from many small coins and one large root (anvil)', () => {
   jest.setTimeout(300_000)

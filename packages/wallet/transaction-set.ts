@@ -64,9 +64,13 @@ export interface TransactionSetCapability {
   ): Promise<TransactionSetSubmission>
   /** Give back the inputs of a constructed set that was never submitted: first read the chain
    * for every member, then release only if none was authorized or exposed and the node shows
-   * none of them, pending or included. Returns false, keeping every claim, otherwise. */
+   * none of them, pending or included. Also true, changing nothing, for a set never authorized
+   * nor exposed that the wallet already gave up on chain evidence (every member's nonce, or one
+   * it stands on, taken by another transaction): it holds nothing and can never land. Returns
+   * false, keeping every claim, otherwise. */
   releaseTransactionSet(operationId: string): Promise<boolean>
   /** Read the chain for every member of a constructed set: true when the node shows any of
-   * them pending or included. Changes no claim. */
+   * them pending or included (a member given up on chain evidence is neither). Changes no
+   * claim. */
   observeTransactionSet(operationId: string): Promise<boolean>
 }

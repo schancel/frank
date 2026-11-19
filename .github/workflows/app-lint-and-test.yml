@@ -94,6 +94,16 @@ jobs:
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           # Absolute: the suite runs from the package directory.
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-stealth-fee-bound.anvil.jest.test.ts
+      # Two devices of one account pay for one group write from the same coin: the second device
+      # never broadcasts its set, and the wallet lets its account go once the chain decides it.
+      - name: Group write paid by two devices on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          # Absolute: the suite runs from the package directory.
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/group-messaging test --ci --runInBand groups/write-payment.anvil.jest.test.ts
 
   # Payments between two wallets on a real EVM node (anvil): carried payments reach the node only
   # after the relay stores their message, released payments never do, and what each side counts

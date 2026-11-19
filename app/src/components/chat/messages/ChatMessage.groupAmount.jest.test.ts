@@ -100,6 +100,32 @@ it('shows no amount once the payment was released (nothing was paid)', () => {
   expect(vm.stampAmount).toBe('')
 })
 
+it("shows no amount when another device's payment funded the write and this one did not land", () => {
+  const vm = shown(
+    mountGroupMessage({
+      groupWritePayment: { ...payment, fundedElsewhere: true, released: true },
+    }),
+  )
+  expect(vm.stampAmount).toBe('')
+  expect(
+    shown(
+      mountGroupMessage({
+        groupWritePayment: { ...payment, fundedElsewhere: true },
+      }),
+    ).stampAmount,
+  ).toBe('')
+})
+
+it("says the write was paid twice when this device's payment landed beside another device's", () => {
+  const vm = shown(
+    mountGroupMessage({
+      groupWritePayment: { ...payment, fundedElsewhere: true, spent: true },
+    }),
+  )
+  expect(vm.stampAmount).toBe('outgoing.amountPaidTwice')
+  expect(vm.stampAmountExact).toBe('0.0015 MONT')
+})
+
 it('shows no amount for a payment on a network unknown here, never a guessed unit', () => {
   const vm = shown(
     mountGroupMessage({

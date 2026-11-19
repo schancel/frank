@@ -4,6 +4,7 @@ import {
   groupTestSigningKey,
 } from './group-test.testutil'
 import type { AxiosInstance } from 'axios'
+import { keccak256 } from 'ethers'
 import {
   decryptGroupRoster,
   encryptGroupRoster,
@@ -111,9 +112,11 @@ function createMockGroupRelayAxios() {
           }
           list.push(row)
           messages.set(groupId, list)
+          const payment = body.payment as { raw_transaction: string }
           return {
             data: {
               ...row,
+              payment_tx_hash: keccak256(`0x${payment.raw_transaction}`),
             },
           }
         }
@@ -312,6 +315,9 @@ describe('GroupRelayClient', () => {
       payment,
     )
     expect(sendRes.server_seq).toBe(1)
+    expect(sendRes.payment_tx_hash).toBe(
+      keccak256(`0x${payment.raw_transaction}`),
+    )
     expect(lastMessageBody?.payment).toEqual(payment)
 
     const fetched = await client.fetchGroupMessages(

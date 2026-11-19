@@ -42,7 +42,13 @@ export interface StoredGroupMessageWire extends SealedGroupMessageEnvelope {
   server_seq: number
   server_time_ms: number
 }
-export type SendGroupMessageResponse = StoredGroupMessageWire
+/** The hosting relay's answer to a write it holds (newly appended or already accepted): the
+ * write's original receipt and the payment recorded as funding it. */
+export interface SendGroupMessageResponse extends StoredGroupMessageWire {
+  /** `0x`-prefixed lowercase Keccak256 of the signed payment that funded the write. A writer
+   * whose own payment has another hash did not pay for it, and must not broadcast its own. */
+  payment_tx_hash: string
+}
 
 export interface FetchGroupMessagesResponse {
   group_id: string
@@ -546,7 +552,9 @@ export class GroupRelayClient {
       !Number.isSafeInteger(row.server_seq) ||
       row.server_seq <= 0 ||
       !Number.isSafeInteger(row.server_time_ms) ||
-      row.server_time_ms < 0
+      row.server_time_ms < 0 ||
+      typeof row.payment_tx_hash !== 'string' ||
+      !/^0x[0-9a-f]{64}$/.test(row.payment_tx_hash)
     )
       throw new Error('Invalid group message acknowledgement')
     return row

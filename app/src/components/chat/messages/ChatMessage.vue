@@ -920,7 +920,13 @@ export default defineComponent({
           : amount
       }
       const groupPayment = this.groupWritePaymentAmount
-      if (groupPayment) return formatDisplayAmount(...groupPayment)
+      if (groupPayment) {
+        const amount = formatDisplayAmount(...groupPayment)
+        // Another device's payment funded the write, and this device's landed too.
+        return this.message.groupWritePayment?.fundedElsewhere
+          ? this.$t('outgoing.amountPaidTwice', { amount })
+          : amount
+      }
       // Lotus-origin stamps are the only ones carried as outpoints. A message with neither
       // (a group message, a received one whose payment this device does not hold, a note to
       // self) shows no amount rather than a zero in some default network's unit.
@@ -937,12 +943,19 @@ export default defineComponent({
     },
     /** What this device's own group write pays its hosting relay, in the unit of the network
      * the payment names; undefined when there is no such payment, it was released (nothing was
-     * paid), or its network is unknown here. */
+     * paid), another device's payment funded the write and this one is not shown spent, or its
+     * network is unknown here. */
     groupWritePaymentAmount():
       | [NonNullable<ReturnType<typeof registryAmountAdapter>>, bigint]
       | undefined {
       const payment = this.message.groupWritePayment
-      if (!payment || payment.released || payment.releasing) return undefined
+      if (
+        !payment ||
+        payment.released ||
+        payment.releasing ||
+        (payment.fundedElsewhere && !payment.spent)
+      )
+        return undefined
       const chain = registryAmountAdapter(payment.network)
       if (!chain) return undefined
       try {

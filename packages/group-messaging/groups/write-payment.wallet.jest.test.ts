@@ -5,12 +5,15 @@
  * broadcast the wallet makes, and "the relay broadcasts" is the node mining the bytes it was
  * handed.
  */
-import { Transaction, hexlify } from 'ethers'
+import { Transaction, Wallet, getBytes, hexlify } from 'ethers'
 import {
   GroupWriteDeferredError,
   GroupWriteRefusedError,
 } from '@frank/cashweb/groups/group-relay-client'
 import {
+  assertGroupWritePayment,
+  groupWritePaymentPlan,
+  groupWritePaymentTxHash,
   type GroupWritePaymentWire,
   type GroupWritePolicy,
   type StoredGroupWritePayment,
@@ -29,6 +32,7 @@ import {
   GroupWritePaidRefusalError,
   deliverPaidGroupWrite,
   discardPaidGroupWrite,
+  type GroupWriteReceipt,
 } from './write-payment'
 
 jest.mock('@frank/wallet/evm-provider', () =>
@@ -116,10 +120,34 @@ function message() {
   }
 }
 
+/** The relay holds the write with `payment` recorded as funding it. */
+const held = (payment: GroupWritePaymentWire) => ({
+  server_seq: 1,
+  payment_tx_hash: groupWritePaymentTxHash(payment),
+})
+
+/** Another device of the account's payment for the write `byte` names, signed with `key` at
+ * `nonce`: the set that device built from what its own wallet state showed. */
+async function otherDevicePayment(key: string, nonce: number, byte = '33') {
+  const plan = groupWritePaymentPlan(HOST, GROUP, envelope(byte))
+  const signed = await new Wallet(key).signTransaction({
+    type: 2,
+    chainId: 10143n,
+    nonce,
+    to: plan.destination,
+    value: plan.amountWei,
+    data: hexlify(plan.calldata),
+    gasLimit: 60_000n,
+    maxFeePerGas: 3n,
+    maxPriorityFeePerGas: 1n,
+  })
+  return assertGroupWritePayment(plan, getBytes(signed))
+}
+
 function deliver(
   wallet: EvmChainWalletHandle,
   record: ReturnType<typeof message>,
-  submit: (payment: GroupWritePaymentWire) => Promise<unknown>,
+  submit: (payment: GroupWritePaymentWire) => Promise<GroupWriteReceipt>,
   byte = '33',
 ) {
   return deliverPaidGroupWrite({
@@ -153,7 +181,7 @@ test('the wallet broadcasts only after the relay holds the write', async () => {
     const delivered = await deliver(f.alice, record, async payment => {
       broadcastsAtRelay.push(offlineChain.walletBroadcasts.length)
       offlineChain.mine(`0x${payment.raw_transaction}`) // the relay stored it and broadcast
-      return { server_seq: 1 }
+      return held(payment)
     })
     expect(delivered).toMatchObject({ state: 'delivered', settled: true })
     expect(broadcastsAtRelay).toEqual([0])
@@ -198,7 +226,7 @@ test('a refused write leaves no broadcast and gives its coin back', async () => 
     expect(coins.isAccountReserved(account)).toBe(false)
     const next = message()
     expect(
-      await deliver(f.alice, next, async () => ({ server_seq: 1 }), '44'),
+      await deliver(f.alice, next, async payment => held(payment), '44'),
     ).toMatchObject({ state: 'delivered', settled: true })
   } finally {
     await f.close()
@@ -253,7 +281,7 @@ test('a timeout then a retry gives one payment', async () => {
     expect(offlineChain.walletBroadcasts).toEqual([])
     const retried = await deliver(f.alice, record, async payment => {
       submitted.push(payment.raw_transaction)
-      return { server_seq: 1 }
+      return held(payment)
     })
     expect(retried).toMatchObject({ state: 'delivered', settled: true })
     expect(submitted).toHaveLength(2)
@@ -284,7 +312,7 @@ test('a restart between signing and relay submission resumes with the same bytes
     const resumed = await deliver(reopened, record, async payment => {
       submitted.push(payment.raw_transaction)
       expect(offlineChain.walletBroadcasts).toEqual([])
-      return { server_seq: 1 }
+      return held(payment)
     })
     expect(resumed).toMatchObject({ state: 'delivered', settled: true })
     expect(submitted).toEqual([signed])
@@ -334,7 +362,7 @@ test('discarding a deferred write gives its coin back once the chain shows nothi
     expect(await discard()).toEqual({ state: 'discarded' })
     // The freed coin pays the next write.
     expect(
-      await deliver(reopened, message(), async () => ({ server_seq: 1 }), '44'),
+      await deliver(reopened, message(), async payment => held(payment), '44'),
     ).toMatchObject({ state: 'delivered', settled: true })
     expect(await discard()).toEqual({ state: 'discarded' })
     expect(minedPayments()).toHaveLength(1)
@@ -373,7 +401,7 @@ test('discarding a deferred write whose payment the chain shows keeps the write 
     expect(
       await deliver(f.alice, record, async payment => {
         submitted.push(payment.raw_transaction)
-        return { server_seq: 1 }
+        return held(payment)
       }),
     ).toMatchObject({ state: 'delivered' })
     expect(submitted).toEqual([record.stored!.rawTransaction])
@@ -381,4 +409,83 @@ test('discarding a deferred write whose payment the chain shows keeps the write 
   } finally {
     await f.close()
   }
+})
+
+// The case where both devices built their sets from the same coin, so the other device's
+// payment takes a nonce this device's set stands on, runs on a real node:
+// `write-payment.anvil.jest.test.ts`.
+describe('two devices of one account sign different payments for one write', () => {
+  test("the second device, answered with the first device's payment, broadcasts nothing and gets its coin back after a chain read", async () => {
+    const f = await setup()
+    try {
+      const coins = evmWalletInternals(f.alice).coinList!
+      const account = f.alice.mainAccount!.address
+      const before = coins.get(account, 0)
+      // The first device paid from another coin of the account, and the relay accepted that
+      // payment and broadcast it.
+      const first = await otherDevicePayment(`0x${'07'.repeat(32)}`, 0)
+      mockBalances.set(
+        new Wallet(`0x${'07'.repeat(32)}`).address.toLowerCase(),
+        1_000_000n,
+      )
+      offlineChain.mine(`0x${first.raw_transaction}`)
+      const record = message()
+      const presented: string[] = []
+      const delivered = await deliver(f.alice, record, async payment => {
+        presented.push(payment.raw_transaction)
+        // `existing`: the original receipt, naming the payment that funded it.
+        return held(first)
+      })
+      expect(delivered).toMatchObject({
+        state: 'delivered',
+        receipt: { payment_tx_hash: groupWritePaymentTxHash(first) },
+        settled: true,
+      })
+      expect(presented).toEqual([record.stored!.rawTransaction])
+      expect(presented[0]).not.toBe(first.raw_transaction)
+      // Nothing of this device's set went to the chain: one payment for one write.
+      expect(offlineChain.walletBroadcasts).toEqual([])
+      expect(minedPayments()).toEqual([`0x${first.raw_transaction}`])
+      expect(record.stored).toMatchObject({
+        fundedElsewhere: true,
+        released: true,
+      })
+      // The coin is back as it was and pays the next write.
+      expect(
+        f.alice.transactionSetPreparer!.getOperation(record.stored!.operationId),
+      ).toBeUndefined()
+      expect(coins.get(account, 0)).toEqual(before)
+      expect(coins.isAccountReserved(account)).toBe(false)
+      expect(
+        await deliver(f.alice, message(), async payment => held(payment), '44'),
+      ).toMatchObject({ state: 'delivered', settled: true })
+    } finally {
+      await f.close()
+    }
+  })
+
+  test("the second device's payment the chain shows after all is tracked as spent, never given back", async () => {
+    const f = await setup()
+    try {
+      const first = await otherDevicePayment(`0x${'07'.repeat(32)}`, 0)
+      const record = message()
+      const delivered = await deliver(f.alice, record, async payment => {
+        // A copy of this device's bytes reached the node anyway.
+        offlineChain.mine(`0x${payment.raw_transaction}`)
+        return held(first)
+      })
+      expect(delivered).toMatchObject({ state: 'delivered', settled: true })
+      expect(record.stored).toMatchObject({ fundedElsewhere: true, spent: true })
+      expect(record.stored!.released).toBeUndefined()
+      const operation = f.alice.transactionSetPreparer!.getOperation(
+        record.stored!.operationId,
+      )
+      // Authorized, so the wallet reconciles it to its mined state instead of releasing it.
+      expect(operation?.submissionAuthorized).toBe(true)
+      // The wallet found its payment on chain and did not send it again.
+      expect(walletPaymentBroadcasts()).toEqual([])
+    } finally {
+      await f.close()
+    }
+  })
 })

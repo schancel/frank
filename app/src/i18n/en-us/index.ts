@@ -995,6 +995,7 @@ export const rawEnUS = {
     paymentFailed: 'Message stamp failed',
     paymentUnsent: 'Message stamp not paid',
     amountNotPaid: '{amount}, not paid',
+    amountPaidTwice: '{amount}, paid twice (another of your devices also paid)',
     reasonUnreachable: "Can't reach the server.",
     reasonUnavailable: 'This relay does not offer messaging.',
     reasonRejected: 'The relay rejected it.',

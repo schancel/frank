@@ -388,6 +388,19 @@ async function check(stack: RegtestStack, keys: SolonetKeyRun, startedAt: number
     assert.equal(retried.status, 200)
     assert.equal(retried.disposition, 'existing')
     assert.deepEqual(retried.body, direct.body)
+    // Every receipt names the payment that funded the write.
+    assert.equal(direct.body.payment_tx_hash, paid.hash.toLowerCase())
+    // Another device of the account signs another payment for the same write: the host
+    // answers with the receipt naming the first payment, and never broadcasts the second.
+    const otherDevice = await sign(plan, { value: plan.amountWei + 1n })
+    assert.notEqual(otherDevice.hash, paid.hash)
+    const fromOtherDevice = await put(hostUrl, id, envelope, wire(otherDevice))
+    assert.equal(fromOtherDevice.status, 200, JSON.stringify(fromOtherDevice.body))
+    assert.equal(fromOtherDevice.disposition, 'existing')
+    assert.deepEqual(fromOtherDevice.body, direct.body)
+    console.log(
+      `another device's payment for the same write: existing, receipt names ${direct.body.payment_tx_hash}`,
+    )
 
     // Broadcast by the host after the commit: the writer never sent it to the chain.
     const receipt = await monad.provider.waitForTransaction(
@@ -401,6 +414,11 @@ async function check(stack: RegtestStack, keys: SolonetKeyRun, startedAt: number
     assert.equal(mined!.to, plan.destination)
     assert.equal(mined!.value, plan.amountWei)
     assert.equal(mined!.data, `0x${bytesToHex(plan.calldata)}`)
+    assert.equal(
+      await monad.provider.getTransaction(otherDevice.hash),
+      null,
+      "the other device's payment was never handed to the chain",
+    )
     console.log(
       `payment ${paid.hash} broadcast by the host and mined in block ${receipt.blockNumber}`,
     )

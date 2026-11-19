@@ -11,6 +11,7 @@ import {
   prepareGroupEpochRotation,
 } from './group-relay-client'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
+import { keccak256 } from 'ethers'
 import {
   bytesToHex,
   openGroupMessage,
@@ -20,6 +21,7 @@ import {
 import { signGroupWritePrice } from './group-write-payment'
 import {
   GROUP_TEST_ACCOUNTS,
+  groupTestPayment,
   groupTestPaymentFor,
   groupTestSigningKey,
   paidSend,
@@ -73,6 +75,12 @@ async function main() {
     })
     const acknowledgement = await paidSend(client, id, envelope)
     assert.equal(acknowledgement.server_seq, 1)
+    // The receipt names the payment that funded the write.
+    const funding = await groupTestPayment(client, id, envelope)
+    assert.equal(
+      acknowledgement.payment_tx_hash,
+      keccak256(`0x${funding.raw_transaction}`),
+    )
     assert(Number.isSafeInteger(acknowledgement.server_time_ms))
     await assert.rejects(client.fetchGroupMessages(id, '00'.repeat(32)))
     const reopened = new GroupRelayClient(url)
@@ -118,16 +126,16 @@ async function main() {
       payload: new TextEncoder().encode('underpaid message'),
       timestampMs: 1700000001235,
     })
-    // A retry of the accepted write gets its receipt before its payment is looked at.
-    assert.equal(
-      (
-        await client.sendGroupMessage(
-          id,
-          envelope,
-          groupTestPaymentFor(underpaid, id, envelope),
-        )
-      ).server_seq,
-      1,
+    // A retry of the accepted write gets its receipt before its payment is looked at. Another
+    // device's payment for the same write gets the receipt too, naming the payment that funded
+    // it, not its own: that device must not broadcast its payment.
+    const otherDevice = groupTestPaymentFor(underpaid, id, envelope)
+    const existing = await client.sendGroupMessage(id, envelope, otherDevice)
+    assert.equal(existing.server_seq, 1)
+    assert.equal(existing.payment_tx_hash, acknowledgement.payment_tx_hash)
+    assert.notEqual(
+      existing.payment_tx_hash,
+      keccak256(`0x${otherDevice.raw_transaction}`),
     )
     await assert.rejects(
       client.sendGroupMessage(

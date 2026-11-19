@@ -411,6 +411,9 @@ test('discarding a deferred write whose payment the chain shows keeps the write 
   }
 })
 
+// The case where both devices built their sets from the same coin, so the other device's
+// payment takes a nonce this device's set stands on, runs on a real node:
+// `write-payment.anvil.jest.test.ts`.
 describe('two devices of one account sign different payments for one write', () => {
   test("the second device, answered with the first device's payment, broadcasts nothing and gets its coin back after a chain read", async () => {
     const f = await setup()
@@ -464,8 +467,6 @@ describe('two devices of one account sign different payments for one write', () 
   test("the second device's payment the chain shows after all is tracked as spent, never given back", async () => {
     const f = await setup()
     try {
-      const coins = evmWalletInternals(f.alice).coinList!
-      const account = f.alice.mainAccount!.address
       const first = await otherDevicePayment(`0x${'07'.repeat(32)}`, 0)
       const record = message()
       const delivered = await deliver(f.alice, record, async payment => {
@@ -479,34 +480,10 @@ describe('two devices of one account sign different payments for one write', () 
       const operation = f.alice.transactionSetPreparer!.getOperation(
         record.stored!.operationId,
       )
+      // Authorized, so the wallet reconciles it to its mined state instead of releasing it.
       expect(operation?.submissionAuthorized).toBe(true)
-      expect(coins.isAccountReserved(account)).toBe(true)
       // The wallet found its payment on chain and did not send it again.
       expect(walletPaymentBroadcasts()).toEqual([])
-    } finally {
-      await f.close()
-    }
-  })
-
-  test("the second device's payment at the nonce the first device's payment took is never broadcast", async () => {
-    const f = await setup()
-    try {
-      const main = f.alice.mainAccount!
-      // Both devices built their set from the same coin: the first device's payment, at the
-      // account's nonce 0, is the one the relay accepted and broadcast.
-      const first = await otherDevicePayment(main.privateKey, 0)
-      offlineChain.mine(`0x${first.raw_transaction}`)
-      const record = message()
-      const delivered = await deliver(f.alice, record, async () => held(first))
-      expect(delivered).toMatchObject({ state: 'delivered', settled: true })
-      // Only the wallet's own release, after its chain read, gave the set up.
-      expect(offlineChain.walletBroadcasts).toEqual([])
-      expect(minedPayments()).toEqual([`0x${first.raw_transaction}`])
-      expect(record.stored).toMatchObject({
-        fundedElsewhere: true,
-        released: true,
-      })
-      expect(record.stored!.spent).toBeUndefined()
     } finally {
       await f.close()
     }

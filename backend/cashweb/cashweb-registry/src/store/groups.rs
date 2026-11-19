@@ -909,6 +909,14 @@ fn acceptance_locator(server_seq: u64, tx_hash: &[u8; 32]) -> Vec<u8> {
 /// receipts named their payment, and is not read.
 fn parse_acceptance_locator(locator: &[u8]) -> Result<(u64, [u8; 32]), GroupError> {
     let corrupt = || GroupError::Storage("corrupt group acceptance locator".into());
+    if locator.len() == 8 {
+        return Err(GroupError::Storage(
+            "group acceptance from before receipts named their payment (payment_tx_hash); reset \
+             the dedicated development group-relay state per docs/protocol/groups/\
+             shared-mailbox-baseline.md"
+                .into(),
+        ));
+    }
     if locator.len() != 40 {
         return Err(corrupt());
     }
@@ -3731,11 +3739,17 @@ mod tests {
             store.put_message(&id, envelope.clone()),
             Err(GroupError::Storage(_))
         ));
-        // A locator without the payment that funded the write is refused, not read.
+        // A locator without the payment that funded the write is refused, not read, and says
+        // it predates the payment hash rather than looking like corruption.
         kv.put(&index, &receipt.server_seq.to_be_bytes()).unwrap();
         assert!(matches!(
             store.put_message(&id, envelope.clone()),
-            Err(GroupError::Storage(_))
+            Err(GroupError::Storage(message)) if message.contains("from before receipts named their payment")
+        ));
+        kv.put(&index, &[0u8; 12]).unwrap();
+        assert!(matches!(
+            store.put_message(&id, envelope.clone()),
+            Err(GroupError::Storage(message)) if message == "corrupt group acceptance locator"
         ));
         kv.put(&index, &acceptance_locator(receipt.server_seq, &digest))
             .unwrap();

@@ -7,7 +7,7 @@ import type { EvmChainConfig } from "./evm-chain-config";
 import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 export type { EvmChainConfig } from "./evm-chain-config";
 export type { EvmChainWalletHandle, EvmWalletHandle } from "../evm-wallet-handle";
-import { evmNativeOperationDigest, nativeMemberNeedsOwnMoveRecovery, nativeMemberSuperseded, memberSignings, type ArchivedOwnMoveRecoveryInput, type EvmNativeSource } from "../storage/evm-native-operation-journal";
+import { evmNativeOperationDigest, nativeMemberEnded, nativeMemberNeedsOwnMoveRecovery, nativeMemberSuperseded, memberSignings, type ArchivedOwnMoveRecoveryInput, type EvmNativeSource } from "../storage/evm-native-operation-journal";
 import type {
   EvmWalletOperationAdmission,
 } from "../storage/evm-wallet-bundle";
@@ -2612,13 +2612,22 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // The chain is read first: a member the node holds or mined is never released.
             async operationId => {
               await transactionSetLifecycle.observe(operationId, provider);
-              return transactionSetPreparer.releaseUnexposed(operationId);
+              if (await transactionSetPreparer.releaseUnexposed(operationId)) return true;
+              // A set the wallet already gave up on chain evidence (another transaction took a
+              // nonce it stands on: `abandonTakenMembers`) holds nothing and can never land, so
+              // there is nothing left to give back. Only when it was never authorized and no
+              // member left the wallet.
+              const row = await transactionSetPreparer.readOperation(operationId);
+              return row !== undefined && !row.submissionAuthorized &&
+                row.members.every(member => !member.exposed && nativeMemberEnded(member));
             },
             async operationId => {
               await transactionSetLifecycle.observe(operationId, provider);
               const row = await transactionSetPreparer.readOperation(operationId);
+              // Pending or included only: a member given up on chain evidence (`abandoned`) is
+              // not on the chain.
               return row?.members.some(member =>
-                !["unknown", "missing"].includes(member.observation.state)) ?? false;
+                ["pending", "included-success", "included-revert"].includes(member.observation.state)) ?? false;
             },
           );
           // Shared dApp persona slots are numbered from 0 as the user creates them; this many are

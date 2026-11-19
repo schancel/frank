@@ -50,8 +50,9 @@ without it. Wire change (2026-11-19, #1862): before it the body was the receipt 
 consumer moves together: the relay (`cashweb-registry` `http/groups.rs`, `store/groups.rs`),
 `packages/cashweb/groups/group-relay-client.ts`, `packages/group-messaging/groups/write-payment.ts`
 and the app's group send. A group relay store written before it holds locators of the sequence
-alone; a retry of a write accepted then fails visibly as a corrupt acceptance locator (500)
-and is never answered without its payment. New writes are unaffected; the reset path for
+alone; a retry of a write accepted then fails visibly (500, "group acceptance from before
+receipts named their payment (payment_tx_hash)", distinct from a corrupt locator) and is never
+answered without its payment. New writes are unaffected; the reset path for
 disposable dedicated development group-relay state is the one below.
 
 The dedicated relay store at `registry_db.with_extension("groups-v1")` requires `G_format = group-binary-rows-v1`.
@@ -284,8 +285,16 @@ only the payment it accepted with, so none of this device's attempts, answered o
 bytes on the chain. The message records `fundedElsewhere`; the wallet's `releaseTransactionSet`
 reads the chain and gives the coin back only when no member was authorized or exposed and the
 node holds none of them (`released`); if the chain shows the set after all, the wallet authorizes
-and tracks it (`spent`). Never on the relay's word alone. Otherwise the payment stays claimed,
-the message is delivered with its payment unsettled, and the next retry repeats this step. A
+and tracks it (`spent`): the write was paid twice, which is logged and shown on the message
+("paid twice"). Never on the relay's word alone. Otherwise the payment stays claimed, the
+message is delivered with its payment unsettled, and the next retry repeats this step. The
+usual case is two devices building their sets from the same coin: the other device's payment
+takes a nonce this set stands on, so no member can land. The wallet's own recovery pass (the
+taken-set step of the messaging reconcile, `abandonTakenMembers`) gives such a set up once that
+transaction is `EVM_FAILURE_CONFIRMATIONS` deep, and lists its account again at what the chain
+shows; `releaseTransactionSet` then answers true for it, changing nothing, because a set never
+authorized nor exposed whose members have all ended holds nothing and can never land
+(`packages/group-messaging/groups/write-payment.anvil.jest.test.ts`, on anvil). A
 restart after the release asks the host for the receipt again with the stored bytes, which the
 host answers before it looks at the payment, and hands nothing over. The app shows no amount
 paid by this device for such a write unless it is `spent`.

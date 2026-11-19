@@ -920,7 +920,13 @@ export default defineComponent({
           : amount
       }
       const groupPayment = this.groupWritePaymentAmount
-      if (groupPayment) return formatDisplayAmount(...groupPayment)
+      if (groupPayment) {
+        const amount = formatDisplayAmount(...groupPayment)
+        // Another device's payment funded the write, and this device's landed too.
+        return this.message.groupWritePayment?.fundedElsewhere
+          ? this.$t('outgoing.amountPaidTwice', { amount })
+          : amount
+      }
       // Lotus-origin stamps are the only ones carried as outpoints. A message with neither
       // (a group message, a received one whose payment this device does not hold, a note to
       // self) shows no amount rather than a zero in some default network's unit.

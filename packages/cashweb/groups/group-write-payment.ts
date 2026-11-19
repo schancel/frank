@@ -447,7 +447,8 @@ export interface StoredGroupWritePayment {
   /** The relay holds the write, funded by another payment: another device of the account
    * delivered the same write first with its own payment. This payment is never broadcast; the
    * wallet gives its coin back (`released`) once the chain shows none of its set, or tracks it
-   * (`spent`) if the chain shows it after all. */
+   * (`spent`) if the chain shows it after all: then the write was paid twice, and the message
+   * says so. */
   readonly fundedElsewhere?: true
   /** The user asked to discard the write and the wallet is reading the chain before it gives
    * the coin back; a restart finishes the discard instead of sending the write. */

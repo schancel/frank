@@ -655,7 +655,8 @@ describe('deliverPaidGroupWrite', () => {
     expect(second.events).toEqual(['construct:1', `release:${operationId}`])
   })
 
-  test("a second device's payment the chain shows after all is tracked, not given back", async () => {
+  test("a second device's payment the chain shows after all is tracked, not given back, and reported as paid twice", async () => {
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => undefined)
     const payer = groupWriteTestPayer()
     const message = record()
     const host = relay(payer.events, ['timeout', 'ok'], `0x${'ab'.repeat(32)}`)
@@ -676,6 +677,8 @@ describe('deliverPaidGroupWrite', () => {
     ])
     expect(message.stored).toMatchObject({ fundedElsewhere: true, spent: true })
     expect(message.stored!.released).toBeUndefined()
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('paid twice'))
+    warn.mockRestore()
   })
 
   test('a wallet on another network or without the capability signs nothing', async () => {

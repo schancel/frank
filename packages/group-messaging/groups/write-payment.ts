@@ -23,9 +23,11 @@
  * (`payment_tx_hash`). When that is another device's payment, this one did not fund the write:
  * the relay never broadcast it (it broadcasts only the payment of the attempt it accepts, and it
  * accepts one attempt per write), so the wallet does not either. It reads the chain and gives
- * the coin back only when the chain shows none of the set; if the chain shows the set after all,
- * the wallet tracks it as spent. Until one of those, the write is delivered but its payment is
- * unsettled, and the next retry repeats this step.
+ * the coin back only when the chain shows none of the set, or once the wallet has given the set
+ * up because another transaction took a nonce it stands on; if the chain shows the set after
+ * all, the wallet tracks it as spent and the write was paid twice (logged, and shown on the
+ * message). Until one of those, the write is delivered but its payment is unsettled, and the
+ * next retry repeats this step.
  *
  * Until the bytes are first submitted, a change of the host's terms replaces the plan: the
  * claimed coin is given back and the write is planned again. After that the plan is final.
@@ -469,6 +471,11 @@ async function deliverFundedElsewhere<Receipt>(
   } catch {
     return { state: 'delivered', receipt, settled: false }
   }
+  // Two payments for one write: this one landed although another device's funded it. Shown on
+  // the message (`fundedElsewhere` with `spent`), never hidden.
+  console.warn(
+    `[group-write] ${stored.operationId}: the relay holds this write with another device's payment, and the chain shows this device's payment too: the write was paid twice`,
+  )
   await persist({ ...stored, spent: true })
   return { state: 'delivered', receipt, settled: true }
 }

@@ -376,6 +376,22 @@ describe('buildWalletHistoryGroups', () => {
       expect(rows[0]!.kind === 'swap' && rows[0]!.swap.status).toBe('cancelled')
       expect(rows[0]!.kind === 'swap' && rows[0]!.swap.feeWei).toBe(fee)
     }
+
+    // A reorganisation moved the cancellation into a block that charged another fee: the note's
+    // receipt, read again, shows it, and the swap row shows that fee over the one its outcome
+    // cached before.
+    const corrected = (BigInt(fee) + 777n).toString()
+    const moved: NotedSendStatus = {
+      ...note,
+      inclusion: { ...note.inclusion!, feeWei: corrected },
+    }
+    for (const rows of [
+      load([], [moved], [{ ...swap, feeWei: fee }]),
+      load([given], [moved], [{ ...swap, feeWei: fee }]),
+    ]) {
+      expect(rows).toHaveLength(1)
+      expect(rows[0]!.kind === 'swap' && rows[0]!.swap.feeWei).toBe(corrected)
+    }
   })
 
   it("shows another device's sends once per message, dated by their payment's block, and this device's own once", () => {

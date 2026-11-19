@@ -85,7 +85,8 @@ const DEV_KEY = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2f
 /** monad-regtest's registry minimum gas price (docs/protocol/chains/v1.json). */
 const GAS_PRICE = 100n * 10n ** 9n
 const FUNDED = 10n ** 18n
-const LOCKED = 10n ** 15n
+/** More than any fee here: a reverted lock's note must not mistake its value for its fee. */
+const LOCKED = 10n ** 17n
 
 const anvilBin = findAnvil()
 const suite = nodeSuiteReady('evm-contract-call-receipt.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
@@ -476,6 +477,248 @@ suite('a contract call’s receipt settles its account’s coins on every device
     expect(internals.coinListSync!.isDirty(main) || next.valueWei === first + deposit).toBe(true)
     await internals.coinListSync!.refreshAccounts([main])
     expect(internals.coinList!.latestOf(main)).toMatchObject({ nonce: nonce + 1, valueWei: first + deposit })
+  })
+
+  it('a reverted call a reorganisation moves into a block with another fee: the journal, the other device and both coin lists take the new fee, the corrected note sent once', async () => {
+    const sentIds: string[] = []
+    config.emitWalletSync = async (item: WalletSyncItem, record: MessageItem | undefined, messageId: Uint8Array) => {
+      notes.push(record ? [item, record] : [item])
+      sentIds.push(Buffer.from(messageId).toString('hex'))
+    }
+    await alice.close()
+    let deviceB = await openDevice('device-b')
+    expect(await deviceB.getBalance()).toBe(FUNDED)
+    await deviceB.close()
+    alice = await openDevice('device-a')
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    const poll = async () => {
+      offset += 20 * 60_000
+      await alice.reobserveNativeOperations!()
+    }
+    const note = (device: EvmChainWalletHandle, items: MessageItem[], digest: string) =>
+      ({ ...selfNote(device, items), payloadDigest: digest }) as DirectMessageReceived
+    // Priced while the network asks a base fee, so what the call pays depends on its block.
+    const baseFee = (wei: bigint) =>
+      chain.send('anvil_setNextBlockBaseFeePerGas', ['0x' + wei.toString(16)])
+    await baseFee(GAS_PRICE)
+    await chain.send('evm_mine', [])
+    try {
+      let fork = ''
+      const { row, nonce, receipt: first, fee: firstFee } = await lock(-60, async () => {
+        fork = await chain.send('evm_snapshot', [])
+        await baseFee(0n)
+        await chain.send('evm_mine', [])
+      })
+      expect(first.status).toBe(0)
+      const raw = row.members[0]!.signed!.rawTransaction
+      const call = Transaction.from(raw)
+      const room = call.maxFeePerGas! - call.maxPriorityFeePerGas!
+      expect(room).toBeGreaterThan(0n)
+      expect(await alice.flushNativeSync!()).toEqual([])
+      const firstNote = notes.find(items => (items[0] as WalletSyncItem).txHash === first.hash)!
+      expect(firstNote[0]).toMatchObject({ spentInputs: [{ address: main, nonce, valueWei: firstFee.toString() }] })
+      const fundedAfter = await chain.getBalance(main)
+      expect(fundedAfter).toBe(FUNDED - firstFee)
+      await alice.close()
+      deviceB = await openDevice('device-b')
+      expect(await consumeEvmSelfNotes(deviceB, note(deviceB, firstNote, 'ab'.repeat(32)))).toMatchObject({ kind: 'consumed' })
+      expect((await deviceB.getNotedSends!()).find(send => send.txHash === first.hash.toLowerCase())?.inclusion?.feeWei).toBe(firstFee.toString())
+      expect(await deviceB.getBalance()).toBe(FUNDED - firstFee)
+      await deviceB.close()
+      alice = await openDevice('device-a')
+
+      // A reorganisation: the block is gone, and the call lands (and reverts) in another one
+      // whose base fee charges it more.
+      await chain.send('evm_revert', [fork])
+      await chain.send('evm_setAutomine', [false])
+      await baseFee(room / 2n)
+      await chain.send('eth_sendRawTransaction', [raw]).catch(() => undefined)
+      await chain.send('evm_mine', [])
+      await chain.send('evm_setAutomine', [true])
+      const moved = (await chain.getTransactionReceipt(first.hash))!
+      expect(moved.status).toBe(0)
+      expect(moved.blockHash).not.toBe(first.blockHash)
+      const fee = moved.gasUsed * moved.gasPrice
+      expect(fee).toBeGreaterThan(firstFee)
+      expect(await chain.getBalance(main)).toBe(FUNDED - fee)
+
+      // The host's polls read the recent call again (the first starts its wait) and find it
+      // moved.
+      await poll()
+      await poll()
+      // The corrected note was started by the poll; its delivery is waited for here.
+      expect(await alice.flushNativeSync!()).toEqual([])
+      const member = alice.getNativeOperations!().find(candidate => candidate.operationId === row.operationId)!.members[0]!
+      expect(member.observation).toMatchObject({
+        state: 'included-revert',
+        blockHash: moved.blockHash.toLowerCase(),
+        feeWei: fee.toString(),
+      })
+      expect(member.syncApplied).toBe(true)
+      const sent = notes.filter(items => (items[0] as WalletSyncItem).txHash === first.hash)
+      expect(sent).toHaveLength(2)
+      expect(sent[1]![0]).toMatchObject({ spentInputs: [{ address: main, nonce, valueWei: fee.toString() }] })
+      expect(new Set(sentIds).size).toBe(sentIds.length)
+      expect(await alice.getSpendableBalance!()).toBeGreaterThan(0n)
+      expect(evmWalletInternals(alice).coinList!.latestOf(main)).toMatchObject({ nonce: nonce + 1, valueWei: FUNDED - fee })
+      // Nothing more is sent: later polls, a flush and a restart.
+      await poll()
+      expect(await alice.flushNativeSync!()).toEqual([])
+      await alice.close()
+      alice = await openDevice('device-a')
+      await poll()
+      expect(await alice.flushNativeSync!()).toEqual([])
+      expect(notes.filter(items => (items[0] as WalletSyncItem).txHash === first.hash)).toHaveLength(2)
+      await alice.close()
+
+      deviceB = await openDevice('device-b')
+      try {
+        const corrected = note(deviceB, sent[1]!, 'ac'.repeat(32))
+        expect(await consumeEvmSelfNotes(deviceB, corrected)).toMatchObject({ kind: 'consumed' })
+        const noted = (await deviceB.getNotedSends!()).find(send => send.txHash === first.hash.toLowerCase())
+        expect(noted?.inclusion).toMatchObject({ feeWei: fee.toString(), blockHash: moved.blockHash.toLowerCase() })
+        expect(noted?.state).toBe('reverted')
+        expect(await deviceB.getBalance()).toBe(FUNDED - fee)
+        const spendableB = await deviceB.getSpendableBalance!()
+        expect(evmWalletInternals(deviceB).coinList!.latestOf(main)).toMatchObject({ nonce: nonce + 1, valueWei: FUNDED - fee })
+        // Applied twice: nothing changes.
+        const record = await deviceB.getNotedSends!()
+        expect(await consumeEvmSelfNotes(deviceB, corrected)).toMatchObject({ kind: 'consumed' })
+        expect(await consumeEvmSelfNotes(deviceB, note(deviceB, sent[1]!, 'ad'.repeat(32)))).toMatchObject({ kind: 'consumed' })
+        expect(await deviceB.getNotedSends!()).toEqual(record)
+        expect(await deviceB.getSpendableBalance!()).toBe(spendableB)
+        expect(evmWalletInternals(deviceB).coinList!.latestOf(main)).toMatchObject({ nonce: nonce + 1, valueWei: FUNDED - fee })
+      } finally {
+        await deviceB.close()
+        alice = await openDevice('device-a')
+      }
+    } finally {
+      clock.mockRestore()
+      // A failed step leaves no device open behind it.
+      await deviceB.close().catch(() => undefined)
+    }
+  })
+
+  it('a corrected fee found while the first note is still on its way is sent once that delivery ends, and the first delivery does not mark it', async () => {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => (release = resolve))
+    let entered!: () => void
+    const inFlight = new Promise<void>(resolve => (entered = resolve))
+    let held = true
+    config.emitWalletSync = async (item: WalletSyncItem) => {
+      notes.push([item])
+      if (held) {
+        held = false
+        entered()
+        await gate
+      }
+    }
+    await alice.close()
+    alice = await openDevice('device-a')
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    const poll = async () => {
+      offset += 20 * 60_000
+      await alice.reobserveNativeOperations!()
+    }
+    const baseFee = (wei: bigint) =>
+      chain.send('anvil_setNextBlockBaseFeePerGas', ['0x' + wei.toString(16)])
+    await baseFee(GAS_PRICE)
+    await chain.send('evm_mine', [])
+    try {
+      let fork = ''
+      const { row, nonce, receipt: first, fee: firstFee } = await lock(-60, async () => {
+        fork = await chain.send('evm_snapshot', [])
+        await baseFee(0n)
+        await chain.send('evm_mine', [])
+      })
+      const raw = row.members[0]!.signed!.rawTransaction
+      const call = Transaction.from(raw)
+      // The first note is handed to the relay and not yet answered.
+      const flushing = alice.flushNativeSync!()
+      await inFlight
+      await chain.send('evm_revert', [fork])
+      await chain.send('evm_setAutomine', [false])
+      await baseFee((call.maxFeePerGas! - call.maxPriorityFeePerGas!) / 2n)
+      await chain.send('eth_sendRawTransaction', [raw]).catch(() => undefined)
+      await chain.send('evm_mine', [])
+      await chain.send('evm_setAutomine', [true])
+      const moved = (await chain.getTransactionReceipt(first.hash))!
+      const fee = moved.gasUsed * moved.gasPrice
+      expect(fee).not.toBe(firstFee)
+      // The polls record the new fee while the first note is still out.
+      await poll()
+      await poll()
+      const member = () =>
+        alice.getNativeOperations!().find(candidate => candidate.operationId === row.operationId)!.members[0]!
+      expect(member().observation).toMatchObject({ feeWei: fee.toString() })
+      expect(notes.filter(items => (items[0] as WalletSyncItem).txHash === first.hash)).toHaveLength(1)
+      // The first delivery ends: it stated the old fee, so it marks nothing, and the corrected
+      // note goes out after it.
+      release()
+      await flushing
+      // Nothing else asks for it (no flush, no poll): the first delivery's own end sends it.
+      for (let i = 0; i < 40 && !member().syncApplied; i++)
+        await new Promise(resolve => setTimeout(resolve, 50))
+      expect(member().syncApplied).toBe(true)
+      const sent = notes.filter(items => (items[0] as WalletSyncItem).txHash === first.hash)
+      expect(sent).toHaveLength(2)
+      expect(sent[0]![0]).toMatchObject({ spentInputs: [{ address: main, nonce, valueWei: firstFee.toString() }] })
+      expect(sent[1]![0]).toMatchObject({ spentInputs: [{ address: main, nonce, valueWei: fee.toString() }] })
+      await poll()
+      expect(await alice.flushNativeSync!()).toEqual([])
+      expect(notes.filter(items => (items[0] as WalletSyncItem).txHash === first.hash)).toHaveLength(2)
+    } finally {
+      release()
+      clock.mockRestore()
+    }
+  })
+
+  it('a node that no longer serves an included call while its block is still canonical leaves it included', async () => {
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    const poll = async () => {
+      offset += 20 * 60_000
+      await alice.reobserveNativeOperations!()
+    }
+    try {
+      const { row, receipt } = await lock(3600)
+      const recorded = row.members[0]!.observation
+      expect(recorded).toMatchObject({ state: 'included-success' })
+      const nonce = Transaction.from(row.members[0]!.signed!.rawTransaction).nonce
+      await expectSettledFromReceipt(alice, nonce)
+      // A node behind, or one that dropped the transaction from its index: no transaction, no
+      // receipt, and an account read from before the call.
+      const send = JsonRpcProvider.prototype.send
+      const lagging = jest
+        .spyOn(JsonRpcProvider.prototype, 'send')
+        .mockImplementation(async function (this: JsonRpcProvider, method, params) {
+          const hash = ((params as string[])[0] ?? '').toString().toLowerCase()
+          if (
+            (method === 'eth_getTransactionReceipt' || method === 'eth_getTransactionByHash') &&
+            hash === receipt.hash.toLowerCase()
+          )
+            return null
+          return send.call(this, method, params)
+        })
+      try {
+        await poll()
+        await poll()
+        await poll()
+      } finally {
+        lagging.mockRestore()
+      }
+      const now = alice.getNativeOperations!().find(candidate => candidate.operationId === row.operationId)!.members[0]!
+      expect(now.observation).toEqual(recorded)
+      expect(now.syncApplied).toBe(row.members[0]!.syncApplied)
+      expect(evmWalletInternals(alice).coinList!.get(main, nonce)?.state).toBe('spent')
+    } finally {
+      clock.mockRestore()
+    }
   })
 
   it('a reverted call’s fee whose first delivery fails is delivered by a later flush, once', async () => {

@@ -35,7 +35,10 @@ import {
   EVM_STEALTH_PREPARATION_NAMESPACE,
   type EvmStealthPreparation,
 } from "./evm-stealth-payments";
-import { EvmLegacyConsolidator } from "./evm-legacy-consolidator";
+import {
+  EvmLegacyConsolidator,
+  walletSyncMessageId,
+} from "./evm-legacy-consolidator";
 import { createLegacyTransactionSetPayments } from "./evm-legacy-transaction-set";
 import { createEvmCoinConsolidator } from "../evm-coin-consolidator";
 import { createEvmTransactionSetSubmission } from "../evm-transaction-set-submission";
@@ -3226,9 +3229,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               if (!owner || internals.closed) return Promise.resolve();
               // A contract call the node was seen not to know is handed to it again (the same
               // signed bytes), so a lost broadcast cannot hold the main account for good.
+              // A contract call or cancellation in a recent block is read again until it is deep
+              // enough, so a reorganisation that moves it (another fee) is caught and told.
               return owner
                 .reobservePending()
                 .then(() => owner.resendMissingContractCalls())
+                .then(() => owner.recheckRecentInclusions())
                 .then(async () => {
                   // A blocked archived obligation remains observable without suppressing unrelated
                   // authorized recovery or funding. No network task owns a wallet-wide queue.
@@ -3688,22 +3694,25 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 // look at the account's funds, which frees nothing itself).
                 await releaseSettledMainAccounts(wallet, false);
               },
+              // A contract call or cancellation seen in a block is in none after all: the next coin
+              // listed from its receipt is read again.
+              onOwnSpendUndone: (account) => {
+                const sync = transactionSetRuntime.coinListSync;
+                sync.markDirty(account);
+                void sync.refreshAccounts([account]).catch(() => undefined);
+              },
               // After a contract call or token payment, the account's other devices are told through a note this
               // wallet writes to itself: a FREE message (no stamp), carrying only the sync item.
               // It creates no payment attempt, funds and reserves nothing, and is not held by a
               // pending paid message. Its message identity is fixed by the transaction it
-              // reports, so a repeat is the same message; applying it twice changes nothing.
+              // reports and the debit it states (`walletSyncMessageId`), so a repeat is the same
+              // message; applying it twice changes nothing. A note corrected after a
+              // reorganisation (another fee) is another message.
               // Best effort: a failure leaves the member not sync-applied and a later flush
               // sends it again. The other devices apply it in `consumeSelfNotes`.
               onSyncCheckpoint: archiveCompletedFinancialOperations,
               onSyncTransaction: async (item, swapRecord) => {
-                const messageId = getBytes(
-                  keccak256(
-                    toUtf8Bytes(
-                      `frank-wallet-sync:${item.chainIdentifier}:${item.txHash}`
-                    )
-                  )
-                ).slice(0, 16);
+                const messageId = walletSyncMessageId(item);
                 if (config.emitWalletSync) {
                   await config.emitWalletSync(item, swapRecord, messageId);
                   return;

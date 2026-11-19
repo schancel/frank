@@ -203,6 +203,27 @@ function itemTransactionHashes(items: readonly MessageItem[] | undefined): Set<s
   return hashes;
 }
 
+/** The fee a note says its one transaction paid, when it says: its one spent input's debit
+ * (value plus fee) less its one created output's value (what it moved; none for a reverted
+ * call). Invariant SYNC-ITEM-DEBIT. */
+function noteFee(item: WalletSyncItem): string | undefined {
+  const inputs = item.spentInputs ?? [];
+  const outputs = item.createdOutputs ?? [];
+  if (
+    inputs.length !== 1 ||
+    outputs.length !== 1 ||
+    typeof inputs[0]!.valueWei !== "string" ||
+    typeof outputs[0]!.valueWei !== "string"
+  )
+    return undefined;
+  try {
+    const fee = BigInt(inputs[0]!.valueWei) - BigInt(outputs[0]!.valueWei);
+    return fee >= 0n ? fee.toString() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 async function recordNotedSends(
   internals: ReturnType<typeof evmWalletInternals>,
   chainIdentifier: string,
@@ -222,6 +243,7 @@ async function recordNotedSends(
             rawTx: item.rawTx,
             txHash: item.txHash,
             ...(item.operation === undefined ? {} : { operation: item.operation }),
+            ...(noteFee(item) === undefined ? {} : { feeWei: noteFee(item) }),
           },
         ]
       : []

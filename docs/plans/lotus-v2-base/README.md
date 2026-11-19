@@ -13,6 +13,74 @@ TxID, `rxpi1` addresses, 1 XPI = 1,000,000 atoms), not the node's legacy eCash-f
 legacy transactions cannot spend native coins, and ecash-lib computes wrong v7 txids, so
 ecash-lib never hashes, parses or signs a v7 transaction anywhere in this change.
 
+## Stage 2: Lotus v2 chain objects move into `@frank/nakamoto` (design, 2026-11-19)
+
+Stage 1's codec in `packages/wallet/lotus-v2/native.ts` was an ownership violation: chain
+primitives belong in `@frank/nakamoto`. Stage 2 moves them there, written from the spec
+(`docs/lotus-v2/` in the Lotus repository: `addresses.md`, `decisions/encoding-and-signatures.md`
+(P01), `decisions/commitments-and-state.md` (P02)), with lotusd source read only to confirm bytes.
+
+### Which concepts are shared and which are per format
+
+Genuinely shared between the Bitcoin-format chains (BTC/BCH/XEC/XPI v1/DOGE/LTC) and Lotus v2,
+and reused as they are:
+
+- protocol identity: `protocolId`, `proxyFamily`, `allowedProxyCapabilities`, `identityProbes`,
+  `network`, `sources` (now the `ChainIdentity` base of every descriptor);
+- secp256k1 keys and BIP32 HD (`keys.ts`, `hd.ts`; chain-independent already);
+- BIP340 sign/verify (`curve.ts` `signSchnorr`/`verifySchnorr`, unmodified per P01: BIP340's
+  own SHA256 challenge, Lotus supplies only the 32-byte message);
+- CompactSize with shortest form required (`varint.ts`, `ByteReader`/`ByteWriter`);
+- the 40-bit cashaddr BCH-code generator (`cashaddr.ts`), exported as a raw polymod without
+  cashaddr's final xor and prefix expansion.
+
+Per format, and changing together: transaction grammar, identity hash, signature message,
+address layout, Merkle rule and script VM. No chain combines BLAKE3 identities with legacy
+framing, or v7 framing with ECDSA. So these are **not** independent knobs on the existing
+Bitcoin descriptor (that would let a caller build combinations no node accepts, and would give
+Lotus v2 meaningless WIF/base58/p2p-magic/Bitcoin-script fields). Instead every descriptor
+carries an explicit `format` discriminant:
+
+- `format: 'bitcoin'`: the existing `ChainDescriptor`, unchanged otherwise. Its legacy capability
+  fields (`merkleOddRule`, `sighash`, `bech32Hrp`, `cashaddrPrefix`, `lotusNetChar`, `script`)
+  keep driving `address.ts`/`transaction.ts`/`block.ts`/`script.ts`, whose signatures still take
+  only a `'bitcoin'` descriptor, so a Lotus v2 descriptor cannot reach them.
+- `format: 'lotus-v2'`: `LotusV2ChainDescriptor`, with explicit capability fields read by
+  `src/lotus-v2/`: `chainId` (32 bytes committed in every TxID/TxHash/signature),
+  `transactionVersion: 7`, `hash` (`blake3-tagged`, tag prefix `Lotus/v2/`, `H_name(x) =
+  BLAKE3(tag || 00 || x)`), `merkle` (`indexed-tagged`: P02 `IndexedTreeRoot`, layer-numbered
+  `H_merkleidx` nodes, odd levels padded with 32 zero bytes, empty root `H_merkleidx(02)`),
+  `address` (`lotus-v2-typed`: hrp, 40-bit checksum constant, supported type selectors),
+  `signature` (`bip340-x-only` with the signing modes the spec defines: 00 FULL, 01
+  OWN_INPUT_ALL_OUTPUTS, 02 OWN_INPUT_ONE_OUTPUT).
+
+Only the regtest descriptor `LOTUS_V2_REGTEST` exists. Mainnet and testnet are **not yet
+defined** (lotusd refuses to start there until genesis and constants exist; their ChainIDs in
+`addresses.md` are address-constant provenance, not launch parameters). The address codec knows
+their prefixes and checksum constants only to report a well-formed `xpi1`/`txpi1` string as
+`network-not-defined` instead of malformed. Frank's wallet still opens only on regtest (owner
+ruling above); that refusal stays in the wallet, not in nakamoto.
+
+### What nakamoto implements (`packages/nakamoto/src/lotus-v2/`, entry `@frank/nakamoto/lotus-v2`)
+
+- Addresses: type 0 (explicit branch root) and type 1 (x-only keyhash template) encode/decode
+  with checksum and the spec's ordered rejection reasons; types 2-31 rejected.
+- Templates: type-1 keyhash program `DUP BLAKE3 PUSH32 EQUALVERIFY CHECKSIG`; `Leaf(script)`,
+  `BranchNode`, branch proof roots.
+- Transactions: the complete P01 grammar, encode and strict parse (spend, coinbase and mint
+  inputs; native/token/burn/state output flags; lock kinds; shortest CompactSize; no trailing
+  bytes), TxID, TxHash, `CoinsRoot`, `OwnInputHash`.
+- Signature messages for modes 00/01/02 on spend invocations; a mint invocation's message
+  (needs the accounting delta) is an explicit `unsupported` result. BIP340 signing via nakamoto
+  `SigningKey`; verification of a spend witness's signature.
+- Not implemented (explicit, not silent): VM execution, accounting and fee rules (the fee rule
+  is wallet policy and is changing upstream, see below), UTXO/state commitments, block headers.
+
+Fees: lotusd's current rule is 1 atom per signed byte (regtest profile: "the specification's
+original 1000 atoms/kB and 546 atoms"). The spec's pending rule (subsidy-indexed cu term plus a
+byte fee) replaces it before genesis, so the wallet keeps the fee rule as its own replaceable
+policy (`LOTUS_V2_FEE_PER_BYTE`), not a nakamoto consensus fact.
+
 ## Regtest only (owner ruling, 2026-11-19)
 
 Lotus v2 native (v7) transactions are rejected outside regtest. Frank therefore has only the

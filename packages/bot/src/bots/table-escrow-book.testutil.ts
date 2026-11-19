@@ -14,7 +14,9 @@ import type {
   TableSeatResult,
   TableSettlementResult,
 } from "./table-htlc";
-export function seatingEscrowBook(game: TableGame) {
+/** `forgetOnSettle`: the record is dropped once settled, as `TableEscrows` drops it once its
+ * watcher sees every lock withdrawn (`get` then returns nothing). */
+export function seatingEscrowBook(game: TableGame, options: { forgetOnSettle?: boolean } = {}) {
   const records = new Map<string, TableEscrowRecord>();
   const settlements: Array<{ tableId: string; shares: Array<{ player: string; amountWei: bigint }> }> = [];
   let count = 0;
@@ -61,6 +63,7 @@ export function seatingEscrowBook(game: TableGame) {
       record.settlement = {
         payouts: shares.map(s => ({ recipient: s.player, amountWei: s.amountWei.toString() })),
       };
+      if (options.forgetOnSettle) records.delete(tableId);
       return { status: "sent", tableId, txHash: "0x" + hex(`settle-${tableId}`), payouts: record.settlement.payouts };
     },
     async recover() {

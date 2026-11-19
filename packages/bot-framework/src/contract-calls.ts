@@ -35,6 +35,9 @@ export function botContractCallsOf(
         ...(params.gasLimit === undefined ? {} : { gasLimit: params.gasLimit }),
         record: params.record,
         ...(params.deadline === undefined ? {} : { deadline: params.deadline }),
+        ...(params.mainAccountWaitMs === undefined
+          ? {}
+          : { mainAccountWaitMs: params.mainAccountWaitMs }),
         ...(params.onSigned === undefined
           ? {}
           : {

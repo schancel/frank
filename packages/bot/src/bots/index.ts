@@ -6,4 +6,6 @@ export * from "./faucet-bot";
 export * from "./chat-room-bot";
 export * from "./rps-bot";
 export * from "./satoshi-dice-bot";
+export * from "./poker-bot";
+export * from "./liars-dice-bot";
 export * from "./newsletter-bot";

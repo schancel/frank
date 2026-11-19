@@ -430,6 +430,8 @@ export type BotName =
   | 'lobby'
   | 'rps'
   | 'dice'
+  | 'poker'
+  | 'liars-dice'
 
 export interface DemoBot {
   name: BotName
@@ -791,7 +793,7 @@ export function resolveDemoConfig(params: {
   const relayUrl = `http://127.0.0.1:${relayPort}`
   const idPath = (bot: string) => join(stateDir, 'bots', bot, 'identity.json')
   const names: BotName[] = (
-    ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice'] as BotName[]
+    ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice', 'poker', 'liars-dice'] as BotName[]
   ).filter(name => !(noFaucet && name === 'faucet'))
   const bots: DemoBot[] = names.map(name => ({ name, identityJson: idPath(name) }))
 

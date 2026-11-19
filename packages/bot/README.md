@@ -36,8 +36,9 @@ how much is missing and starts nothing), starts the local relay through
 `backend/cashweb/run-local-monad.sh` (the first run builds it with Cargo; or set `CASHWEBD_BIN` to
 a prebuilt `cashwebd-exe`), then **one bot process** (`targets/all-bots.ts`) that runs every bot on
 one bot host: blackjack dealer, raffle, picture shop, Qwen (the live model; the offline stub only
-with `QWEN_BOT_MODE=stub`), faucet, lobby, RPS and dice. It prints every bot
-address, the app URL and the exact command to start the app, then waits. Logs are in
+with `QWEN_BOT_MODE=stub`), faucet, lobby, RPS, dice, poker and liar's dice (their tables hold
+buy-ins in GenericHTLC: the network needs a GenericHTLC deployment, which Monad testnet has). It
+prints every bot address, the app URL and the exact command to start the app, then waits. Logs are in
 `<state dir>/logs/` (`relay.log`, `bots.log`; each bot's lines start with `[<bot>]`). Missing
 prerequisites (Node, `bash`, `cargo` or `CASHWEBD_BIN`, a busy port, an absent RPC URL or wallet
 file) each print one line, never a stack trace.

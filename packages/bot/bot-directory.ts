@@ -29,6 +29,8 @@ export type BotKey =
   | 'lobby'
   | 'rps'
   | 'dice'
+  | 'poker'
+  | 'liars-dice'
 
 export interface BotProfileSpec {
   key: BotKey
@@ -122,6 +124,28 @@ export const BOT_PROFILES: readonly BotProfileSpec[] = [
     identityEnv: 'DICE_BOT_IDENTITY_JSON',
     identityDefaultPath: '/tmp/dice-bot-identity.json',
     accent: [180, 50, 180],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
+  },
+  {
+    key: 'poker',
+    name: "Texas Hold'em Poker",
+    // No fairness claim: the bot alone shuffles the deck (see `src/bots/poker-bot.ts`).
+    bio: "No-Limit Texas Hold'em for 2 to 6 players. Your buy-in is locked on chain in an HTLC, and you can refund it yourself after a day.",
+    identityEnv: 'POKER_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/poker-bot-identity.json',
+    accent: [30, 160, 80],
+    accountType: ACCOUNT_TYPE_BOT,
+    botRole: BOT_ROLE_GAME,
+  },
+  {
+    key: 'liars-dice',
+    name: "Liar's Dice",
+    // No fairness claim: the bot rolls the dice at challenge time (see `src/bots/liars-dice-bot.ts`).
+    bio: "Liar's Dice (Perudo) for 2 or more players. Your buy-in is locked on chain in an HTLC, and you can refund it yourself after a day.",
+    identityEnv: 'LIARS_DICE_BOT_IDENTITY_JSON',
+    identityDefaultPath: '/tmp/liars-dice-bot-identity.json',
+    accent: [240, 180, 50],
     accountType: ACCOUNT_TYPE_BOT,
     botRole: BOT_ROLE_GAME,
   },

@@ -1,18 +1,20 @@
 /**
- * PARKED: not registered. Nothing imports this file: it is not in the bot set (`./index.ts`,
- * `targets/`), the launcher or the demo, and the app's card for it is not mounted. It is kept
- * for the rebuild, ticket #1377.
+ * Registered: in the bot set (`./index.ts`), `targets/all-bots.ts` (`liars-dice`),
+ * `targets/liars-dice.ts` and the demo. The game itself is still to be rebuilt, ticket #1377.
  *
  * Known wrong, as it stands:
  * - dice are never dealt at the start of a round: players bid blind and the bot rolls at
- *   challenge time (`setPlayerRoundCommit` / `setPlayerRoundSecret` are never called);
- * - the app's card emitted a malformed message (`{type:'text', text}` with no `items`), and the
- *   app has no join that locks the buy-in yet.
+ *   challenge time (`setPlayerRoundCommit` / `setPlayerRoundSecret` are never called).
  * Its profile makes no fairness claim.
  *
  * Buy-ins are held in a GenericHTLC v2 table escrow (`./table-htlc`): a player is seated only by a
  * join naming an open buy-in lock with the table's terms; the winner is paid the pot of locked
- * buy-ins with `batchDistribute`.
+ * buy-ins with `batchDistribute`. A reveal that fails verification returns every buy-in and ends
+ * the table. An ended table (`closedTables`) starts no round and takes no join, bid or challenge,
+ * also once its escrow record is dropped (the escrow drops it when every lock is withdrawn).
+ *
+ * Replies go to the player whose message they answer (and a turn timeout's to the player who
+ * started the timer); the other seated players are not messaged.
  */
 import type {
   FrankBotDefinition,
@@ -38,7 +40,7 @@ import {
   DEFAULT_BUY_IN_WEI,
   type LiarsDiceGameState,
 } from "@frank/wallet/message-item-plugins/liars-dice";
-import { generateAvatarPng } from "../../bot-directory";
+import { botProfileSpec, generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
   TableEscrows,
@@ -59,6 +61,9 @@ import {
 
 export type LiarsDiceTableEscrowRecord = TableEscrowRecord;
 export type { TableEscrowRecord };
+const LIARS_DICE_PROFILE = botProfileSpec("liars-dice");
+/** What an ended table answers to anything that would play on. */
+const CLOSED_TABLE_TEXT = "❌ This table has ended: open a new one with `/table create`.";
 
 export class LiarsDiceBot implements FrankBotDefinition {
   readonly id = "liars-dice";
@@ -73,6 +78,8 @@ export class LiarsDiceBot implements FrankBotDefinition {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
   private readonly escrows: TableEscrowBook;
+  /** Tables that have ended (won, or a reveal failed verification): nothing more is played. */
+  private readonly closedTables = new Set<string>();
 
   constructor(options: { escrows?: TableEscrowBook } = {}) {
     this.escrows = options.escrows ?? new TableEscrows("liars-dice");
@@ -115,6 +122,9 @@ export class LiarsDiceBot implements FrankBotDefinition {
     this.clearTableTimer(game.tableId);
     const verification = verifyLiarsDiceReveal(game);
     const escrow = this.escrows.get(game.tableId);
+    // An unverified reveal ends the table as a won game does, before the settlement's wait: an
+    // unstaked game does not go on after its buy-ins are returned.
+    if (!verification.verified || game.status === "resolved") this.closedTables.add(game.tableId);
     let settlement: TableSettlementResult | undefined;
     if (escrow && !verification.verified)
       settlement = await this.escrows.settle(ctx, game.tableId, returnBuyIns);
@@ -129,9 +139,9 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
   getProfile(): BotProfile {
     return {
-      name: "Liar's Dice",
-      bio: "Liar's Dice (Perudo) table with multi-party committed seeds.",
-      avatarPng: generateAvatarPng("liars-dice", [240, 180, 50]),
+      name: LIARS_DICE_PROFILE.name,
+      bio: LIARS_DICE_PROFILE.bio,
+      avatarPng: generateAvatarPng("liars-dice", LIARS_DICE_PROFILE.accent),
       bot: true,
       accountType: ACCOUNT_TYPE_BOT,
       botRole: BOT_ROLE_GAME,
@@ -183,7 +193,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
    * the game settles the table, as any other does. */
   private async onTurnTimeout(tableId: string, ctx: BotContext, peerAddress: string): Promise<void> {
     const game = this.tables.get(tableId);
-    if (!game || game.status !== "round_active") return;
+    if (!game || game.status !== "round_active" || this.closedTables.has(tableId)) return;
     const active = getActivePlayer(game);
     if (!active || !game.currentBid) return;
 
@@ -398,6 +408,10 @@ export class LiarsDiceBot implements FrankBotDefinition {
         return;
       }
 
+      if (this.closedTables.has(tableId) || this.escrows.get(tableId)?.settlement) {
+        await msgCtx.reply([{ type: "text", text: CLOSED_TABLE_TEXT }]);
+        return;
+      }
       const game = this.tables.get(tableId)!;
       const res = startNextRound(game);
       if (!res.success) {
@@ -426,6 +440,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         await msgCtx.reply([{ type: "text", text: "Usage: `/commit <sha256_hex>`" }]);
         return;
       }
+      if (await this.refuseClosed(tableId, msgCtx)) return;
       const game = this.tables.get(tableId)!;
       const res = setPlayerRoundCommit(game, sender, commitVal);
       if (!res.success) {
@@ -443,6 +458,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         await msgCtx.reply([{ type: "text", text: "Usage: `/seed <seed_hex>`" }]);
         return;
       }
+      if (await this.refuseClosed(tableId, msgCtx)) return;
       const game = this.tables.get(tableId)!;
       const res = setPlayerRoundSecret(game, sender, seedVal);
       if (!res.success) {
@@ -467,6 +483,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         return;
       }
 
+      if (await this.refuseClosed(tableId, msgCtx)) return;
       const game = this.tables.get(tableId)!;
       const res = applyBid(game, sender, qty, face);
       if (!res.success) {
@@ -495,6 +512,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         return;
       }
 
+      if (await this.refuseClosed(tableId, msgCtx)) return;
       const game = this.tables.get(tableId)!;
       const res = applyChallenge(game, sender);
       if (!res.success) {
@@ -555,6 +573,13 @@ export class LiarsDiceBot implements FrankBotDefinition {
     }
   }
 
+  /** An ended table: says so and returns true. */
+  private async refuseClosed(tableId: string, msgCtx: BotMessageContext): Promise<boolean> {
+    if (!this.closedTables.has(tableId)) return false;
+    await msgCtx.reply([{ type: "text", text: CLOSED_TABLE_TEXT }]);
+    return true;
+  }
+
   /** Seats `sender` for the buy-in lock its join names, then sits it at the table. */
   private async join(
     game: LiarsDiceGameState,
@@ -563,9 +588,11 @@ export class LiarsDiceBot implements FrankBotDefinition {
     msgCtx: BotMessageContext,
     ctx: BotContext,
   ): Promise<void> {
+    if (await this.refuseClosed(game.tableId, msgCtx)) return;
     // The game's join runs inside the escrow's seating step: a seat is recorded only when the
     // game took the player, and the player is told when it did not.
     const seat = await this.escrows.seat(ctx, game.tableId, sender, lock, () => {
+      if (this.closedTables.has(game.tableId)) return { ok: false, error: "this table has ended" };
       const joined = joinGame(game, sender);
       return joined.success ? { ok: true } : { ok: false, error: joined.error ?? "the table refused the player" };
     });
@@ -600,6 +627,9 @@ export class LiarsDiceBot implements FrankBotDefinition {
       await this.join(game, sender, item.buyInLock, msgCtx, ctx);
       return;
     }
+
+    if ((item.action === "bid" || item.action === "challenge") && (await this.refuseClosed(game.tableId, msgCtx)))
+      return;
 
     if (item.action === "bid" && item.currentBid) {
       const res = applyBid(game, sender, item.currentBid.quantity, item.currentBid.face);

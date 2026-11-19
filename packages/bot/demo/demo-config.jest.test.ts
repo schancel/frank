@@ -93,7 +93,7 @@ describe('resolveDemoConfig', () => {
     expect(c.rpcUrl).toBe(REAL_ENV.MONAD_TESTNET_HTTP_RPC_URL)
     expect(c.stateDir).toBe(join(HOME, '.frank-demo'))
     expect(c.mainWalletJson).toBe('/work/wallet.json')
-    const names = ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice']
+    const names = ['blackjack', 'raffle', 'vendor', 'qwen', 'faucet', 'lobby', 'rps', 'dice', 'poker', 'liars-dice']
     expect(c.bots.map(b => b.name)).toEqual(names)
     // One process, the framework's multi-bot entry point, told which bots to run.
     expect(c.botProcess.script).toBe('targets/all-bots.ts')

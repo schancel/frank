@@ -13,7 +13,7 @@ export function rpcUrlList(raw: string): string[] {
 
 export async function rpcCall<T = unknown>(rpcUrls: string, method: string, params: unknown[]): Promise<T> {
   let last = 'no RPC URL configured'
-  // A public endpoint drops or stalls a request now and then, most of all while eight bots are
+  // A public endpoint drops or stalls a request now and then, most of all while all the bots are
   // starting against it: the list is tried three times before a read is called failed.
   for (let round = 0; round < 3; round += 1) {
     if (round > 0) await new Promise(r => setTimeout(r, 1500 * round))

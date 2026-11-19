@@ -93,6 +93,49 @@ const chronik = {
   assert.equal(summaryCalls[0], 40); assert(summaryCalls.length > 1);
   assert.equal(sdk.changeIndex, change + 6);
   summaryCalls.length = 0; await backend.sync(); assert.deepEqual(summaryCalls, [40]);
+  // Window edges: the probe covers [index, index + 20) on each chain.
+  const probeFinds = async (path, expectedReceive, expectedChange) => {
+    usedPkhs.add(hdPkh(path));
+    summaryCalls.length = 0; await backend.sync();
+    assert.equal(summaryCalls[0], 40, path); assert(summaryCalls.length > 1, path);
+    assert.equal(sdk.receiveIndex, expectedReceive, path); assert.equal(sdk.changeIndex, expectedChange, path);
+  };
+  let c = sdk.changeIndex, r = sdk.receiveIndex;
+  await probeFinds('1/' + c, r, c + 1);                 // exactly at the start index
+  c = sdk.changeIndex; await probeFinds('1/' + (c + 19), r, c + 20); // last address in the window
+  c = sdk.changeIndex;
+  await probeFinds('0/' + (r + 3), r + 4, c);            // the receive chain
+  r = sdk.receiveIndex;
+  // +20 lies outside the window: the probe alone neither sees nor discovers it.
+  const outside = hdPkh('1/' + (c + 20)); usedPkhs.add(outside);
+  summaryCalls.length = 0; await backend.sync(); assert.deepEqual(summaryCalls, [40]);
+  assert.equal(sdk.changeIndex, c); assert.equal(sdk.receiveIndex, r);
+  usedPkhs.delete(outside);
+  // A failed or malformed probe fails the refresh: no discovery, no sync, observation kept.
+  const { EcashGapProbeError } = require('./ecash-sdk-backend.ts');
+  const { describeWalletFailure } = require('./wallet-failure.ts');
+  const before = backend.getCompleteBalanceObservation();
+  const methods = ['batchSummary', 'batchUtxos', 'script', 'address', 'blockchainInfo', 'tx'];
+  const saved = Object.fromEntries(methods.map(m => [m, chronik[m]]));
+  for (const [reply, reason] of [[null, 'unavailable'], [39, 'protocol'], [41, 'protocol']]) {
+    let probeScripts = 0, otherRequests = 0;
+    for (const m of methods) chronik[m] = (...args) => { otherRequests++; throw new Error('unexpected chronik ' + m); };
+    chronik.batchSummary = async scripts => {
+      probeScripts += scripts.length;
+      if (reply === null) throw new Error('rpc_hourly_quota');
+      return Array.from({ length: reply }, () => ({ numTxs: 0, numUtxos: 0 }));
+    };
+    await assert.rejects(backend.sync(), error => {
+      assert(error instanceof EcashGapProbeError); assert.equal(error.reason, reason);
+      assert.equal(describeWalletFailure(error).observationUnavailable, true);
+      return true;
+    });
+    assert.equal(probeScripts, 40, reason); assert.equal(otherRequests, 0, reason);
+    assert.deepEqual(backend.getCompleteBalanceObservation(), before);
+    assert.equal(sdk.changeIndex, c); assert.equal(sdk.receiveIndex, r);
+  }
+  Object.assign(chronik, saved);
+  summaryCalls.length = 0; await backend.sync(); assert.deepEqual(summaryCalls, [40]);
   wrongScript = true; await assert.rejects(backend.sync(), /wrong imported eCash script/); wrongScript = false;
   importedCoins = []; await backend.sync(); assert.equal(backend.balanceSats, 0n);
   importedCoins = [{ outpoint: { txid: '3'.repeat(64), outIdx: 0 }, sats: 10000n, blockHeight: 800000, isCoinbase: false, isFinal: true }];

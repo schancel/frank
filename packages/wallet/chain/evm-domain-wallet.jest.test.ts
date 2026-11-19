@@ -60,7 +60,10 @@ import { EvmNativeOperationJournal } from '../storage/evm-native-operation-journ
 import { MonadSubAccountPool } from '../evm-account-pool'
 import { applyWalletSyncItem } from '../sync-dispatcher'
 import type { WalletSyncItem } from '@frank/cashweb/types/messages'
-import { EvmLegacyConsolidator } from './evm-legacy-consolidator'
+import {
+  EVM_INCLUSION_RECHECK_BLOCKS,
+  EvmLegacyConsolidator,
+} from './evm-legacy-consolidator'
 import { LegacyTransactionSetPendingError } from './evm-legacy-transaction-set'
 import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
@@ -899,7 +902,7 @@ test('a real Sepolia owner retries the original sync event without signing or br
     })
     expect(swapRecord).toBeUndefined()
     expect(messageId).toEqual(getBytes(keccak256(Buffer.from(
-      `frank-wallet-sync:ethereum-sepolia:${sent.txHash}`,
+      `frank-wallet-sync:ethereum-sepolia:${sent.txHash}:${item.spentInputs![0]!.valueWei}`,
     ))).slice(0, 16))
     const delivered = emitWalletSync.mock.calls[failedNotes]! as unknown as [
       WalletSyncItem,
@@ -2217,7 +2220,27 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
     expect(sign).not.toHaveBeenCalled()
     expect(digest).not.toHaveBeenCalled()
     expect(f.rpc.broadcast).not.toHaveBeenCalled()
-    // Terminal: later ticks ask nothing about it.
+    // Included: while its block is recent, a tick reads it again at most once per wait (a
+    // reorganisation may move it); the bounded lookup asks nothing more about it.
+    f.receipt.mockClear()
+    await f.wallet.reobserveNativeOperations!()
+    expect(f.probes()).toBe(0)
+    time.advance(15_000)
+    await f.wallet.reobserveNativeOperations!()
+    const once = f.probes()
+    expect(once).toBeGreaterThan(0)
+    expect(once).toBeLessThanOrEqual(2)
+    await Promise.all(
+      Array.from({ length: 20 }, () => f.wallet.reobserveNativeOperations!()),
+    )
+    time.advance(14_000)
+    await f.wallet.reobserveNativeOperations!()
+    expect(f.probes()).toBe(once)
+    // Deep enough (`EVM_INCLUSION_RECHECK_BLOCKS`): later ticks ask nothing about it.
+    const head = (await f.wallet.provider.getBlockNumber()) + EVM_INCLUSION_RECHECK_BLOCKS
+    jest.spyOn(f.wallet.provider, 'getBlockNumber').mockResolvedValue(head)
+    time.advance(600_000)
+    await f.wallet.reobserveNativeOperations!()
     f.receipt.mockClear()
     for (let i = 0; i < 20; i++) {
       time.advance(600_000)

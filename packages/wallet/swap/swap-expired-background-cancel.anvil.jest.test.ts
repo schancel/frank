@@ -502,6 +502,198 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     expect(notes).toHaveLength(sent)
   })
 
+  it('a cancellation a reorganisation moves into a block with another fee: the journal, the other device and both coin lists take the new fee, the corrected note sent once', async () => {
+    // Device A's notes to itself, with the message identity each is sent under.
+    const notes: { item: WalletSyncItem; messageId: string }[] = []
+    f.config.emitWalletSync = async (item, _record, messageId) => {
+      notes.push({ item, messageId: Buffer.from(messageId).toString('hex') })
+    }
+    const deviceBChain = withDefaultMessageItems(
+      createEvmChain({
+        ...f.config,
+        walletStorageLocation: join(f.root, 'device-b'),
+        emitWalletSync: async () => undefined,
+      }),
+    )
+    const openB = async () =>
+      (await deviceBChain.createWallet(roots(0))) as EvmChainWalletHandle
+    const funded = 10n ** 18n
+    // Device B first sees the main account as funded.
+    await alice.close()
+    let deviceB = await openB()
+    expect(await deviceB.getBalance()).toBe(funded)
+    await deviceB.close()
+    alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    await alice.getSpendableBalance!()
+    // The host's polls are spaced as a real one's are.
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    const poll = async () => {
+      offset += 20 * 60_000
+      await alice.reobserveNativeOperations!()
+    }
+    const selfNote = (device: EvmChainWalletHandle, item: WalletSyncItem, digest: string) =>
+      ({
+        senderAddress: { raw: device.identity.address.raw },
+        recipientAddress: { raw: device.identity.address.raw },
+        items: [item],
+        payloadDigest: digest,
+        stampValueWei: 0n,
+        receivedTime: Date.now(),
+      }) as unknown as DirectMessageReceived
+    // The network asks a base fee when the swap is priced, so its cancellation may pay more than
+    // its tip: what it pays depends on the block it lands in.
+    const baseFee = (wei: bigint) =>
+      chain.send('anvil_setNextBlockBaseFeePerGas', ['0x' + wei.toString(16)])
+    await baseFee(GAS_PRICE)
+    await chain.send('evm_mine', [])
+    try {
+      const swap = await submitLostSwap()
+      await passDeadline(swap.deadline)
+      await poll()
+      const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+      const cancel = Transaction.from(cancellation.rawTransaction)
+      const room = cancel.maxFeePerGas! - cancel.maxPriorityFeePerGas!
+      expect(room).toBeGreaterThan(0n)
+      const fork = await chain.send('evm_snapshot', [])
+      // First in a block that asks no base fee: the cancellation pays its tip alone.
+      await baseFee(0n)
+      await chain.send('evm_mine', [])
+      const first = (await chain.getTransactionReceipt(cancellation.transactionHash))!
+      const firstFee = first.gasUsed * first.gasPrice
+      await expectFreed(swap.nonce)
+      expect(rowOf(swap.handle.operationId).members[0]!.cancellation!.included?.feeWei).toBe(
+        firstFee.toString(),
+      )
+      expect(await alice.flushNativeSync!()).toEqual([])
+      const firstNote = notes.find(note => note.item.txHash === cancellation.transactionHash)!
+      expect(firstNote.item.spentInputs).toEqual([
+        { address: main, nonce: swap.nonce, valueWei: firstFee.toString() },
+      ])
+      await alice.close()
+
+      // Device B reads that note and shows that fee.
+      deviceB = await openB()
+      expect(await consumeEvmSelfNotes(deviceB, selfNote(deviceB, firstNote.item, 'ab'.repeat(32)))).toMatchObject({ kind: 'consumed' })
+      const notedFirst = (await deviceB.getNotedSends!()).find(
+        send => send.txHash === cancellation.transactionHash,
+      )
+      expect(notedFirst?.inclusion?.feeWei).toBe(firstFee.toString())
+      expect(await deviceB.getBalance()).toBe(funded - firstFee)
+      await deviceB.close()
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+
+      // A reorganisation: the block is gone, and the cancellation lands in another one whose
+      // base fee charges it more.
+      await chain.send('evm_revert', [fork])
+      await chain.send('evm_setAutomine', [false])
+      await baseFee(room / 2n)
+      await chain.send('eth_sendRawTransaction', [cancellation.rawTransaction]).catch(() => undefined)
+      await chain.send('evm_mine', [])
+      await chain.send('evm_setAutomine', [true])
+      const moved = (await chain.getTransactionReceipt(cancellation.transactionHash))!
+      expect(moved.blockHash).not.toBe(first.blockHash)
+      const fee = moved.gasUsed * moved.gasPrice
+      expect(fee).toBeGreaterThan(firstFee)
+      expect(await chain.getBalance(main)).toBe(funded - fee)
+
+      // The host's polls read the recent cancellation again (the first starts its wait) and find
+      // it moved.
+      await poll()
+      await poll()
+      const member = rowOf(swap.handle.operationId).members[0]!
+      expect(member.cancellation!.included).toMatchObject({
+        blockHash: moved.blockHash.toLowerCase(),
+        blockNumber: moved.blockNumber,
+        feeWei: fee.toString(),
+      })
+      // The corrected note went out once, under another identity than the first.
+      const sent = notes.filter(note => note.item.txHash === cancellation.transactionHash)
+      expect(sent).toHaveLength(2)
+      expect(sent[1]!.item.spentInputs).toEqual([
+        { address: main, nonce: swap.nonce, valueWei: fee.toString() },
+      ])
+      expect(sent[1]!.messageId).not.toBe(sent[0]!.messageId)
+      expect(member.cancellation!.syncApplied).toBe(true)
+      // The sending device's coins follow the chain.
+      expect(await alice.getSpendableBalance!()).toBeGreaterThan(0n)
+      expect(evmWalletInternals(alice).coinList!.latestOf(main)).toMatchObject({
+        nonce: swap.nonce + 1,
+        valueWei: funded - fee,
+      })
+      // Nothing more is sent: later polls, a flush and a restart.
+      await poll()
+      expect(await alice.flushNativeSync!()).toEqual([])
+      await reopen()
+      await poll()
+      expect(await alice.flushNativeSync!()).toEqual([])
+      expect(notes.filter(note => note.item.txHash === cancellation.transactionHash)).toHaveLength(2)
+      // Deep enough: the cancellation is not read again.
+      for (let i = 0; i < 70; i++) await chain.send('evm_mine', [])
+      await poll()
+      let reads = 0
+      const send = JsonRpcProvider.prototype.send
+      const counting = jest
+        .spyOn(JsonRpcProvider.prototype, 'send')
+        .mockImplementation(async function (this: JsonRpcProvider, method, params) {
+          if (
+            method === 'eth_getTransactionReceipt' &&
+            ((params as string[])[0] ?? '').toLowerCase() === cancellation.transactionHash
+          )
+            reads++
+          return send.call(this, method, params)
+        })
+      try {
+        await poll()
+        await poll()
+      } finally {
+        counting.mockRestore()
+      }
+      expect(reads).toBe(0)
+      await alice.close()
+
+      // Device B reads the corrected note: its record of the cancellation and its coins take the
+      // new fee.
+      deviceB = await openB()
+      const corrected = selfNote(deviceB, sent[1]!.item, 'ac'.repeat(32))
+      expect(await consumeEvmSelfNotes(deviceB, corrected)).toMatchObject({ kind: 'consumed' })
+      const noted = (await deviceB.getNotedSends!()).find(
+        send => send.txHash === cancellation.transactionHash,
+      )
+      expect(noted?.inclusion).toMatchObject({
+        feeWei: fee.toString(),
+        blockHash: moved.blockHash.toLowerCase(),
+      })
+      expect(await deviceB.getBalance()).toBe(funded - fee)
+      const spendableB = await deviceB.getSpendableBalance!()
+      expect(evmWalletInternals(deviceB).coinList!.latestOf(main)).toMatchObject({
+        nonce: swap.nonce + 1,
+        valueWei: funded - fee,
+      })
+      // Applied again (a mailbox replay), and the first note replayed: nothing changes.
+      const record = await deviceB.getNotedSends!()
+      expect(await consumeEvmSelfNotes(deviceB, corrected)).toMatchObject({ kind: 'consumed' })
+      expect(await deviceB.getNotedSends!()).toEqual(record)
+      expect(await consumeEvmSelfNotes(deviceB, selfNote(deviceB, firstNote.item, 'ad'.repeat(32)))).toMatchObject({ kind: 'consumed' })
+      expect(
+        (await deviceB.getNotedSends!()).find(send => send.txHash === cancellation.transactionHash)
+          ?.inclusion?.feeWei,
+      ).toBe(fee.toString())
+      expect(await deviceB.getSpendableBalance!()).toBe(spendableB)
+      expect(evmWalletInternals(deviceB).coinList!.latestOf(main)).toMatchObject({
+        nonce: swap.nonce + 1,
+        valueWei: funded - fee,
+      })
+      await deviceB.close()
+      alice = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
+    } finally {
+      clock.mockRestore()
+      // A failed step leaves no device open behind it.
+      await deviceB.close().catch(() => undefined)
+    }
+  })
+
   it('a cancellation whose receipt could not be read at first has its fee recorded by a later background pass', async () => {
     const notes: WalletSyncItem[] = []
     f.config.emitWalletSync = async item => {

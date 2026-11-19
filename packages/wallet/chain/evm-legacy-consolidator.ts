@@ -7,6 +7,9 @@ import {
 } from '../evm-input-admission'
 import {
   getAddress,
+  getBytes,
+  keccak256,
+  toUtf8Bytes,
   Transaction,
   type Provider,
 } from 'ethers'
@@ -40,6 +43,7 @@ import {
   type EvmNativeSource,
   type EvmNativePlan,
   type EvmNativeOperation,
+  type EvmNativeMember,
   type EvmNativeAccountObservation,
   type EvmNativeObservation,
   type EvmNativeInclusionContradiction,
@@ -182,6 +186,20 @@ export interface EvmLegacyConsolidatorConfig {
   /** The head those blocks are counted from (`ChainRegistryEntry.spendRuleHead`; Monad: the
    * finalized one). Absent: the newest block. */
   spendRuleHead?: 'latest' | 'finalized'
+}
+/**
+ * The message identity of the note to self that carries `item` (`onSyncTransaction`): fixed by
+ * the network, the transaction and the debit the note states, so every device computes it, a
+ * repeat of the note is the same message, and a note corrected after a reorganisation (the same
+ * transaction, another fee) is a new one.
+ */
+export function walletSyncMessageId(item: WalletSyncItem): Uint8Array {
+  const debit = (item.spentInputs ?? []).map(input => input.valueWei ?? '').join(',')
+  return getBytes(
+    keccak256(
+      toUtf8Bytes(`frank-wallet-sync:${item.chainIdentifier}:${item.txHash}:${debit}`),
+    ),
+  ).slice(0, 16)
 }
 /** The note-to-self item a contract call's record becomes. */
 export type ContractCallRecordItem =
@@ -337,6 +355,10 @@ export const REOBSERVE_MAX_PROBES = 8
 export const REOBSERVE_MIN_INTERVAL_MS = 15_000
 /** Re-observation: the longest wait between two probes of one member. */
 export const REOBSERVE_MAX_BACKOFF_MS = 600_000
+/** Inclusion re-check (`recheckRecentInclusions`): how many blocks past a contract call's (or
+ * its cancellation's) block it is still read again for a reorganisation. Wallet policy: past
+ * this depth the block and the fee first read are kept. */
+export const EVM_INCLUSION_RECHECK_BLOCKS = 64
 /** One background lookup I/O budget; expiry says nothing about transaction settlement. */
 export const REOBSERVE_LOOKUP_TIMEOUT_MS = 30_000
 const REOBSERVE_STOPPED = Symbol('re-observation stopped')
@@ -488,6 +510,9 @@ export class EvmLegacyConsolidator {
     index: number,
     lifetime?: WalletOperationLifetime,
     wanted?: () => boolean,
+    /** Also read again the receipt of a cancellation recorded included
+     * (`recheckRecentInclusions`). */
+    recheck?: boolean,
   ): Promise<void> {
     const journal = this.journal(lifetime),
       { provider } = this.config
@@ -625,7 +650,7 @@ export class EvmLegacyConsolidator {
       }
       return
     }
-    await this.observeCancellation(operationId, index, lifetime, wanted)
+    await this.observeCancellation(operationId, index, lifetime, wanted, recheck)
   }
   /** `onOwnSpendIncluded`, never rejecting: the coin list is a view the account's next read
    * rebuilds. */
@@ -655,12 +680,17 @@ export class EvmLegacyConsolidator {
    * so its receipt would be there; this session never reads it again (`cancellationNotLanded`).
    * A restart looks once more and ends the same way. Reads go through the re-observation stop:
    * a wallet that closes stops waiting for the node at once.
+   *
+   * `recheck`: a cancellation already recorded included is read again
+   * (`recheckRecentInclusions`). A receipt in another block replaces the one recorded
+   * (`recordCancellationIncluded`); none, or one that does not check, changes nothing.
    */
   private async observeCancellation(
     operationId: string,
     index: number,
     lifetime?: WalletOperationLifetime,
     wanted?: () => boolean,
+    recheck?: boolean,
   ): Promise<void> {
     const journal = this.journal(lifetime)
     const member = journal.get(operationId).members[index]
@@ -668,9 +698,10 @@ export class EvmLegacyConsolidator {
     if (
       !member ||
       !cancellation ||
-      cancellation.included ||
+      (cancellation.included && !recheck) ||
       !nativeMemberSuperseded(member) ||
-      this.cancellationNotLanded.has(cancellation.transactionHash)
+      (!cancellation.included &&
+        this.cancellationNotLanded.has(cancellation.transactionHash))
     )
       return
     try {
@@ -682,6 +713,7 @@ export class EvmLegacyConsolidator {
       )
       if (wanted && !wanted()) return
       if (!receipt) {
+        if (cancellation.included) return
         const head = await read(() => provider.getBlockNumber())
         if (head >= member.account!.blockNumber + EVM_FAILURE_CONFIRMATIONS)
           this.cancellationNotLanded.add(cancellation.transactionHash)
@@ -700,12 +732,15 @@ export class EvmLegacyConsolidator {
       )
         return
       const feeWei = receipt.gasUsed * receipt.gasPrice
-      await journal.recordCancellationIncluded(operationId, index, {
+      const before = JSON.stringify(cancellation.included)
+      const recorded = await journal.recordCancellationIncluded(operationId, index, {
         blockHash: receipt.blockHash.toLowerCase(),
         blockNumber: receipt.blockNumber,
         transactionIndex: receipt.index,
         feeWei: feeWei.toString(),
       })
+      // Read again and unchanged: the coin list has it already.
+      if (JSON.stringify(recorded.members[index]?.cancellation?.included) === before) return
       // A transfer of nothing to the account itself: it paid the fee, no more.
       await this.ownSpendIncluded({
         // The read that showed the call's nonce taken, at or after the cancellation's block.
@@ -1805,6 +1840,101 @@ export class EvmLegacyConsolidator {
     } catch {
       /* A closed journal or an ended lifetime ends the pass. */
     }
+  }
+  /** Paces `recheckRecentInclusions`, per member. */
+  private readonly recheckAt = new Map<string, { at: number; waitMs: number }>()
+  /** The newest head `recheckRecentInclusions` read: an inclusion
+   * `EVM_INCLUSION_RECHECK_BLOCKS` below it is not read again. */
+  private recheckHead: number | undefined
+  /**
+   * Reads again the receipt of each contract call (and each given-up call's cancellation) the
+   * journal records in a block, until that block is `EVM_INCLUSION_RECHECK_BLOCKS` deep. A
+   * reorganisation can move a transaction into another block that charges another fee, or out
+   * of any block; nothing else reads an included member again. The look is `observe`'s own,
+   * which checks the recorded block is still canonical, so what it finds is recorded as any look
+   * records it: a new block and fee replace the old ones, the coin list re-settles the spend
+   * (`onOwnSpendIncluded`), and when the fee changed the note to the other devices is owed again
+   * and sent here (`startSync`) with the corrected fee.
+   *
+   * Bounds: with no inclusion younger than that depth below the last head read, no request at
+   * all. Otherwise one head read per invocation, at most `REOBSERVE_MAX_PROBES` members, and a
+   * given member at most once per wait: the first wait starts when this pass first sees it,
+   * `REOBSERVE_MIN_INTERVAL_MS`, and each read doubles it to `REOBSERVE_MAX_BACKOFF_MS`. Never
+   * rejects.
+   */
+  async recheckRecentInclusions(): Promise<void> {
+    const inclusionBlock = (member: EvmNativeMember): number | undefined =>
+      member.observation.state === 'included-success' ||
+      member.observation.state === 'included-revert'
+        ? member.observation.blockNumber
+        : member.cancellation?.included && nativeMemberSuperseded(member)
+        ? member.cancellation.included.blockNumber
+        : undefined
+    const recent = () =>
+      this.config.journal.list().flatMap(row =>
+        row.kind !== 'contract' || row.cancelled
+          ? []
+          : row.members.flatMap((member, index) => {
+              const block = inclusionBlock(member)
+              return member.signed &&
+                member.exposed &&
+                block !== undefined &&
+                (this.recheckHead === undefined ||
+                  block + EVM_INCLUSION_RECHECK_BLOCKS > this.recheckHead)
+                ? [{ operationId: row.operationId, index }]
+                : []
+            }),
+      )
+    const changed = new Set<string>()
+    const pass = async (lifetime?: WalletOperationLifetime) => {
+      if (recent().length === 0) return
+      this.recheckHead = await this.stoppable(this.config.provider.getBlockNumber())
+      const due = recent()
+      const live = new Set(due.map(({ operationId, index }) => `${operationId}:${index}`))
+      for (const key of [...this.recheckAt.keys()])
+        if (!live.has(key)) this.recheckAt.delete(key)
+      const now = this.now()
+      let handled = 0
+      for (const { operationId, index } of due) {
+        if (this.reobserveStopped || handled >= REOBSERVE_MAX_PROBES) return
+        const key = `${operationId}:${index}`
+        const last = this.recheckAt.get(key)
+        // First seen here: it was just read (or at open, read before); its wait starts now.
+        if (!last) {
+          this.recheckAt.set(key, { at: now, waitMs: REOBSERVE_MIN_INTERVAL_MS })
+          continue
+        }
+        if (now >= last.at && now - last.at < last.waitMs) continue
+        handled++
+        this.recheckAt.set(key, {
+          at: now,
+          waitMs: Math.min(last.waitMs * 2, REOBSERVE_MAX_BACKOFF_MS),
+        })
+        const owed = (row: EvmNativeOperation) => {
+          const member = row.members[index]!
+          return (
+            ('feeWei' in member.observation && !member.syncApplied) ||
+            (member.cancellation?.included !== undefined &&
+              member.cancellation.syncApplied !== true)
+          )
+        }
+        const before = owed(this.config.journal.get(operationId))
+        await this.observe(operationId, index, lifetime, () => !this.reobserveStopped, true)
+        if (!before && owed(this.config.journal.get(operationId))) changed.add(operationId)
+      }
+    }
+    try {
+      if (this.reobserveStopped) return
+      await (this.config.runLifetime ? this.config.runLifetime(pass) : pass())
+    } catch {
+      /* A closed journal, an ended lifetime or an unreadable head ends the pass. */
+    }
+    // A note delivered with a fee the chain no longer charges: the corrected one goes out now.
+    for (const operationId of changed)
+      await this.startSync(operationId).then(
+        started => started.transported,
+        () => undefined,
+      )
   }
   /**
    * Gives up an exposed contract call that is not in a block, for a caller that knows the call

@@ -203,6 +203,15 @@ function itemTransactionHashes(items: readonly MessageItem[] | undefined): Set<s
   return hashes;
 }
 
+/** What a note says its one transaction debited the sending account (value plus fee), when it
+ * says: its one spent input's `valueWei`. */
+function noteDebit(item: WalletSyncItem): string | undefined {
+  const inputs = item.spentInputs ?? [];
+  return inputs.length === 1 && typeof inputs[0]!.valueWei === "string"
+    ? inputs[0]!.valueWei
+    : undefined;
+}
+
 async function recordNotedSends(
   internals: ReturnType<typeof evmWalletInternals>,
   chainIdentifier: string,
@@ -222,6 +231,7 @@ async function recordNotedSends(
             rawTx: item.rawTx,
             txHash: item.txHash,
             ...(item.operation === undefined ? {} : { operation: item.operation }),
+            ...(noteDebit(item) === undefined ? {} : { debitWei: noteDebit(item) }),
           },
         ]
       : []

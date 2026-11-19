@@ -2225,9 +2225,11 @@ export class EvmNativeOperationJournal {
   /**
    * Records what the chain showed of a recorded cancellation: its receipt, read once the call's
    * own nonce was seen taken (`nativeMemberSuperseded`), in a canonical block, and the fee it
-   * charged. Recorded once: a later call changes nothing (a cancellation that a reorganisation
-   * moves to another block keeps the block and fee first read; see the commit notes). Refused for
-   * a member whose call the chain shows included, or that has no cancellation.
+   * charged. The same receipt again changes nothing. A receipt in another block (a
+   * reorganisation moved the cancellation) replaces the one recorded; when its fee differs too,
+   * the note already delivered told the other devices the wrong fee, so it is owed again
+   * (`syncApplied` cleared) and `applySync` sends the corrected one. Refused for a member whose
+   * call the chain shows included, or that has no cancellation.
    */
   recordCancellationIncluded(
     id: string,
@@ -2238,7 +2240,16 @@ export class EvmNativeOperationJournal {
       const m = row.members[index]
       if (row.kind !== 'contract' || row.cancelled || !m?.cancellation || !nativeMemberSuperseded(m))
         fail('conflict')
-      if (m.cancellation.included) return false
+      const recorded = m.cancellation.included
+      if (
+        recorded &&
+        recorded.blockHash === included.blockHash &&
+        recorded.blockNumber === included.blockNumber &&
+        recorded.transactionIndex === included.transactionIndex &&
+        recorded.feeWei === included.feeWei
+      )
+        return false
+      if (recorded && recorded.feeWei !== included.feeWei) delete m.cancellation.syncApplied
       m.cancellation.included = {
         blockHash: included.blockHash,
         blockNumber: included.blockNumber,
@@ -2475,24 +2486,27 @@ export class EvmNativeOperationJournal {
           JSON.stringify(m.account) !== JSON.stringify(frozenAccount))
       )
         delete m.transactionSet.inventoryApplied
-      const before = m.observation.state
+      const before = m.observation
       m.observation = frozenObservation
       m.account = frozenAccount
       // A note delivered for this outcome stays delivered; any other outcome is told anew. A
-      // contract call's revert is told too (`markSyncApplied`): the fee it paid.
+      // contract call's revert is told too (`markSyncApplied`): the fee it paid. A contract call
+      // a reorganisation moved into a block that charged another fee is told anew as well: the
+      // note delivered carried the old fee in its debit.
       if (
-        before !== frozenObservation.state ||
+        before.state !== frozenObservation.state ||
+        (row.kind === 'contract' &&
+          'feeWei' in before &&
+          'feeWei' in frozenObservation &&
+          before.feeWei !== frozenObservation.feeWei) ||
         (frozenObservation.state !== 'included-success' &&
           !(row.kind === 'contract' && frozenObservation.state === 'included-revert'))
       )
         m.syncApplied = false
-      // The call itself in a block: its cancellation, seen included before, was not after all
-      // (a reorganisation). Only one of them can hold the nonce.
-      if (
-        m.cancellation?.included &&
-        (frozenObservation.state === 'included-success' ||
-          frozenObservation.state === 'included-revert')
-      ) {
+      // The call itself in a block, or the call's nonce no longer seen taken: its cancellation,
+      // seen included before, is not in a block after all (a reorganisation). Only one of them
+      // can hold the nonce. Its receipt is read again once the nonce is seen taken.
+      if (m.cancellation?.included && !nativeMemberSuperseded(m)) {
         m.cancellation = {
           rawTransaction: m.cancellation.rawTransaction,
           transactionHash: m.cancellation.transactionHash,

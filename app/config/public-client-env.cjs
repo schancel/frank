@@ -2,6 +2,8 @@ const PUBLIC_CLIENT_VARIABLES = [
   'QCLI_APP_BRAND',
   'QCLI_APP_BRAND_NAME',
   'QCLI_E2E_DEMO_RELAY_URL',
+  // The account's main-balance network (accounts/base-wallet.ts); absent = the messaging chain.
+  'QCLI_FRANK_BASE_CHAIN',
   'QCLI_FRANK_DM_DEFAULT_STAMP_AVU',
   'QCLI_FRANK_NETWORK_TAG',
   'QCLI_FRANK_TOPIC_DEFAULT_VOTE_VALUE_WEI',

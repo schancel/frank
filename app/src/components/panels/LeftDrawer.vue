@@ -448,7 +448,7 @@ import { routeForumTopic, showForumTopic } from '../../utils/forum-topic'
 import { useChatStore } from 'src/stores/chats'
 import { useTopicStore } from 'src/stores/topics'
 import { useForumStore } from 'src/stores/forum'
-import { useBalance } from 'src/composables/useBalance'
+import { useMainBalance } from 'src/composables/useChainBalance'
 import { legacyLotusModeEnabled } from 'src/utils/runtime-mode'
 import { accountStatus } from '../../accounts/session'
 import { isAccountBackedUp } from '../../accounts/backup-status'
@@ -569,7 +569,8 @@ export default defineComponent({
       await showForumTopic(router, targetTopic)
     }
 
-    const { formattedBalance, exactBalance, loaded, hasError } = useBalance()
+    const { formattedBalance, exactBalance, loaded, hasError } =
+      useMainBalance()
     const balanceText = computed(() =>
       loaded.value ? formattedBalance.value : '\u2014',
     )

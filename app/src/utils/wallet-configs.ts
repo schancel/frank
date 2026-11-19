@@ -1,10 +1,18 @@
 import { PROTOCOL_CHAINS } from '@frank/wallet/chain/chains-registry'
-import type { SupportedChainKind } from '@frank/wallet/chain/chains-registry'
+import type {
+  ChainRegistryEntry,
+  SupportedChainKind,
+} from '@frank/wallet/chain/chains-registry'
+import { MAIN_WALLET_CHAIN } from '../accounts/base-wallet'
 import { walletNetworkMetadata } from './wallet-support'
 
 export interface WalletItemConfig {
   id: string
+  /** The account's main balance: listed first, the Wallet page's default, named "Main wallet". */
   isMain?: boolean
+  /** The messaging chain's wallet (identity, directory, DM stamps): the mailbox indicator, the
+   * stamp and contact-payment features. The main wallet too unless a base chain is configured. */
+  isMessaging?: boolean
   enabled?: boolean
   icon: string
   dataTest: string
@@ -25,6 +33,7 @@ export interface WalletItemConfig {
 const WALLET_UI_OVERRIDES: Record<string, Partial<WalletItemConfig>> = {
   monad: {
     isMain: true,
+    isMessaging: true,
     icon: 'account_balance_wallet',
     dataTest: 'wallet-row',
     nameDataTest: 'wallet-name',
@@ -168,12 +177,68 @@ const orderedKinds = [
   ...discoveredKinds.filter(k => !PREFERRED_KIND_ORDER.includes(k)),
 ]
 
-export const WALLET_CONFIGS: WalletItemConfig[] = orderedKinds.map(
-  buildWalletItemConfig,
-)
+/** The main wallet row's test ids and name: they follow whichever wallet is the main balance. */
+const MAIN_ROW_PRESENTATION = {
+  dataTest: 'wallet-row',
+  nameDataTest: 'wallet-name',
+  nameTextDataTest: 'wallet-name-text',
+  badgeDataTest: 'testnet-badge',
+  chainDataTest: 'wallet-chain',
+  balanceDataTest: 'wallet-balance',
+  defaultNameKey: 'walletPanel.mainWallet',
+} as const
+
+/**
+ * The wallet rows. `mainChain` is the host's configured base network when it is not the
+ * messaging chain's wallet (`MAIN_WALLET_CHAIN`, accounts/base-wallet.ts): it is then the main
+ * row, keyed by its canonical identifier, and replaces its kind's row; the messaging wallet's
+ * row stays, as one more wallet. Without it the messaging wallet's row is the main one.
+ */
+export function buildWalletConfigs(
+  mainChain?: ChainRegistryEntry,
+): WalletItemConfig[] {
+  const rows = orderedKinds.map(buildWalletItemConfig)
+  if (!mainChain) return rows
+  const kindRow = buildWalletItemConfig(mainChain.kind)
+  const main: WalletItemConfig = {
+    ...buildWalletItemConfig(mainChain.id),
+    ...MAIN_ROW_PRESENTATION,
+    icon: kindRow.icon,
+    isMain: true,
+    isMessaging: false,
+  }
+  return [
+    main,
+    ...rows
+      .filter(row => row.id !== mainChain.kind)
+      .map(
+        (row): WalletItemConfig =>
+          row.isMain
+            ? {
+                ...row,
+                isMain: false,
+                dataTest: `${row.id}-wallet-row`,
+                nameDataTest: `${row.id}-wallet-name`,
+                nameTextDataTest: `${row.id}-wallet-name-text`,
+                badgeDataTest: `${row.id}-testnet-badge`,
+                chainDataTest: `${row.id}-wallet-chain`,
+                balanceDataTest: `${row.id}-wallet-balance`,
+                defaultNameKey: row.chainKey,
+              }
+            : row,
+      ),
+  ]
+}
+
+export const WALLET_CONFIGS: WalletItemConfig[] =
+  buildWalletConfigs(MAIN_WALLET_CHAIN)
 
 export const MAIN_WALLET_ID: string =
   WALLET_CONFIGS.find(w => w.isMain)?.id ?? WALLET_CONFIGS[0]?.id ?? ''
+
+/** The messaging chain's wallet row id (`monad`). */
+export const MESSAGING_WALLET_ID: string =
+  WALLET_CONFIGS.find(w => w.isMessaging)?.id ?? MAIN_WALLET_ID
 
 /** Shared caption for the existing wallet presentation aliases. */
 export function getWalletNetworkLabel(

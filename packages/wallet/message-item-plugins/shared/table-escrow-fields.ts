@@ -37,6 +37,10 @@ export const tableEscrowTerms = struct<TableEscrowItemTerms>({
 export const tableBuyInLock = struct<TableBuyInLockItem>({
   lockId: req(0, bytes32),
   account: req(1, evmAddress),
+  signature: req(
+    2,
+    matching(/^0x[0-9a-f]{130}$/, '0x and 65 bytes of lowercase hexadecimal'),
+  ),
 })
 
 /**

@@ -565,6 +565,9 @@ export interface TableBuyInLockItem {
   lockId: string
   /** The account the lock was sent from and refunds to: the player's main account. */
   account: string
+  /** `account`'s `frank/table-join/v1` signature (65 bytes, `0x` and 130 lowercase hex digits)
+   * letting the identity this join comes from sit with this lock at this table. */
+  signature: string
 }
 
 export interface LiarsDiceItem {

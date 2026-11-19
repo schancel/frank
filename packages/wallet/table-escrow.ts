@@ -9,9 +9,11 @@
  *   (the account `sendContractCall` sends from): recipient the arbiter's main account, refund
  *   address the player's main account, hash lock the table's, deadline the table's start plus
  *   {@link TABLE_BUY_IN_LOCK_SECONDS}. Every buy-in lock at a table has the same deadline.
- * - The player's join item names its lock (`lockId`) and the account it locked from; the
- *   arbiter recomputes the id from the table's terms and that account, reads `locks(lockId)` and
- *   seats the player only for an open lock with exactly those terms ({@link checkTableBuyIn}).
+ * - The player's join item names its lock (`lockId`), the account it locked from, and that
+ *   account's signature authorizing this identity to sit with this lock at this table
+ *   (`./table-join`); the arbiter checks the signature, recomputes the id from the table's terms
+ *   and that account, reads `locks(lockId)` and seats the player only for an open lock with
+ *   exactly those terms ({@link checkTableBuyIn}).
  * - The arbiter settles with `batchDistribute` (recipient-only) and the preimage; if it never
  *   does, each player refunds its own lock from the deadline on ({@link refundTableBuyIn}).
  *
@@ -24,6 +26,7 @@ import type { ChainAddress, ContractCallHandle } from "./chain/chain-wallet";
 import type { EvmTableHtlcCallRecord } from "./storage/evm-native-operation-journal";
 import { MAX_TABLE_HTLC_LOCKS } from "./storage/evm-native-operation-journal";
 import { encodeBatchDistributeCall } from "./game-escrow";
+import { verifyTableJoin, type TableJoinSigner } from "./table-join";
 import {
   HTLC_NATIVE_TOKEN,
   encodeHtlcLock,
@@ -180,6 +183,7 @@ export function tableDistributeCall(params: {
 
 /** Why a join's lock does not seat its player. */
 export type TableBuyInRefusal =
+  | "not-authorized"
   | "lock-id-mismatch"
   | "no-lock"
   | "lock-not-open"
@@ -194,18 +198,41 @@ export type TableBuyInCheck =
  * Whether the lock a join names seats its player: the id recomputed from the table's terms and
  * the account the player says it locked from must be the id it names, and the chain must hold
  * that lock open with exactly those terms and sender. `minRemainingSeconds` refuses a lock whose
- * deadline is too close to settle before (`nowSeconds` from the caller's clock).
+ * deadline is too close to settle before (`nowSeconds` from the caller's clock). First of all,
+ * `signature` must be `account`'s `frank/table-join/v1` authorization for `joiner` (the identity
+ * the join comes from) to sit with this lock at this table on this network: anyone can read a
+ * lock id from the chain, only its owner can lend it to an identity.
  */
 export async function checkTableBuyIn(params: {
   reader: Pick<Provider, "call">;
+  chainIdentifier: string;
   contract: string;
+  game: string;
+  tableId: string;
   table: TableEscrowTerms;
   lockId: string;
   account: string;
+  joiner: string;
+  signature: string;
   nowSeconds: number;
   minRemainingSeconds?: number;
   blockTag?: BlockTag;
 }): Promise<TableBuyInCheck> {
+  if (
+    !verifyTableJoin(
+      {
+        chainIdentifier: params.chainIdentifier,
+        contract: params.contract,
+        game: params.game,
+        tableId: params.tableId,
+        lockId: params.lockId,
+        joiner: params.joiner,
+      },
+      params.account,
+      params.signature
+    )
+  )
+    return { seated: false, reason: "not-authorized" };
   let expected: string;
   try {
     expected = tableBuyInLockId(params.table, params.account);
@@ -271,24 +298,37 @@ function contractCallsOf(wallet: TableEscrowWallet) {
 }
 
 /**
- * The player's side of joining: lock the buy-in from the wallet's main account. Resolves once
- * the lock is handed to the network, with what the join item carries (`lockId`, `account`). The
- * caller waits for the lock to be included before it sends the join; the arbiter seats only an
- * open lock on chain.
+ * The player's side of joining: lock the buy-in from the wallet's main account and sign the
+ * join's authorization for `joiner` (the player's identity address) with that account. Resolves
+ * once the lock is handed to the network, with what the join item carries (`lockId`, `account`,
+ * `signature`). The caller waits for the lock to be included before it sends the join; the
+ * arbiter seats only an open lock on chain.
  */
 export async function lockTableBuyIn(params: {
   wallet: TableEscrowWallet;
+  signer: TableJoinSigner;
+  joiner: string;
   contract: string;
   game: string;
   tableId: string;
   table: TableEscrowTerms;
   gasLimit?: bigint;
-}): Promise<{ lockId: string; account: string; call: ContractCallHandle }> {
+}): Promise<{ lockId: string; account: string; signature: string; call: ContractCallHandle }> {
   const calls = contractCallsOf(params.wallet);
   const account = await calls.mainAddress();
+  if (getAddress(params.signer.account()) !== account)
+    throw new Error("The join signer is not the account the lock is sent from");
   const call = tableBuyInLockCall({ ...params, player: account });
+  const lockId = call.record.lockIds[0]!;
+  const signature = params.signer.signTableJoin({
+    contract: params.contract,
+    game: params.game,
+    tableId: params.tableId,
+    lockId,
+    joiner: params.joiner,
+  });
   const handle = await calls.send(call, params.gasLimit);
-  return { lockId: call.record.lockIds[0]!, account, call: handle };
+  return { lockId, account, signature, call: handle };
 }
 
 /**

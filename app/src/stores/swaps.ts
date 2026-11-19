@@ -5,7 +5,9 @@ import type { SwapRecordItem } from '@frank/cashweb/types/messages'
  * The account's swap history, as its own notes say it.
  *
  * A swap is recorded by the wallet: the record is journaled with the swap's transaction and,
- * once that is included, sent in a free note from the account to itself. This store is the fold
+ * once that is included, sent in a free note from the account to itself. A swap given up past
+ * its deadline is sent once its cancellation is included, the record naming it
+ * (`cancelTxHash`): every device then lists it as cancelled. This store is the fold
  * of those notes as the mailbox delivers them (`handleSwapItem`, called for every `swap-record`
  * item of a self message), so a reload or another device rebuilds the same list. On the device
  * that made a swap the wallet's own journal supplies the same record at once.
@@ -18,8 +20,10 @@ export type SwapRecord = Omit<SwapRecordItem, 'type'>
 
 export interface SwapOutcome {
   /** `foreign`: the chain says the recorded transaction is not this account's swap on the
-   * recorded exchange. Such a record is never shown. */
-  status: 'confirmed' | 'failed' | 'foreign'
+   * recorded exchange. Such a record is never shown. `cancelled`: the swap never landed; the
+   * chain shows its cancellation (`SwapRecord.cancelTxHash`, or this device's own result) took
+   * its nonce, and `feeWei` is what that cost. */
+  status: 'confirmed' | 'failed' | 'cancelled' | 'foreign'
   /** What arrived, in the output asset's smallest unit; absent when the receipt did not show it. */
   amountOut?: string
   /** Network fees charged, in the native coin's smallest unit. */
@@ -105,13 +109,17 @@ export const useSwapStore = defineStore('swaps', {
         return
       const { type: _type, ...record } = item
       const index = this.records.findIndex(r => r.swapId === record.swapId)
-      if (index >= 0)
-        // The same swap again: keep the time it was first seen, so the order is stable.
+      if (index >= 0) {
+        // The same swap again: keep the time it was first seen, so the order is stable, and
+        // its cancellation once any note named it (a record from before it does not undo it).
+        const known = this.records[index]
+        const cancelTxHash = record.cancelTxHash ?? known.cancelTxHash
         this.records[index] = {
           ...record,
-          timestamp: Math.min(this.records[index].timestamp, record.timestamp),
+          ...(cancelTxHash === undefined ? {} : { cancelTxHash }),
+          timestamp: Math.min(known.timestamp, record.timestamp),
         }
-      else this.records = [record, ...this.records]
+      } else this.records = [record, ...this.records]
       this.saveToStorage()
     },
 

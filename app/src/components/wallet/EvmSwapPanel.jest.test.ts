@@ -902,7 +902,7 @@ describe('confirming and executing', () => {
     expect(mockOutcomes).toEqual([
       expect.objectContaining({
         id: swapRecordId('monad-testnet', '0xold'),
-        status: 'failed',
+        status: 'cancelled',
         reason: 'cancelled',
       }),
     ])

@@ -76,6 +76,21 @@ describe('the swap history store', () => {
     ])
   })
 
+  it('keeps a swap cancelled once any note named its cancellation, whatever order the notes come in, and after a reload', () => {
+    const store = useSwapStore()
+    const cancelTxHash = '0x' + 'cd'.repeat(32)
+    // This device's journal listed the swap while it was pending; then the cancellation's note.
+    store.handleSwapItem(item())
+    store.handleSwapItem(item({ cancelTxHash, timestamp: 9_000 }))
+    // Delivered again, and an earlier listing read once more: nothing changes.
+    store.handleSwapItem(item({ cancelTxHash, timestamp: 9_500 }))
+    store.handleSwapItem(item({ timestamp: 9_900 }))
+    expect(store.records).toHaveLength(1)
+    expect(store.records[0]).toMatchObject({ cancelTxHash, timestamp: 2_000 })
+    setActivePinia(createPinia())
+    expect(useSwapStore().records[0]).toMatchObject({ cancelTxHash })
+  })
+
   it('ignores anything that is not a swap record', () => {
     const store = useSwapStore()
     store.handleSwapItem({ type: 'text' } as unknown as SwapRecordItem)

@@ -1180,13 +1180,16 @@ export default defineComponent({
                 : { amountOut: result.amountOut.toString() }),
               feeWei: result.totalFeeWei.toString(),
             }
+          : result.status === 'cancelled'
+          ? {
+              status: 'cancelled',
+              feeWei: result.totalFeeWei.toString(),
+              reason: 'cancelled',
+            }
           : {
               status: 'failed',
               feeWei: result.totalFeeWei.toString(),
-              reason:
-                result.status === 'cancelled'
-                  ? 'cancelled'
-                  : result.reason ?? 'reverted',
+              reason: result.reason ?? 'reverted',
             },
       )
     }

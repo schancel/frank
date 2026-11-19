@@ -7,8 +7,14 @@ import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 enableAutoUnmount(afterEach)
 
 const mockObserve = jest.fn()
+const mockReceipt = jest.fn()
+const mockTransaction = jest.fn()
 const mockOpen = jest.fn(async () => ({
   dex: { observe: mockObserve },
+  reader: {
+    getTransactionReceipt: mockReceipt,
+    getTransaction: mockTransaction,
+  },
   account: '0xMAIN',
 }))
 jest.mock('./evm-swap-session', () => ({
@@ -79,6 +85,8 @@ beforeEach(() => {
   window.localStorage.clear()
   setActivePinia(createPinia())
   mockObserve.mockReset()
+  mockReceipt.mockReset()
+  mockTransaction.mockReset()
   mockSolanaObserve.mockReset()
   mockOpen.mockClear()
 })
@@ -180,6 +188,109 @@ describe('Recent Activity', () => {
     mockObserve.mockClear()
     await api.readOutcomes()
     expect(mockObserve).not.toHaveBeenCalled()
+  })
+
+  describe('a swap given up past its deadline', () => {
+    const cancelTxHash = '0x' + 'cd'.repeat(32)
+    /** What the chain shows of the cancellation: a transfer of nothing from the account to
+     * itself, in a block. */
+    const cancellationOnChain = (from = '0xmain') => {
+      mockObserve.mockResolvedValue({
+        status: 'pending',
+        txHash: note().txHash,
+        operationId: '',
+      })
+      mockReceipt.mockImplementation(async (hash: string) =>
+        hash === cancelTxHash
+          ? {
+              from,
+              to: '0xmain',
+              status: 1,
+              blockNumber: 7,
+              gasUsed: 21_000n,
+              gasPrice: 10n ** 9n,
+              logs: [],
+            }
+          : null,
+      )
+      mockTransaction.mockImplementation(async (hash: string) =>
+        hash === cancelTxHash ? { value: 0n } : null,
+      )
+    }
+
+    it('reads "Cancelled" with nothing received on a device that never made it, once the chain shows the cancellation its record names, and stays so after a reload', async () => {
+      cancellationOnChain()
+      const api = await mountActivity()
+      // The cancellation's note, with the swap's record riding in it.
+      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      await flushPromises()
+      expect(mockReceipt).toHaveBeenCalledWith(cancelTxHash)
+      expect(api.rows.value).toEqual([
+        expect.objectContaining({
+          id: 'a'.repeat(64),
+          txHash: note().txHash,
+          cancelTxHash,
+          toAmount: '0',
+          status: 'cancelled',
+        }),
+      ])
+      expect(useSwapStore().outcomes['a'.repeat(64)]).toEqual({
+        status: 'cancelled',
+        feeWei: (21_000n * 10n ** 9n).toString(),
+        reason: 'cancelled',
+      })
+      // The note delivered again: the same one row, and the chain is not asked again.
+      mockReceipt.mockClear()
+      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      await api.readOutcomes()
+      expect(mockReceipt).not.toHaveBeenCalled()
+      expect(api.rows.value).toHaveLength(1)
+      // Reloaded: still cancelled, from what was remembered.
+      setActivePinia(createPinia())
+      const reloaded = await mountActivity()
+      expect(reloaded.rows.value.map(row => row.status)).toEqual(['cancelled'])
+      expect(mockReceipt).not.toHaveBeenCalled()
+    })
+
+    it('is asked about at once when a swap long pending comes to name its cancellation', async () => {
+      let now = 1_000_000
+      const clock = jest.spyOn(Date, 'now').mockImplementation(() => now)
+      try {
+        mockObserve.mockResolvedValue({ status: 'pending' })
+        const api = await mountActivity()
+        useSwapStore().handleSwapItem(note())
+        await flushPromises()
+        now += 20_000
+        await api.readOutcomes()
+        expect(api.rows.value[0]!.status).toBe('pending')
+        // Its wait is now 40 s; the cancellation's note arrives meanwhile.
+        cancellationOnChain()
+        now += 1_000
+        useSwapStore().handleSwapItem(note({ cancelTxHash }))
+        await flushPromises()
+        expect(api.rows.value[0]!.status).toBe('cancelled')
+      } finally {
+        clock.mockRestore()
+      }
+    })
+
+    it('is not believed over the chain: a cancellation hash that is not the account’s transfer to itself hides the record', async () => {
+      cancellationOnChain('0xsomeoneelse')
+      const api = await mountActivity()
+      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      await flushPromises()
+      expect(api.rows.value).toEqual([])
+    })
+
+    it('stays pending while the chain shows no cancellation', async () => {
+      cancellationOnChain()
+      mockReceipt.mockResolvedValue(null)
+      const api = await mountActivity()
+      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      await flushPromises()
+      expect(api.rows.value[0]!.status).toBe('pending')
+      expect(useSwapStore().outcomes).toEqual({})
+    })
   })
 
   it('asks less and less often about a swap whose transaction never appears', async () => {

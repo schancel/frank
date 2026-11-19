@@ -28,7 +28,8 @@ const asset = struct<SwapRecordAsset>({
 
 /**
  * The record of one swap: what was signed, in each asset's smallest unit. What the swap then did
- * is read from the chain by `txHash` and is not part of the item.
+ * is read from the chain by `txHash` (or, for a swap given up past its deadline, by its
+ * cancellation's `cancelTxHash`) and is not part of the item.
  */
 export const swapRecordCodec = cborItemCodec<SwapRecordItem>('swap-record', {
   swapId: req(0, id),
@@ -46,4 +47,6 @@ export const swapRecordCodec = cborItemCodec<SwapRecordItem>('swap-record', {
   // The exchange's own route, as JSON text; at most 1 KiB.
   route: opt(12, str(1024, 1)),
   timestamp: req(13, timestampMs),
+  // The cancellation that took the swap's nonce: the swap never landed.
+  cancelTxHash: opt(14, transactionId),
 })

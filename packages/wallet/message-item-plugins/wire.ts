@@ -107,8 +107,9 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   after a native transfer today (a note is a paid message); the rule is what makes receiving
  *   one safe.
  * - `swap-record`: the record of a swap this account made, which rides in the same note as the
- *   swap's `wallet-sync` item. A host adds it to the account's swap history; it carries no
- *   outcome, which is read from the chain. Because it is carried only here, a record another
+ *   swap's `wallet-sync` item, or, for a swap given up past its deadline, in the note of its
+ *   cancellation, naming it (`cancelTxHash`). A host adds it to the account's swap history; it
+ *   carries no outcome, which is read from the chain. Because it is carried only here, a record another
  *   person sends is never written into that history.
  * - `htlc-record`: the record of one GenericHTLC call (lock, withdraw, refund) this account made
  *   for a swap, which rides in the same note as the call's `wallet-sync` item. It names the swap

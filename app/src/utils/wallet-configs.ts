@@ -152,9 +152,16 @@ function buildWalletItemConfig(kind: string): WalletItemConfig {
   }
 }
 
-// Derived from PROTOCOL_CHAINS so adding a chain to the registry automatically populates WALLET_CONFIGS
+// Derived from PROTOCOL_CHAINS so adding a chain to the registry automatically populates WALLET_CONFIGS.
+// A row stands for a kind chosen by the testnet/mainnet setting, so a kind with only regtest
+// networks (Lotus v2: `lotus-v2-regtest`) has no row: no setting could ever make it usable. Such a
+// network is opened by its canonical identifier instead.
 const discoveredKinds = Array.from(
-  new Set(Object.values(PROTOCOL_CHAINS).map(entry => entry.kind)),
+  new Set(
+    Object.values(PROTOCOL_CHAINS)
+      .filter(entry => entry.network !== 'regtest')
+      .map(entry => entry.kind),
+  ),
 )
 const orderedKinds = [
   ...PREFERRED_KIND_ORDER.filter(k => discoveredKinds.includes(k)),

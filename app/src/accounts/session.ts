@@ -1031,7 +1031,8 @@ export function createAccountSession(deps: {
           }
         const result = await relay.createWallet(
           material,
-          entry.wallet.indexer === 'chronik' && ecashCustody
+          // Stealth custody is the eCash and Electrum adapters'; the Lotus v2 one takes none.
+          entry.kind === 'ecash' && ecashCustody
             ? {
                 ecashWalletFactory: guardConstruction(
                   createEcashStealthSeedBackend(ecashCustody),
@@ -1040,7 +1041,7 @@ export function createAccountSession(deps: {
                   createEcashStealthBip39SeedBackend(ecashCustody),
                 ),
               }
-            : stealthCustody
+            : entry.wallet.indexer === 'electrum' && stealthCustody
             ? { stealthCustody }
             : undefined,
         )

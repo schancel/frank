@@ -1238,6 +1238,25 @@ function sharedRefusedAndReleased(row: StoredMessage): boolean {
     row.payments.length === 0 && row.otherTransactions.length === 0
 }
 
+/** A message with a stamp of its own whose first handoff the home relay refused before storing or
+ * broadcasting anything, because a payment of it could never land (`stale_nonce`,
+ * `insufficient_total`), and whose set the preparer then released (`endRefusedUnexposed`): its
+ * signed payments never left the wallet, so none of them can land. Like a tied-up refusal it
+ * stands for no payment: the user's Retry pays it afresh from the coins there are now, under the
+ * same message ID, and only that Retry does. */
+function refusedUnpaid(row: StoredMessage): boolean {
+  return sharedRefusedAndReleased(row) &&
+    (row.reason === 'stale_nonce' || row.reason === 'insufficient_total') &&
+    row.paymentOperationId === undefined && row.originalCombinedOperationId === undefined &&
+    row.transactionSetStageId === undefined
+}
+
+/** An ended message that stands for no payment, which the user's Retry sends afresh under the
+ * same message ID (`refusedForTiedUpFunds`, `refusedUnpaid`). */
+function standsForNoPayment(row: StoredMessage): boolean {
+  return refusedForTiedUpFunds(row) || refusedUnpaid(row)
+}
+
 async function finishSharedConstruction(
   owner: CanonicalMessagingOwner,
   row: StoredMessage,
@@ -1697,7 +1716,9 @@ async function settleReplacedOperations(
   const shared = owner.transactionSets
   if (!shared) return
   for (const id of [...(row.replacedOperationIds ?? []), ...(row.originalCombinedOperationId ? [row.originalCombinedOperationId] : [])]) {
-    if (!shared.preparer.getOperation(id)) continue
+    // A cancelled one (refused before anything of it left the wallet) holds nothing.
+    const operation = shared.preparer.getOperation(id)
+    if (!operation || operation.cancelled) continue
     try {
       if (row.originalCombinedOperationId && row.outcome === 'delivered') {
         // Included contact and conclusively taken old stamps are never paid again; submission
@@ -2921,7 +2942,7 @@ async function send(
       }
     }
     const original = owner.messages.get(consumerId)
-    if (original && !refusedForTiedUpFunds(original)) {
+    if (original && !standsForNoPayment(original)) {
       if (original.exposurePending && params.onEnvelopeDurable) {
         if (
           computeAddress('0x' + original.recipientSubject).toLowerCase() !==
@@ -3256,7 +3277,23 @@ async function send(
     if (payload.kind !== 'parsed' || payload.typed?.type !== TYPE_RECIPIENT_ENCRYPTED_PAYLOAD)
       throw new Error('canonical-wallet:payload-required')
     const stageId = `stamp-${toHex(messageId)}`
-    const operationId = params.paymentOperationId === undefined ? stageId
+    // An earlier attempt of this message that stands for no payment (`standsForNoPayment`) may
+    // have written a payment operation, kept in the wallet journal as cancelled: this attempt's
+    // payment is the next operation of the message, as when a payment is built again
+    // (`rebuildTakenPayment`). That earlier operation must be cancelled (its preparer proved
+    // nothing of it exposed, so nothing of it can land); one that is not is never paid again.
+    const earlier = owner.messages.get(consumerId)
+    let replaced = earlier?.replacedOperationIds ?? []
+    if (earlier?.transactionSetOperationId !== undefined) {
+      const written = await sharedSets.preparer.readOperation(earlier.transactionSetOperationId)
+      if (written && !written.cancelled)
+        throw new DirectMessageAlreadyAttemptedError(formatUuid(messageId), earlier.digest, earlier.recipientSubject)
+      if (written) replaced = [...replaced, earlier.transactionSetOperationId]
+    }
+    if (replaced.length > 0 && params.paymentOperationId !== undefined)
+      throw new DirectMessageAlreadyAttemptedError(formatUuid(messageId), earlier!.digest, earlier!.recipientSubject)
+    const operationId = params.paymentOperationId === undefined
+      ? sharedStampOperationId(stageId, replaced.length)
       : await sharedSets.resolvePaymentOperation?.(params.paymentOperationId, stampValueWei!)
     if (!operationId) throw new Error('Combined payment and stamp capability is unavailable')
     const construction = {
@@ -3276,6 +3313,7 @@ async function send(
       ...(params.paymentOperationId === undefined ? {} : {
         transactionSetStageId: stageId, paymentOperationId: params.paymentOperationId,
       }),
+      ...(replaced.length > 0 ? { replacedOperationIds: replaced } : {}),
       consumerId,
       digest,
       recipientSubject: toHex(payload.typed.recipient.keyBytes),
@@ -4297,6 +4335,8 @@ export function canonicalDirectMessages(
           }
       }
       if ('payments' in row && row.reason === PAYMENT_TAKEN_REASON) return { reason: 'payment-taken' }
+      // Refused by the relay before anything of it left the wallet: the user's Retry pays it afresh.
+      if ('payments' in row && refusedUnpaid(row)) return { reason: 'refused-unpaid', relayReason: row.reason! }
       return { reason: 'relay', ...(row.reason === undefined ? {} : { relayReason: row.reason }) }
     },
     /**
@@ -4470,9 +4510,10 @@ export function canonicalDirectMessages(
         .filter(
           row =>
             !known.has(row.digest) &&
-            // Refused for funds tied up before anything of it was signed: it stands for no
-            // payment, so it is no attempt anyone must answer for.
-            !refusedForTiedUpFunds(row) &&
+            // Refused for funds tied up before anything of it was signed, or by the relay before
+            // anything of it left the wallet: it stands for no payment, so it is no attempt
+            // anyone must answer for.
+            !standsForNoPayment(row) &&
             // Unresolved and relay-ended attempts are always reported; see `account`.
             (row.outcome !== 'delivered' || !row.accounted),
         )

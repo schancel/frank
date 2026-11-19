@@ -512,12 +512,15 @@ export function createOutgoingExecution<M extends ExecutionMessage>(
               : 'rejected'
           assertCurrent()
           // Ended by the wallet because its money was still in an earlier send, before anything
-          // of it was signed or handed out: it stands for no payment, and the user's Retry sends
-          // it again under the same message ID (owner ruling 2026-10-26). Only a click does; a
-          // message carrying a payment of its own keeps that payment's attempt. Such a Retry
-          // takes the ended attempt off the message and goes on to step 2 below.
+          // of it was signed or handed out, or refused by the relay before anything of it left
+          // the wallet (`refused-unpaid`): it stands for no payment, and the user's Retry sends
+          // it again under the same message ID (owner ruling 2026-10-26), paid afresh from the
+          // coins there are now. Only a click does; a message carrying a payment of its own
+          // keeps that payment's attempt. Such a Retry takes the ended attempt off the message
+          // and goes on to step 2 below.
           if (
-            end?.reason === 'funds-tied-up' &&
+            (end?.reason === 'funds-tied-up' ||
+              end?.reason === 'refused-unpaid') &&
             manual &&
             !automatic &&
             !financial

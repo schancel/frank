@@ -13,8 +13,11 @@
  */
 import { watch } from 'vue'
 import { startActiveDeviceClaims } from '../stores/leader'
-import { startAppNegotiationRecovery } from './negotiation-recovery'
-import { startAppSwapExecution } from '../swap/live-swap-execution'
+import {
+  startAppNegotiationRecovery,
+  type AppNegotiationRecovery,
+} from './negotiation-recovery'
+import { startAppSwapExecution } from '../swap/htlc-swap-execution'
 import type { NativeWalletHandle, WalletHandle } from '@frank/wallet/chain'
 import {
   installCanonicalDirectory,
@@ -75,7 +78,8 @@ interface Live {
   polling: Stoppable
   reconcile: Stoppable
   activeDevice?: Stoppable
-  negotiation?: { stop(): Promise<void> }
+  negotiation?: Pick<AppNegotiationRecovery, 'stop'> &
+    Partial<Pick<AppNegotiationRecovery, 'journals' | 'subscribe'>>
   swapExecution?: { stop(): Promise<void> }
 }
 export interface MessagingDeps {
@@ -110,8 +114,16 @@ export interface MessagingDeps {
     wallet: WalletHandle
     firstRead?: Promise<unknown>
   }) => Stoppable
-  startNegotiation?: typeof startAppNegotiationRecovery
-  startSwapExecution?: typeof startAppSwapExecution
+  startNegotiation?: (
+    options: Parameters<typeof startAppNegotiationRecovery>[0],
+  ) => Pick<AppNegotiationRecovery, 'stop'> &
+    Partial<Pick<AppNegotiationRecovery, 'journals' | 'subscribe'>>
+  /** The session's HTLC swap runner (`swap/htlc-swap-execution.ts`): started with the session's
+   * wallet and negotiation journals, stopped with the session; it acts whether or not a swap
+   * card is on screen. */
+  startSwapExecution?: (
+    options: Parameters<typeof startAppSwapExecution>[0],
+  ) => { stop(): Promise<void> }
   /**
    * Picks up what the account's wallets signed earlier and did not finish (a swap interrupted
    * by a reload) once the account is open and can send its notes to itself. Costs no network
@@ -253,13 +265,24 @@ function productionDeps(): MessagingDeps {
             window.location?.protocol || '',
           ))
       ) {
-        let inner: { stop(): Promise<void> } | undefined
+        let inner: AppNegotiationRecovery | undefined
         let stopped = false
+        const listeners = new Set<() => void>()
         const timer = setTimeout(() => {
           if (stopped) return
           inner = startAppNegotiationRecovery(options)
+          for (const listener of listeners) inner.subscribe(listener)
         }, 4_000)
         return {
+          journals: () => inner?.journals() ?? [],
+          subscribe: listener => {
+            listeners.add(listener)
+            const off = inner?.subscribe(listener)
+            return () => {
+              listeners.delete(listener)
+              off?.()
+            }
+          },
           async stop() {
             stopped = true
             clearTimeout(timer)
@@ -780,11 +803,20 @@ async function startMessagingInternal(): Promise<void> {
         account: negotiationAccount,
       })
       try {
-        live.swapExecution = d.startSwapExecution?.({
-          wallet,
-          revision,
-          account: negotiationAccount,
-        })
+        const negotiation = live.negotiation
+        // Bound to this session: its wallet, account revision and negotiation journals.
+        if (negotiation?.journals)
+          live.swapExecution = d.startSwapExecution?.({
+            wallet,
+            revision,
+            account: negotiationAccount,
+            relayBaseUrl: d.relayBaseUrl,
+            negotiations: {
+              journals: () => negotiation.journals?.() ?? [],
+              subscribe: listener =>
+                negotiation.subscribe?.(listener) ?? (() => undefined),
+            },
+          })
       } catch (swapErr) {
         console.warn('[startMessaging] swapExecution start failed:', swapErr)
       }

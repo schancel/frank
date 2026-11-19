@@ -28,7 +28,9 @@
         </span>
       </div>
 
-      <p class="swap-dialog-notice">{{ $t('signedSwap.negotiationOnly') }}</p>
+      <p class="swap-dialog-notice">
+        {{ $t('signedSwap.negotiationOnly', { xec: xec.unit, evm: evm.unit }) }}
+      </p>
       <p class="swap-dialog-context-pill">
         {{ address }} · {{ conversationId }}
       </p>
@@ -113,6 +115,20 @@
             {{ preset.label }}
           </span>
         </div>
+        <div
+          v-if="draftDeadlines"
+          class="swap-expiry-deadlines"
+          data-testid="swap-draft-deadlines"
+        >
+          <p class="swap-deadline-line">
+            {{ $t('signedSwap.deadlines.lockExpires', { unit: evm.unit }) }}:
+            {{ draftDeadlines.evmExpiry }}
+          </p>
+          <p class="swap-deadline-line">
+            {{ $t('signedSwap.deadlines.lockExpires', { unit: xec.unit }) }}:
+            {{ draftDeadlines.xecRefundTime }}
+          </p>
+        </div>
       </div>
     </q-card-section>
 
@@ -153,6 +169,36 @@
             }}</span
             >:
             <strong class="swap-review-value">{{ expiryDisplay }}</strong>
+          </p>
+        </div>
+        <div
+          v-if="reviewedDeadlines"
+          class="swap-review-row"
+          data-testid="swap-review-evm-expiry"
+        >
+          <p class="swap-review-line">
+            <span class="swap-review-label">{{
+              $t('signedSwap.deadlines.lockExpires', { unit: evm.unit })
+            }}</span
+            >:
+            <strong class="swap-review-value">{{
+              reviewedDeadlines.evmExpiry
+            }}</strong>
+          </p>
+        </div>
+        <div
+          v-if="reviewedDeadlines"
+          class="swap-review-row"
+          data-testid="swap-review-xec-refund-time"
+        >
+          <p class="swap-review-line">
+            <span class="swap-review-label">{{
+              $t('signedSwap.deadlines.lockExpires', { unit: xec.unit })
+            }}</span
+            >:
+            <strong class="swap-review-value">{{
+              reviewedDeadlines.xecRefundTime
+            }}</strong>
           </p>
         </div>
         <div class="swap-review-row swap-review-row--muted">
@@ -277,6 +323,7 @@ import {
 import {
   TESTNET_NEGOTIATION_POLICY,
   decodeNegotiationEventStandalone,
+  defaultNegotiationDeadlinesFor,
 } from '@frank/swap-protocol/src/negotiation'
 import {
   buildOfferIntent,
@@ -298,6 +345,12 @@ function localDateTime(target: Date): string {
   return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(
     target.getDate(),
   )}T${pad(target.getHours())}:${pad(target.getMinutes())}`
+}
+/** A Unix-seconds deadline in local time. */
+function localTime(seconds: bigint): string {
+  return new Date(Number(seconds) * 1000).toLocaleString(undefined, {
+    timeZoneName: 'short',
+  })
 }
 export default defineComponent({
   name: 'OfferSwapDialog',
@@ -356,6 +409,29 @@ export default defineComponent({
       return new Date(this.expiryInput).toLocaleString(undefined, {
         timeZoneName: 'short',
       })
+    },
+    /** The swap deadlines the chosen acceptance deadline gives (policy defaults T_B, T_A). */
+    draftDeadlines(): { evmExpiry: string; xecRefundTime: string } | null {
+      const ms = this.expiryInput ? new Date(this.expiryInput).getTime() : NaN
+      if (!Number.isFinite(ms)) return null
+      const deadlines = defaultNegotiationDeadlinesFor(
+        TESTNET_NEGOTIATION_POLICY,
+        BigInt(Math.floor(ms / 1000)),
+      )
+      if (!deadlines.ok) return null
+      return {
+        evmExpiry: localTime(deadlines.value.evmExpiry),
+        xecRefundTime: localTime(deadlines.value.xecRefundTime),
+      }
+    },
+    /** T_B and T_A exactly as the reviewed offer signs them. */
+    reviewedDeadlines(): { evmExpiry: string; xecRefundTime: string } | null {
+      const intent = this.reviewed?.intent
+      if (!intent || intent.action !== 'offer') return null
+      return {
+        evmExpiry: localTime(intent.evmExpiry),
+        xecRefundTime: localTime(intent.xecRefundTime),
+      }
     },
     expiryPresets(): readonly { hours: number; label: string }[] {
       return [
@@ -738,6 +814,16 @@ export default defineComponent({
   align-items: center;
   gap: 8px;
   margin-top: 8px;
+}
+
+.swap-expiry-deadlines {
+  margin-top: 8px;
+}
+
+.swap-deadline-line {
+  margin: 2px 0;
+  font-size: 0.75rem;
+  opacity: 0.8;
 }
 
 .swap-preset-chip {

@@ -1226,7 +1226,7 @@ export const rawFrFR = {
     actions: { offer: 'Offre', accept: 'Acceptation', reject: 'Refus' },
     title: 'Offre d’échange',
     negotiationOnly:
-      'Négociation signée uniquement. Accepter ne transfère et n’autorise aucun fonds principal.',
+      'Un échange atomique. Signer une offre autorise le verrouillage de vos {xec} dès qu’elle est acceptée ; accepter autorise le verrouillage de vos {evm}. Verrouillages, réclamations et remboursements se font ensuite d’eux-mêmes tant que Frank est ouvert.',
     offerAmount: 'Offrir {unit} sur {network}',
     requestAmount: 'Demander {unit} sur {network}',
     expiry: 'Expiration ({timezone})',
@@ -1286,9 +1286,71 @@ export const rawFrFR = {
       'conflict': 'Preuves contradictoires',
       'expired': 'Négociation expirée',
       'offered': 'Offre authentifiée',
-      'accept':
-        'Acceptation authentifiée ; exécution du principal non autorisée',
+      'accept': 'Acceptée',
       'reject': 'Refus authentifié',
+    },
+    deadlines: {
+      acceptBy: 'À accepter avant le',
+      lockExpires: 'Fin du verrouillage {unit}',
+    },
+    execution: {
+      starting: 'Ouverture des registres d’échange de cet appareil…',
+      retrying:
+        'La dernière vérification des chaînes n’a pas abouti. Elle est relancée automatiquement.',
+      otherDevice:
+        'Un autre de vos appareils mène cet échange. Celui-ci en affiche la progression.',
+      phases: {
+        offered:
+          'En attente d’une réponse. Vos {xec} sont verrouillés automatiquement quand l’offre est acceptée.',
+        offerReceived:
+          'Si vous acceptez, vos {evm} sont verrouillés automatiquement dès que leur verrouillage {xec} est définitif.',
+        rejected: 'Refusée. Rien n’a été verrouillé.',
+        expired: 'Non acceptée à temps. Rien n’a été verrouillé.',
+        accepted: 'Acceptée. Verrouillage de vos {xec}…',
+        xecLockPending:
+          'Le verrouillage de vos {xec} est envoyé. En attente de sa finalité.',
+        xecLocked:
+          'Vos {xec} sont verrouillés. En attente de leur verrouillage {evm}.',
+        claiming: 'Leurs {evm} sont verrouillés. Réclamation en cours…',
+        claimed: 'Terminé : vous avez reçu les {evm}.',
+        claimedByPeer: 'Terminé : ils ont réclamé les {xec}.',
+        awaitRefund:
+          'L’échange n’a pas abouti. Vos {xec} sont remboursés automatiquement à la fin de leur verrouillage.',
+        awaitXecLock: 'En attente de la finalité de leur verrouillage {xec}.',
+        locking: 'Leurs {xec} sont verrouillés. Verrouillage de vos {evm}…',
+        evmLocked:
+          'Vos {evm} sont verrouillés. En attente de leur réclamation.',
+        claimingXec: 'Ils ont réclamé les {evm}. Réclamation des {xec}…',
+        complete: 'Terminé : vous avez reçu les {xec}.',
+        lostToRefund:
+          'Ils ont repris leurs {xec} avant qu’ils puissent être réclamés.',
+        abandoned:
+          'Arrêté : le délai a expiré avant votre verrouillage. Rien de vos fonds n’a été verrouillé.',
+        refunding:
+          'L’échange n’a pas abouti. Remboursement de votre verrouillage…',
+        refunded: 'Remboursé : vos fonds verrouillés sont revenus.',
+        invalid: 'Ce compte ne peut pas mener cet échange.',
+        unsupported:
+          'Cet échange porte sur des réseaux que cette application ne gère pas.',
+      },
+      warnings: {
+        'claim-gas-low':
+          'Votre compte principal {evm} détient moins que les frais de réclamation. Ajoutez des {evm} à votre compte principal (votre adresse de dépôt) pour que la réclamation parte à temps.',
+        'xec-double-funded':
+          'Le verrouillage {xec} a été financé plusieurs fois. L’excédent est remboursé à la fin du verrouillage.',
+        'xec-foreign-output':
+          'Autre chose paie déjà l’adresse de verrouillage {xec}, donc vos {xec} n’ont pas été verrouillés.',
+      },
+      failures: {
+        'storage-unavailable':
+          'Les registres d’échange de cet appareil n’ont pas pu être ouverts : les échanges ne sont pas menés ici. Rechargez pour réessayer.',
+        'account-unavailable':
+          'Ce compte n’a pas pu être lu : les échanges ne sont pas menés ici. Rechargez pour réessayer.',
+        'wallet-unavailable':
+          'Le portefeuille {xec} ou {evm} n’a pas pu être ouvert. Nouvel essai en cours.',
+        'old-execution-records':
+          'Ce navigateur contient des registres d’échange d’une ancienne version de Frank : les échanges ne sont pas menés ici. Supprimez la base IndexedDB {database} (outils de développement, Application, IndexedDB), puis rechargez.',
+      },
     },
   },
   offerSwapDialog: {
@@ -1300,37 +1362,6 @@ export const rawFrFR = {
     requestedChain: 'Chaîne demandée',
     offerBtnLabel: 'Proposer l’échange',
     cancelBtnLabel: 'Annuler',
-  },
-  chatMessageSwap: {
-    notAvailableYet:
-      'Les échanges atomiques ne sont pas encore disponibles. Rien ne peut être verrouillé, réclamé ou remboursé d’ici.',
-    title: 'Offre d’échange atomique',
-    offered: 'Proposé',
-    for: 'Pour',
-    accept: 'Accepter l’échange',
-    cancel: 'Annuler l’offre',
-    lockDeposit: 'Déposer et verrouiller {amount} {asset}',
-    acceptAndLock: 'Accepter et verrouiller {amount} {asset}',
-    claimFunds: 'Réclamer {amount} {asset}',
-    refundDeposit: 'Rembourser le dépôt',
-    executionTurnedOff:
-      'Les dépôts d’échange sont désactivés jusqu’à la reconstruction des échanges sur un séquestre plus sûr. Un échange financé auparavant peut encore être réclamé ou remboursé.',
-    executionRestoring: 'Ouverture des enregistrements d’échange…',
-    executionRestoreFailed:
-      'Les enregistrements d’échange de cet appareil n’ont pas pu être ouverts : la réclamation ou le remboursement d’un échange financé auparavant ne peut pas être affiché. Rechargez pour réessayer.',
-    executionRecordsFromOlderVersion:
-      'Certains enregistrements d’échange de cet appareil ont été enregistrés par une ancienne version de Frank et ne peuvent pas être ouverts : leurs réclamations et remboursements ne sont pas affichés.',
-    executionObservationFailed:
-      'Impossible de vérifier {chains} pour le moment. Affichage du dernier état observé.',
-    activeOnOtherDevice: 'Actif sur {device}',
-    takeOverActive: 'Activer ici',
-    viewTx: 'Voir Tx {chain}',
-    statusUnfunded: 'Non financé',
-    statusLocked: 'Verrouillé sous séquestre',
-    statusWithdrawn: 'Retiré',
-    statusRefunded: 'Remboursé',
-    statusExpired: 'Expiré',
-    processing: 'Traitement en cours...',
   },
   balanceBreakdown: {
     open: 'Où se trouve ce solde',

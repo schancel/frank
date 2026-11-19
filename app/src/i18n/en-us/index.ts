@@ -1197,7 +1197,7 @@ export const rawEnUS = {
     actions: { offer: 'Offer', accept: 'Acceptance', reject: 'Rejection' },
     title: 'Swap Offer',
     negotiationOnly:
-      'Signed negotiation only. Accepting does not transfer or authorize principal funds.',
+      'An atomic swap. Signing an offer authorizes your {xec} lock as soon as it is accepted; accepting authorizes your {evm} lock. Locks, claims and refunds then run on their own while Frank is open.',
     offerAmount: 'Offer {unit} on {network}',
     requestAmount: 'Request {unit} on {network}',
     expiry: 'Expiry ({timezone})',
@@ -1256,9 +1256,65 @@ export const rawEnUS = {
       'conflict': 'Conflicting negotiation evidence',
       'expired': 'Negotiation expired',
       'offered': 'Authenticated offer',
-      'accept':
-        'Authenticated acceptance; principal execution is not authorized',
+      'accept': 'Accepted',
       'reject': 'Authenticated rejection',
+    },
+    deadlines: {
+      acceptBy: 'Accept by',
+      lockExpires: '{unit} lock expires',
+    },
+    execution: {
+      starting: 'Opening this device’s swap records…',
+      retrying:
+        'The last check of the chains did not finish. It is retried automatically.',
+      otherDevice:
+        'Another of your devices carries out this swap. This one shows its progress.',
+      phases: {
+        offered:
+          'Waiting for an answer. Your {xec} is locked automatically when the offer is accepted.',
+        offerReceived:
+          'If you accept, your {evm} is locked automatically once their {xec} lock is final.',
+        rejected: 'Rejected. Nothing was locked.',
+        expired: 'Not accepted in time. Nothing was locked.',
+        accepted: 'Accepted. Locking your {xec}…',
+        xecLockPending: 'Your {xec} lock was sent. Waiting for it to be final.',
+        xecLocked: 'Your {xec} is locked. Waiting for their {evm} lock.',
+        claiming: 'Their {evm} is locked. Claiming it…',
+        claimed: 'Done: you received the {evm}.',
+        claimedByPeer: 'Done: they claimed the {xec}.',
+        awaitRefund:
+          'The swap did not finish. Your {xec} is refunded automatically after its lock expires.',
+        awaitXecLock: 'Waiting for their {xec} lock to be final.',
+        locking: 'Their {xec} is locked. Locking your {evm}…',
+        evmLocked: 'Your {evm} is locked. Waiting for them to claim it.',
+        claimingXec: 'They claimed the {evm}. Claiming the {xec}…',
+        complete: 'Done: you received the {xec}.',
+        lostToRefund: 'They took their {xec} back before it could be claimed.',
+        abandoned:
+          'Stopped: the swap ran out of time before your lock. Nothing of yours was locked.',
+        refunding: 'The swap did not finish. Refunding your lock…',
+        refunded: 'Refunded: your locked funds are back.',
+        invalid: 'This account cannot carry out this swap.',
+        unsupported: 'This swap is on networks this app does not run.',
+      },
+      warnings: {
+        'claim-gas-low':
+          'Your {evm} main account holds less than the claim fee. Add {evm} to your main account (your deposit address) so the claim can go out in time.',
+        'xec-double-funded':
+          'The {xec} lock was funded more than once. The extra is refunded after the lock expires.',
+        'xec-foreign-output':
+          'Something else already pays the {xec} lock address, so your {xec} was not locked.',
+      },
+      failures: {
+        'storage-unavailable':
+          'Swap records on this device could not be opened, so swaps are not carried out here. Reload to try again.',
+        'account-unavailable':
+          'This account could not be read, so swaps are not carried out here. Reload to try again.',
+        'wallet-unavailable':
+          'The {xec} or {evm} wallet could not be opened. Retrying.',
+        'old-execution-records':
+          'This browser holds swap records from an older Frank, so swaps are not carried out here. Delete the IndexedDB database {database} (developer tools, Application, IndexedDB), then reload.',
+      },
     },
   },
   offerSwapDialog: {
@@ -1270,37 +1326,6 @@ export const rawEnUS = {
     requestedChain: 'Requested chain',
     offerBtnLabel: 'Offer Swap',
     cancelBtnLabel: 'Cancel',
-  },
-  chatMessageSwap: {
-    notAvailableYet:
-      'Atomic swaps are not available yet. Nothing can be locked, claimed or refunded from here.',
-    title: 'Atomic Swap Offer',
-    offered: 'Offered',
-    for: 'For',
-    accept: 'Accept Swap',
-    cancel: 'Cancel Offer',
-    lockDeposit: 'Deposit & Lock {amount} {asset}',
-    acceptAndLock: 'Accept & Lock {amount} {asset}',
-    claimFunds: 'Claim {amount} {asset}',
-    refundDeposit: 'Refund Deposit',
-    executionTurnedOff:
-      'Swap deposits are turned off until swaps are rebuilt on safer escrow. A swap funded earlier can still be claimed or refunded.',
-    executionRestoring: 'Opening swap records…',
-    executionRestoreFailed:
-      'Swap records on this device could not be opened, so a claim or refund for a swap funded earlier cannot be shown. Reload to try again.',
-    executionRecordsFromOlderVersion:
-      'Some swap records on this device were saved by an older version of Frank and cannot be opened, so their claims and refunds are not shown.',
-    executionObservationFailed:
-      'Could not check {chains} just now. Showing what was last seen there.',
-    activeOnOtherDevice: 'Active on {device}',
-    takeOverActive: 'Use here',
-    viewTx: 'View {chain} Tx',
-    statusUnfunded: 'Unfunded',
-    statusLocked: 'Locked in Escrow',
-    statusWithdrawn: 'Withdrawn',
-    statusRefunded: 'Refunded',
-    statusExpired: 'Expired',
-    processing: 'Processing...',
   },
   balanceBreakdown: {
     open: 'Where this balance is',

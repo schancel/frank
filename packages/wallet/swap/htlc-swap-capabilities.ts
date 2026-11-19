@@ -15,7 +15,8 @@
  */
 import type { ChronikClient, Tx } from "chronik-client";
 import { ZeroAddress } from "ethers";
-import type { EcashWallet } from "../ecash-wallet";
+import { EcashWallet } from "../ecash-wallet";
+import type { EvmChainWalletHandle } from "../evm-wallet-handle";
 import {
   extractXecHtlcPreimage,
   xecHtlcAddress,
@@ -378,4 +379,41 @@ export function createEvmHtlcSwapCapability(params: {
       });
     },
   });
+}
+
+/**
+ * The eCash capability of a session's wallet handle, for a host that holds it as a
+ * `NativeWalletHandle` (the app's relay-opened wallet): `undefined` unless it is an
+ * `EcashWallet`, the only eCash wallet with HTLC keys and the native-operation ledger.
+ */
+export function xecHtlcSwapCapabilityOf(params: {
+  wallet: NativeWalletHandle;
+  chronik: Pick<
+    ChronikClient,
+    "script" | "tx" | "blockchainInfo" | "blocks" | "broadcastTx"
+  >;
+  finality: XecFinality;
+}) {
+  if (!(params.wallet instanceof EcashWallet)) return undefined;
+  return createXecHtlcSwapCapability({ ...params, wallet: params.wallet });
+}
+
+/**
+ * The EVM capability of a session's EVM wallet handle, reading the chain through the handle's
+ * own provider (its network's RPC, as every other read of the wallet). `undefined` for a handle
+ * without contract calls or a provider.
+ */
+export function evmHtlcSwapCapabilityOf(params: {
+  wallet: NativeWalletHandle;
+  contract: string;
+  finalityDepth: number;
+}) {
+  const reader = (params.wallet as Partial<EvmChainWalletHandle>).provider;
+  if (
+    reader === undefined ||
+    typeof params.wallet.sendContractCall !== "function" ||
+    typeof params.wallet.getNativeOperations !== "function"
+  )
+    return undefined;
+  return createEvmHtlcSwapCapability({ ...params, reader });
 }

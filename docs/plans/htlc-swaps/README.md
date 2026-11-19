@@ -142,6 +142,46 @@ app/src/swap/live-swap-execution.ts (+tests, SwapExecutionDisabledError, localSt
   - The old execution DB failure and the §Deletions list remain PR 7 work, along with the app composition and card.
   - Seen in the integration run, outside this PR's scope: a second device of the same account (its own eCash operation store) could not fund a new swap after the first device's fundings. Its `EcashWallet` saw no spendable coins (`Insufficient sats`), apparently because the first device's change addresses were never discovered by it. The check keeps funding on the first device; this needs a wallet ticket (eCash change discovery across devices).
 
+## PR 7 notes (as landed)
+- Composition (`app/src/swap/htlc-swap-execution.ts`, `startAppSwapExecution`): `utils/identity-session.ts` starts it when the messaging session activates, right after the session's negotiation recovery, and stops it with the session (account, revision or status change). It is bound to that session: the session's `monad-testnet` EVM wallet handle, the same account's `xec-testnet` `EcashWallet` (`openUtxoWallet`, scoped to the account and revision), the session's relay (`MessagingDeps.relayBaseUrl`; Chronik at `<relay>/chain-rpc/xec-testnet/chronik`) and the journals of the session's own `NegotiationRecovery`. `startAppNegotiationRecovery` now returns `journals()` and `subscribe()` beside `stop()`. Nothing reads the selected UI network after start; on another network nothing starts (`off`).
+- Capabilities: the wallet's new typed `xecHtlcSwapCapabilityOf` (an `EcashWallet` only; Avalanche finality) and `evmHtlcSwapCapabilityOf` (the handle's own provider; a lock read is final 10 blocks below the latest; the network's GenericHTLC from `activeChain.getHtlcAddress()`), `swapSecretCapabilityOf`, and the offer-swapId keyed hash (HMAC-SHA256 under the account's conversation-ID salt, read from the live wallet on each use and zeroed). A wallet that cannot be opened (relay unreachable) is retried every 30 s, and the card says so.
+- Cadence: `start(15 s)`. A recovery pass whose journals changed (swapId, entry count, decision) pokes it, and so does the page becoming visible. Neither the wallet nor the app has a block-event source today, so block events are not wired (gap below).
+- Active device: `isActiveDevice` is the existing device claim (`useLeaderStore().isActiveMaster`, `stores/leader.ts`). Only one tab per browser runs Frank (`stores/tab-coordinator.ts`), so one runner acts per device.
+- Records: `BrowserHtlcSwapRecordStore`, namespace `<chain>:<identity address>:<revision>` (the earlier execution namespace). The retired execution DB fails clearly. If this origin holds `frank-swap-execution-v1-<same namespace>` (listed with `indexedDB.databases()`), the runner does not start, and the console and every swap card name the database. The reset is to delete it (developer tools → Application → IndexedDB) and reload. Where databases cannot be listed, the check is skipped.
+- Read model (`app/src/swap/swap-execution-state.ts`): status (`off`/`starting`/`ready`/`failed`), failure, active device, and the runner's views by swapId. `SignedNegotiationCard.vue` only reads it. It shows:
+  - one phase text per runner phase (A's and B's phases have names of their own), plus the runner's `invalid` detail;
+  - the warnings (`claim-gas-low` is a precheck plus a visible warning, never funding);
+  - "retried automatically" for a tick error, and "another of your devices carries out this swap" when inactive;
+  - the deadlines E, T_B ("MON lock expires") and T_A ("XEC lock expires") from the signed offer.
+  
+  It has no Lock, Claim, Refund or Cancel button, and no timer beyond its clock. An accepted swap is no longer labelled "expired" after E (E bounds the acceptance only). `OfferSwapDialog` shows the default T_B / T_A while drafting, and the reviewed offer's exact T_B / T_A in the review panel. The negotiation notice now says that signing an offer authorizes the XEC lock on accept, and accepting authorizes the MON lock.
+- Deletions (§Deletions):
+  - `app/src/swap/live-swap-execution.ts` (+ unit and anvil tests, `SwapExecutionDisabledError`, the localStorage claim/refund tags);
+  - `app/src/swap/swap-execution-commands.ts` (prepare/fund/claim/refund/cancel/reconcile) and `swap-execution-flow.jest.test.ts`;
+  - `packages/swap-protocol/src/swap-execution-runtime.ts` (+ test, its `index.ts` re-export and runtime-boundary entry);
+  - `storage/execution-browser.ts` with its browser suite and script (`test:execution-browser`); the CAS mechanics live on in `storage/htlc-swap-browser.ts` (PR 6);
+  - the `chatMessageSwap` i18n block (en/fr), which had no other user.
+  
+  `useSwapEscrow` and the swap-escrow leftovers were already gone (PR 1). Every caller was grepped; none remain.
+- Tests:
+  - `app/src/swap/htlc-swap-execution.jest.test.ts` (runner stubbed only at the capability seam):
+    - B claims with the card unmounted. The page closes after the claim was written, and a new composition over the same records re-broadcasts the same bytes.
+    - A locks on the accept with no button. After a reload past T_A, it refunds by itself.
+    - The card shows the claim-gas warning and the inactive device, with no buttons.
+    - The retired DB stops the runner, and the card names it.
+    - Session stop clears the read model.
+  - `identity-session.jest.test.ts`: activation passes the session's wallet, revision, account, relay and its own journals; the session end stops the runner.
+  - `OfferSwapDialog.jest.test.ts`: draft and review deadlines.
+  - Locale test: every runner phase (a type-checked list), warning and failure, in en and fr.
+  - `signed-negotiation.flow` is updated for the new accept label.
+  - Run: app jest (whole suite; only the extension packaging test `src-bex/inpage-bundle` failed, its packager writing no archive in this worktree, outside these files), swap-protocol jest, `test:storage-browser`, `yarn typecheck:fast`, `check-deps` for swap-protocol, `yarn vectors:check`, and `yarn --cwd packages/bot regtest:htlc-swap` (17 checks OK).
+- Gaps:
+  - No Chrome QA on testnet yet (owner).
+  - No wallet block events: ticks and pokes only.
+  - B's MON lock and A's withdraw are `sendContractCall`s from the EVM main account. MON held only in sending accounts is not moved there (no auto-funding, per the claim-gas ruling). A lock that cannot be paid is retried on each tick and shows as "retried automatically".
+  - The runner acts only while Frank is open on the active device.
+  - Docs (`docs/atomic-swap-specification.md`, `packages/docs/protocol/atomic-swaps.md`, the swap-protocol README) are PR 8.
+
 ## Follow-ups
 - Table escrow (owner design 2026-11-18), as landed on the poker and liars-dice bots (registered in the demo stack: `targets/all-bots.ts`, `bot-directory.ts`, `demo/demo-config.ts`; not smoke-checked):
   - Preimage: explicit new derivation `frank/table-htlc-preimage/v1` (`packages/wallet/table-preimage.ts`, pinned vectors in `table-preimage.jest.test.ts`, checked against an independent HKDF): `prk = HKDF-Extract(SHA-256, salt = utf8(label), ikm = messaging root)` (whole 64-byte seed for a historical BIP39 account), `preimage = HKDF-Expand(prk, u8(len(game)) ‖ utf8(game) ‖ tableId(16), 32)`. `MonadCanonicalRoleOwner.tablePreimage({game, tableId})`; hosts get `tableSecretCapabilityOf(wallet)` (`chain/evm-chain.ts`), a `TableSecretCapability` that returns preimages only. Bots receive it as `BotContext.tableSecrets`, beside `BotContext.contractCalls` (the wallet's `sendContractCall`/`resumeNativeOperation` and its main account; `packages/bot-framework/src/contract-calls.ts`). The table id is 16 bytes the bot draws itself; the bot derives preimages only for tables it opened and kept.

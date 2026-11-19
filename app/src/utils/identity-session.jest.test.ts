@@ -743,6 +743,41 @@ test('directory installation starts independent feature lifetime and stop retain
   await cleanup
   expect(closed).toBe(true)
 })
+test('session activation starts the swap runner on its own wallet and journals, and the session end stops it', async () => {
+  const alice = await wallet(0, 'swap-runner-owner')
+  const d = device(alice)
+  const journals = [{ marker: 'journal of this session' }]
+  const listener = jest.fn()
+  const negotiation = {
+    stop: jest.fn(async () => undefined),
+    journals: jest.fn(() => journals),
+    subscribe: jest.fn(() => listener),
+  }
+  d.deps.startNegotiation = jest.fn(() => negotiation) as never
+  const runnerStop = jest.fn(async () => undefined)
+  const startSwapExecution = jest.fn((_options: any) => ({ stop: runnerStop }))
+  d.deps.startSwapExecution = startSwapExecution as never
+  await configureMessagingForTest(d.deps)
+  mockStatus.status = 'ready'
+  await initializeMonadIdentity()
+  await until(() => messagingState.status === 'ready', 'swap runner started')
+  expect(startSwapExecution).toHaveBeenCalledTimes(1)
+  const options = startSwapExecution.mock.calls[0][0]
+  expect(options).toMatchObject({
+    wallet: alice,
+    revision: 1,
+    account: mockStatus.account,
+    relayBaseUrl: RELAY,
+  })
+  // The runner reads exactly this session's negotiation journals.
+  expect(options.negotiations.journals()).toBe(journals)
+  const poke = jest.fn()
+  expect(options.negotiations.subscribe(poke)).toBe(listener)
+  expect(negotiation.subscribe).toHaveBeenCalledWith(poke)
+  await stopMessaging()
+  expect(runnerStop).toHaveBeenCalledTimes(1)
+  expect(negotiation.stop).toHaveBeenCalledTimes(1)
+})
 
 test('startMessaging becomes ready without waiting for a slow registerProfile call', async () => {
   const alice = await wallet(0, 'profile-owner')

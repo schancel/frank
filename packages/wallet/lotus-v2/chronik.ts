@@ -14,7 +14,7 @@
  */
 import { ChronikClient } from "chronik-client";
 
-import { rpcTxid } from "./network";
+import { legacyChronikTxid } from "./network";
 
 export interface LotusV2IndexedCoin {
   /** Wire-order txid. */
@@ -136,7 +136,7 @@ export function chronikLotusV2Indexer(params: {
     },
     async transactionState(txid) {
       try {
-        const tx = await chronik.tx(rpcTxid(txid));
+        const tx = await chronik.tx(legacyChronikTxid(txid));
         return tx.block === undefined ? "pending" : "confirmed";
       } catch (error) {
         if (error instanceof Error && /: 404: /.test(error.message)) return "unknown";

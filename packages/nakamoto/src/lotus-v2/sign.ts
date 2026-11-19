@@ -11,6 +11,8 @@
 // A 64-byte signature means mode 00; modes 01/02 append one mode byte. The
 // signature itself is unmodified BIP340 over the 32-byte message.
 
+import { schnorr } from '@noble/curves/secp256k1.js'
+
 import { concatBytes } from '../bytes.js'
 import type { LotusV2ChainDescriptor } from '../chain/types.js'
 import { verifySchnorr } from '../curve.js'
@@ -194,10 +196,33 @@ export function lotusV2SignatureOperand(
     : concatBytes([signature, Uint8Array.of(mode)])
 }
 
+/** A CHECKSIG that P01 makes a script error rather than `false`. */
+export class LotusV2ScriptError extends Error {
+  constructor(readonly reason: string) {
+    super(`Lotus v2 script error: ${reason}`)
+    this.name = 'LotusV2ScriptError'
+  }
+}
+
+function validXOnly(key: Uint8Array): boolean {
+  if (key.length !== 32) return false
+  let x = 0n
+  for (const byte of key) x = (x << 8n) | BigInt(byte)
+  try {
+    schnorr.utils.lift_x(x)
+    return true
+  } catch {
+    return false
+  }
+}
+
 /**
- * Verify a CHECKSIG operand against witness `j` of input `i`: the operand's
- * length selects the mode exactly as P01 does (an explicit `00` byte is an
- * error, so it is `false` here).
+ * CHECKSIG of witness `j` of input `i`, as P01 defines it: the operand's
+ * length selects the mode (64 bytes: 00; 65 bytes: 64 then 01 or 02). Any other
+ * length (an empty signature included), an explicit 00 mode byte, mode 02
+ * without a paired output, or a key that is not a valid x-only point throws
+ * {@link LotusV2ScriptError}; a well-formed signature that does not verify is
+ * `false`.
  */
 export function verifyLotusV2Signature(
   chain: LotusV2ChainDescriptor,
@@ -207,11 +232,15 @@ export function verifyLotusV2Signature(
   operand: Uint8Array,
   xOnlyPublicKey: Uint8Array,
 ): boolean {
+  if (!validXOnly(xOnlyPublicKey))
+    throw new LotusV2ScriptError('CHECKSIG wire encoding')
   let mode: LotusV2SigningMode
   if (operand.length === 64) mode = 0
   else if (operand.length === 65 && (operand[64] === 1 || operand[64] === 2))
     mode = operand[64] as 1 | 2
-  else return false
+  else throw new LotusV2ScriptError('CHECKSIG wire encoding')
+  if (mode === 2 && target.inputIndex >= tx.outputs.length)
+    throw new LotusV2ScriptError('CHECKSIG wire encoding')
   const message = lotusV2SignatureMessage(chain, tx, coins, { ...target, mode })
   const verified = verifySchnorr(
     operand.subarray(0, 64),

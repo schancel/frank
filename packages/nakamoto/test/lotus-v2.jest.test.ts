@@ -21,6 +21,7 @@ import {
   type LotusV2Input,
   type LotusV2Output,
   LotusV2FormatError,
+  LotusV2ScriptError,
   LotusV2UnsupportedError,
   decodeLotusV2Address,
   decodeLotusV2Output,
@@ -159,6 +160,15 @@ describe('Lotus v2 addresses', () => {
         mainnet,
         withAddress('txpi', CONSTANTS.txpi as bigint),
       ])
+      expect(decoded.ok ? 'ok' : decoded.error.code.replace(/-/g, ' ')).toBe(
+        v.reason,
+      )
+    }
+  })
+
+  test('a regtest decoder gives the same reasons: network is checked only after a full decode', () => {
+    for (const v of vectors.invalid) {
+      const decoded = decodeLotusV2Address(LOTUS_V2_REGTEST, v.address)
       expect(decoded.ok ? 'ok' : decoded.error.code.replace(/-/g, ' ')).toBe(
         v.reason,
       )
@@ -341,10 +351,28 @@ describe('Lotus v2 transactions (reference tool vectors)', () => {
       verifyLotusV2Signature(chain, tx, [coin], target, operand, key),
     ).toBe(true)
     // An explicit 00 mode byte is a script error, never a FULL signature.
-    const explicit = Uint8Array.from([...operand, 0])
-    expect(
-      verifyLotusV2Signature(chain, tx, [coin], target, explicit, key),
-    ).toBe(false)
+    // So are an empty signature and any other length (P01; lotusd's empty-
+    // signature `false` is a consensus bug, Lotus coordinator 2026-11-19).
+    for (const bad of [
+      Uint8Array.from([...operand, 0]),
+      new Uint8Array(0),
+      operand.subarray(0, 63),
+      Uint8Array.from([...operand, 3]),
+    ])
+      expect(() =>
+        verifyLotusV2Signature(chain, tx, [coin], target, bad, key),
+      ).toThrow(LotusV2ScriptError)
+    // A key that is not an x-only point is a script error too.
+    expect(() =>
+      verifyLotusV2Signature(
+        chain,
+        tx,
+        [coin],
+        target,
+        operand,
+        new Uint8Array(32).fill(0xff),
+      ),
+    ).toThrow(LotusV2ScriptError)
     expect(
       verifyLotusV2Signature(chain, tx, [coin], target, operand, xOnly(5)),
     ).toBe(false)

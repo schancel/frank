@@ -107,20 +107,35 @@ Evidence:
   spent through a membership proof with modes 01 and 02, and parsing the node's own blocks
   (coinbase included) to the TxIDs it reports.
 
-Spec/code disagreements found (sent to the Lotus session; Frank follows the node):
+Spec/code disagreements found, and the rulings on them (questions sent to the Lotus session
+`lotus-86`; answers relayed by the coordinator, 2026-11-19: "spec is normative; the node changes,
+not the spec"):
 
-1. JSON-RPC prints TxIDs byte-reversed (`src/rpc/mempool.cpp:203` `GetHex()`); C04/P01 say
-   digests display in digest order. Chronik `/v2` uses digest order. Frank converts at the RPC
-   boundary only (`rpcTxid`).
-2. CHECKSIG with an empty signature pushes false (`vm.cpp:1979`); P01 says there is no
-   empty-signature special case. Frank never signs empty.
-3. The node rejects `HAS_STATE` with `IS_BURN` and token/state outputs in a coinbase; P01 does
-   not state the first. Nakamoto follows the node.
-4. The node has legacy coin entries (leading byte `0x80`) and a legacy-bridge leaf (`H_branch(03
-|| …)`) not in P01/P02. Nakamoto does not implement them (no v7 spend of a legacy coin).
-5. `addresses.md` step 2 puts "wrong network" at the prefix step; nakamoto (like stage 1) checks
-   the checksum under that prefix's constant first, so a corrupted string is malformed rather than
-   wrong-network. Asked whether that is acceptable.
+1. JSON-RPC prints hashes byte-reversed (`src/rpc/mempool.cpp:203` `GetHex()`); C04/P01 say
+   digests display in digest order. **Ruling:** digest order; the node will print txid, block id
+   and token id like Chronik `/v2` (fix queued). Frank keeps the reversal behind one switch,
+   `LOTUS_V2_RPC_REVERSES_HASHES` in `lotus-v2/network.ts`, to drop when the Lotus session says
+   the binary has the fix. Legacy Chronik routes (`/tx/:id`) are a separate boundary
+   (`legacyChronikTxid`), not covered by that fix.
+2. CHECKSIG with an empty signature pushes false (`vm.cpp:1979-1989`); P01 says there is no
+   empty-signature special case. **Ruling:** script error per P01; the node behaviour is a
+   consensus bug to be fixed before genesis, and the `signing.cpp:127` pure-mode-0 classifier will
+   stop counting a 65-byte operand ending in `00`. Nakamoto implements the spec:
+   `verifyLotusV2Signature` throws `LotusV2ScriptError` for any operand that is not 64 bytes or
+   64 + `01`/`02` (empty included), for mode 02 without a paired output, and for an invalid x-only
+   key; only a well-formed signature that does not verify is `false`.
+3. The node rejects `HAS_STATE` with `IS_BURN`, and token/state outputs in a coinbase.
+   **Ruling:** real rules, being added to P01/C05. Nakamoto follows the node.
+4. The node has legacy coin entries (leading byte `0x80`) and a legacy-bridge leaf
+   (`H_branch(03 || …)`) not in P01/P02. **Ruling:** consensus; v7 can spend a legacy-output coin.
+   A spec section and Python-reference vector are being written; nakamoto skips them until the
+   Lotus session gives their location (follow-up).
+5. Address decode order. **Ruling:** prefix, length, alphabet, checksum, version, padding, with
+   the spec's reason strings; "wrong network" is a caller-side check after a successful decode
+   against the string's own prefix, and a corrupted string with a known prefix is `bad checksum`.
+   Nakamoto now checks the network last (after version and padding); the lotusd invalid vectors
+   give the same reasons decoded as mainnet or as regtest, and the wallet surfaces exactly
+   `bad checksum`.
 
 The Coin record's 17-byte lifespan suffix (P02, fixed in the reference model this week) is not
 in any signature message (`CoinEntry` is `Bytes(Output)` only) and Frank does not encode Coin

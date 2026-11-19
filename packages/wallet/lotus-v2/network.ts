@@ -12,7 +12,9 @@
  *
  * Hex conventions: a transaction id here is the BLAKE3 output in wire order, as the node's
  * Chronik `/v2/*` routes print it. The node's JSON-RPC prints ids byte-reversed (Bitcoin
- * display order); convert with {@link rpcTxid} only at that boundary.
+ * display order; a node bug, see {@link LOTUS_V2_RPC_REVERSES_HASHES}) and so do the legacy
+ * Chronik routes; convert with {@link rpcTxid} and {@link legacyChronikTxid} only at those
+ * boundaries.
  */
 import { privateKeyFromSecretBytes, publicFromPrivate, signingKey } from "@frank/nakamoto";
 import {
@@ -62,9 +64,26 @@ export function fromHex(text: string, length?: number): Uint8Array {
   return Uint8Array.from(text.match(/../g) ?? [], (b) => parseInt(b, 16));
 }
 
-/** Node JSON-RPC display order <-> wire order (byte reversal; its own inverse). */
-export function rpcTxid(txid: string): string {
+/**
+ * The one switch for the node's JSON-RPC hash order. The spec (C04, P01) displays digests in
+ * digest order; current lotusd JSON-RPC prints them byte-reversed, a node bug the Lotus
+ * coordinator has queued a fix for (2026-11-19). Set this to `false`, and delete it with
+ * {@link rpcTxid}'s reversal, once the node binary in use carries the fix.
+ */
+export const LOTUS_V2_RPC_REVERSES_HASHES = true;
+
+/**
+ * Legacy Chronik routes (`GET /tx/:id`, `POST /broadcast-tx` replies) use Bitcoin display order
+ * (byte-reversed); `/v2/*` uses digest order. This is not covered by the JSON-RPC fix above.
+ */
+export function legacyChronikTxid(txid: string): string {
   return toHex(fromHex(txid, 32).reverse());
+}
+
+/** Node JSON-RPC order <-> wire (digest) order; its own inverse. */
+export function rpcTxid(txid: string): string {
+  const bytes = fromHex(txid, 32);
+  return toHex(LOTUS_V2_RPC_REVERSES_HASHES ? bytes.reverse() : bytes);
 }
 
 /**

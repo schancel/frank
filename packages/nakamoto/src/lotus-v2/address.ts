@@ -119,10 +119,11 @@ export function encodeLotusV2KeyhashAddress(
 }
 
 /**
- * Decode an address for `chain`, in the spec's order. A string whose prefix
- * belongs to another known network, with a valid checksum under that
- * network's constant, is `network-not-defined` (nakamoto has no descriptor
- * for it) or `wrong-network`.
+ * Decode an address for `chain`, in the spec's order: prefix, length,
+ * alphabet, checksum (under the string's own prefix), version, padding. Only
+ * a string that decodes completely under another known prefix is
+ * `network-not-defined` (nakamoto has no descriptor for it) or
+ * `wrong-network`; a corrupted one is `bad-checksum` whatever its prefix.
  */
 export function decodeLotusV2Address(
   chain: LotusV2ChainDescriptor,
@@ -149,6 +150,14 @@ export function decodeLotusV2Address(
   if (symbols.some(s => s < 0)) return fail('bad-character')
   if (polymod40(symbols) !== prefix.checksumConstant)
     return fail('bad-checksum')
+  const type = symbols[0]
+  if (type !== 0 && type !== 1) return fail('unknown-version')
+  if (!chain.address.types.includes(type)) return fail('unknown-version')
+  let p = 0n
+  for (const s of symbols.slice(1, 1 + PAYLOAD_SYMBOLS)) p = p * 32n + BigInt(s)
+  if ((p & 15n) !== 0n) return fail('nonzero-padding')
+  // Network is a caller-side check after a successful decode against the
+  // string's own prefix (Lotus coordinator ruling, 2026-11-19).
   if (hrp !== chain.address.hrp) {
     const defined = known.some(c => c.address.hrp === hrp)
     return fail(
@@ -156,12 +165,6 @@ export function decodeLotusV2Address(
       prefix.network,
     )
   }
-  const type = symbols[0]
-  if (type !== 0 && type !== 1) return fail('unknown-version')
-  if (!chain.address.types.includes(type)) return fail('unknown-version')
-  let p = 0n
-  for (const s of symbols.slice(1, 1 + PAYLOAD_SYMBOLS)) p = p * 32n + BigInt(s)
-  if ((p & 15n) !== 0n) return fail('nonzero-padding')
   p >>= 4n
   const payload = new Uint8Array(32)
   for (let i = 31; i >= 0; i -= 1) {

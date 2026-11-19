@@ -66,6 +66,7 @@ export type {
   LotusV2Transaction,
 } from './lotus-v2/transaction.js'
 export {
+  LotusV2ScriptError,
   LotusV2UnsupportedError,
   lotusV2CoinsRoot,
   lotusV2OwnInputHash,

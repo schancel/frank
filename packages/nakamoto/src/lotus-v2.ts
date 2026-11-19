@@ -54,6 +54,7 @@ export {
   encodeLotusV2Input,
   encodeLotusV2Output,
   encodeLotusV2Transaction,
+  lotusV2MoneyRange,
   lotusV2OutputLeaf,
   lotusV2TransactionIdentities,
   validateLotusV2Output,

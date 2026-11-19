@@ -162,19 +162,21 @@ Second batch of rulings (lotus-86 spec update, relayed by the coordinator, 2026-
    script error, as are 63-, 66- and `00`-terminated 65-byte operands; a correctly sized but
    invalid signature pushes false. The node instead pushes false on empty and throws NULLFAIL on
    an invalid signature (fixes pending). Nakamoto implements the spec; tests cover every case.
-9. Token output amounts take the full u64 range; the node rejects amounts above `INT64_MAX`
-   (bug). Nakamoto's codec accepts the full range. No regtest case relies on it, since it would
-   fail on the current node.
-10. C16a `MAX_MONEY` (lotus-86, 2026-11-19). **Ruling:** apply `MAX_MONEY = 2^62` atoms to
-    native output values now. The number is "recommended, awaiting owner sign-off" and may
-    change; the structure will not, and the node enforces a native money range. Nakamoto defines
-    it once, `LOTUS_V2_MAX_MONEY` in `src/lotus-v2/transaction.ts`, and the output codec rejects a
-    native output above it, spendable or `IS_BURN` (`native output value`), on encode and
-    parse; the legacy coin codec uses the same constant. Token amounts keep the full u64 range.
-    Burn outputs are bounded too (lotus-86 follow-up, same day: lotusd
-    `consensus/tx_check.cpp:52` checks every output's native value including `IS_BURN`, and
-    C16a now reads "A native output (spendable or IS_BURN) with value outside MoneyRange is
-    invalid"). lotusd is adding `MoneyRange` to
+9. (Superseded by ruling 10.) Token output amounts were to take the full u64 range, with the
+   node's `INT64_MAX` limit called a bug; the owner decision in ruling 10 bounds them by
+   `MAX_MONEY` instead.
+10. C16a `MAX_MONEY` (lotus-86, 2026-11-19, then an owner decision via lotus-86 the same day
+    that overrides the first ruling's token exemption; spec updated in C04, C16a and history,
+    node fix in progress). **Ruling:** `MoneyRange` (`0 <= v <= MAX_MONEY = 2^62`) bounds every
+    amount: native outputs, spendable or `IS_BURN` (lotusd `consensus/tx_check.cpp:52` already
+    checks burns), token output amounts, and mint amounts. Token supply across mints stays
+    uncapped. The number is "recommended, awaiting owner sign-off" and may change; the
+    structure will not. Nakamoto defines it once, `LOTUS_V2_MAX_MONEY` in
+    `src/lotus-v2/transaction.ts`, with one predicate `lotusV2MoneyRange`. The output codec
+    applies it to every output amount (`output amount`) on encode and parse, and the legacy
+    coin codec uses the same predicate. A mint amount (`positive_delta`) is not on the wire; it
+    enters only the mint selector, which nakamoto reports as unsupported, so the predicate is
+    exported for that path when it exists. lotusd is adding `MoneyRange` to
     `DecodeCoinOutput`/`ValidLegacyCoin`, so the node will match P01 and nakamoto on legacy coin
     values.
 

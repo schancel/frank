@@ -28,13 +28,18 @@ export const LOTUS_V2_MAX_OUTPUT_BRANCHES = 16
 export const LOTUS_V2_MAX_OUTPUT_PATHS = 16
 export const LOTUS_V2_MAX_COINBASE_DATA = 8192
 /**
- * C16a `MAX_MONEY` in atoms: `MoneyRange(v)` is `0 <= v <= MAX_MONEY`. It bounds
- * every native output (spendable or burn) and every legacy coin value; token amounts
- * keep the full u64 range. The value is "recommended, awaiting owner
- * sign-off" (Lotus consensus.md C16a) and may change; this is its one
- * definition in Frank.
+ * C16a `MAX_MONEY`: `MoneyRange(v)` is `0 <= v <= MAX_MONEY`. It bounds every
+ * amount: native outputs (spendable or burn), token output amounts, mint
+ * amounts and legacy coin values. Token supply across mints is not capped.
+ * The value is "recommended, awaiting owner sign-off" (Lotus consensus.md
+ * C16a) and may change; this is its one definition in Frank.
  */
 export const LOTUS_V2_MAX_MONEY = 1n << 62n
+
+/** C16a `MoneyRange`: the one range check every Lotus v2 amount goes through. */
+export function lotusV2MoneyRange(value: unknown): value is bigint {
+  return typeof value === 'bigint' && value >= 0n && value <= LOTUS_V2_MAX_MONEY
+}
 /** lotusd DefaultTxProfile framing caps. */
 const MAX_SCRIPT_BYTES = 10000
 const MAX_ARGUMENTS = 65535
@@ -146,16 +151,9 @@ function comparePaths(a: readonly number[], b: readonly number[]): number {
 
 /** C05/P01 output rules (lotusd output.cpp `Valid`). */
 export function validateLotusV2Output(output: LotusV2Output): void {
-  check(
-    typeof output.value === 'bigint' &&
-      output.value >= 0n &&
-      output.value < 1n << 64n,
-    'output value',
-  )
-  // C16a: a native output (spendable or burn) outside MoneyRange is invalid
-  // on sight. Token amounts are not native.
-  if (output.tokenId === undefined)
-    check(output.value <= LOTUS_V2_MAX_MONEY, 'native output value')
+  // C16a: any output amount (native, burn or token) outside MoneyRange is
+  // invalid on sight.
+  check(lotusV2MoneyRange(output.value), 'output amount')
   if (output.tokenId !== undefined)
     check(!isZero(hash32(output.tokenId, 'token id')), 'zero token')
   if (output.stateRoot !== undefined)

@@ -22,11 +22,11 @@ import { lengthPrefixed, lotusV2TaggedHash } from './hash.js'
 import {
   decodeLotusV2Output,
   encodeLotusV2Output,
-  LOTUS_V2_MAX_MONEY,
   type LotusV2BranchWitness,
   LotusV2FormatError,
   type LotusV2Input,
   type LotusV2Output,
+  lotusV2MoneyRange,
 } from './transaction.js'
 
 /** P01: a legacy scriptPubKey is at most 10,000 bytes. */
@@ -57,12 +57,7 @@ function validateLegacyCoin(coin: LotusV2LegacyCoin): void {
       coin.scriptPubKey.length <= LOTUS_V2_MAX_LEGACY_SCRIPT_BYTES,
     'legacy coin',
   )
-  check(
-    typeof coin.value === 'bigint' &&
-      coin.value >= 0n &&
-      coin.value <= LOTUS_V2_MAX_MONEY,
-    'legacy coin value',
-  )
+  check(lotusV2MoneyRange(coin.value), 'legacy coin value')
 }
 
 /** `CoinOutput(coin)`: the coin's `Output` wire, or `LegacyCoinOutput`. */

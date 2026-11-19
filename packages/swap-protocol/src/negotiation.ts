@@ -47,9 +47,8 @@ export const REGTEST_PROOF_NEGOTIATION_POLICY: NegotiationPairPolicy =
     evmChainIdentifier: 'monad-regtest',
   })
 /** Policy names of the retired v1 payload; their stored rows fail with a reset instruction. */
-export const RETIRED_NEGOTIATION_POLICY_NAMES: readonly string[] = Object.freeze(
-  ['xec-monad-testnet-v1', 'xec-monad-regtest-proof-v1'],
-)
+export const RETIRED_NEGOTIATION_POLICY_NAMES: readonly string[] =
+  Object.freeze(['xec-monad-testnet-v1', 'xec-monad-regtest-proof-v1'])
 /**
  * Deadline margins of one pair policy, in seconds (docs/plans/htlc-swaps/README.md, "Deadline
  * rules"). E = offer `expiry` (acceptance deadline), T_B = `evmExpiry`, T_A = `xecRefundTime`.

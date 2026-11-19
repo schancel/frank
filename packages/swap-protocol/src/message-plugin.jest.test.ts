@@ -47,8 +47,7 @@ beforeAll(async () => {
               context,
               encoded,
               kind === 'accept' ? fixtureAccept() : { kind },
-              async d =>
-              b.signHash(Buffer.from(d)),
+              async d => b.signHash(Buffer.from(d)),
             ),
           ),
         ),

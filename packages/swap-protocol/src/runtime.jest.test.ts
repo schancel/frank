@@ -51,7 +51,14 @@ async function signed() {
   )
   const response = must(
     encodeSignedSwapEvent(
-      must(await buildNegotiationResponse(context, offer, fixtureAccept(), sign(b))),
+      must(
+        await buildNegotiationResponse(
+          context,
+          offer,
+          fixtureAccept(),
+          sign(b),
+        ),
+      ),
     ),
   )
   return { offer, response }

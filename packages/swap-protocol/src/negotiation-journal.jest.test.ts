@@ -206,13 +206,20 @@ it('pins the independently framed row key and exact normalized record vector', a
   for (const name of ['xec-monad-testnet-v1', 'xec-monad-regtest-proof-v1']) {
     const old = JSON.stringify({
       ...expected,
-      context: { ...expected.context, policy: { ...expected.context.policy, name } },
+      context: {
+        ...expected.context,
+        policy: { ...expected.context.policy, name },
+      },
     })
     expect(() => inspectNegotiationJournalRecord(old)).toThrow(
-      new RegExp(`Unsupported old swap negotiation record \\(policy ${name}, payload v1\\).*Reset: delete`),
+      new RegExp(
+        `Unsupported old swap negotiation record \\(policy ${name}, payload v1\\).*Reset: delete`,
+      ),
     )
     store.rows.set(engine.rowKey, old)
-    await expect(engine.read()).rejects.toMatchObject({ code: 'corrupt-record' })
+    await expect(engine.read()).rejects.toMatchObject({
+      code: 'corrupt-record',
+    })
   }
 })
 
@@ -241,9 +248,9 @@ it('reads absent state without writes and reconstructs reordered offer/accept/re
   expect((await engine.admit(deliveredAgain)).admission).toBe('duplicate')
   expect(store.rows.get(engine.rowKey)).toBe(raw)
   expect(store.writes).toBe(writes)
-  expect((await engine.read()).reduction.usableAcceptance?.offer.evmPrincipal).toBe(
-    1000000000000000001n,
-  )
+  expect(
+    (await engine.read()).reduction.usableAcceptance?.offer.evmPrincipal,
+  ).toBe(1000000000000000001n)
   const rejectedStore = new MemoryCas(),
     rejected = journal(rejectedStore)
   await rejected.admit(admission(await response(first, 'reject'), 1))

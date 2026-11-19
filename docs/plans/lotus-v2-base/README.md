@@ -13,27 +13,220 @@ TxID, `rxpi1` addresses, 1 XPI = 1,000,000 atoms), not the node's legacy eCash-f
 legacy transactions cannot spend native coins, and ecash-lib computes wrong v7 txids, so
 ecash-lib never hashes, parses or signs a v7 transaction anywhere in this change.
 
+## Stage 2: Lotus v2 chain objects move into `@frank/nakamoto` (design, 2026-11-19)
+
+Stage 1's codec in `packages/wallet/lotus-v2/native.ts` was an ownership violation: chain
+primitives belong in `@frank/nakamoto`. Stage 2 moves them there, written from the spec
+(`docs/lotus-v2/` in the Lotus repository: `addresses.md`, `decisions/encoding-and-signatures.md`
+(P01), `decisions/commitments-and-state.md` (P02)), with lotusd source read only to confirm bytes.
+
+### Which concepts are shared and which are per format
+
+Genuinely shared between the Bitcoin-format chains (BTC/BCH/XEC/XPI v1/DOGE/LTC) and Lotus v2,
+and reused as they are:
+
+- protocol identity: `protocolId`, `proxyFamily`, `allowedProxyCapabilities`, `identityProbes`,
+  `network`, `sources` (now the `ChainIdentity` base of every descriptor);
+- secp256k1 keys and BIP32 HD (`keys.ts`, `hd.ts`; chain-independent already);
+- BIP340 sign/verify (`curve.ts` `signSchnorr`/`verifySchnorr`, unmodified per P01: BIP340's
+  own SHA256 challenge, Lotus supplies only the 32-byte message);
+- CompactSize with shortest form required (`varint.ts`, `ByteReader`/`ByteWriter`);
+- the 40-bit cashaddr BCH-code generator (`cashaddr.ts`), exported as a raw polymod without
+  cashaddr's final xor and prefix expansion.
+
+Per format, and changing together: transaction grammar, identity hash, signature message,
+address layout, Merkle rule and script VM. No chain combines BLAKE3 identities with legacy
+framing, or v7 framing with ECDSA. So these are **not** independent knobs on the existing
+Bitcoin descriptor (that would let a caller build combinations no node accepts, and would give
+Lotus v2 meaningless WIF/base58/p2p-magic/Bitcoin-script fields). Instead every descriptor
+carries an explicit `format` discriminant:
+
+- `format: 'bitcoin'`: the existing `ChainDescriptor`, unchanged otherwise. Its legacy capability
+  fields (`merkleOddRule`, `sighash`, `bech32Hrp`, `cashaddrPrefix`, `lotusNetChar`, `script`)
+  keep driving `address.ts`/`transaction.ts`/`block.ts`/`script.ts`, whose signatures still take
+  only a `'bitcoin'` descriptor, so a Lotus v2 descriptor cannot reach them.
+- `format: 'lotus-v2'`: `LotusV2ChainDescriptor`, with explicit capability fields read by
+  `src/lotus-v2/`: `chainId` (32 bytes committed in every TxID/TxHash/signature),
+  `transactionVersion: 7`, `hash` (`blake3-tagged`, tag prefix `Lotus/v2/`, `H_name(x) =
+BLAKE3(tag || 00 || x)`), `merkle` (`indexed-tagged`: P02 `IndexedTreeRoot`, layer-numbered
+  `H_merkleidx` nodes, odd levels padded with 32 zero bytes, empty root `H_merkleidx(02)`),
+  `address` (`lotus-v2-typed`: hrp, 40-bit checksum constant, supported type selectors),
+  `signature` (`bip340-x-only` with the signing modes the spec defines: 00 FULL, 01
+  OWN_INPUT_ALL_OUTPUTS, 02 OWN_INPUT_ONE_OUTPUT).
+
+Only the regtest descriptor `LOTUS_V2_REGTEST` exists. Mainnet and testnet are **not yet
+defined** (lotusd refuses to start there until genesis and constants exist; their ChainIDs in
+`addresses.md` are address-constant provenance, not launch parameters). The address codec knows
+their prefixes and checksum constants only to report a well-formed `xpi1`/`txpi1` string as
+`network-not-defined` instead of malformed. Frank's wallet still opens only on regtest (owner
+ruling above); that refusal stays in the wallet, not in nakamoto.
+
+### What nakamoto implements (`packages/nakamoto/src/lotus-v2/`, entry `@frank/nakamoto/lotus-v2`)
+
+- Addresses: type 0 (explicit branch root) and type 1 (x-only keyhash template) encode/decode
+  with checksum and the spec's ordered rejection reasons; types 2-31 rejected.
+- Templates: type-1 keyhash program `DUP BLAKE3 PUSH32 EQUALVERIFY CHECKSIG`; `Leaf(script)`,
+  `BranchNode`, branch proof roots.
+- Transactions: the complete P01 grammar, encode and strict parse (spend, coinbase and mint
+  inputs; native/token/burn/state output flags; lock kinds; shortest CompactSize; no trailing
+  bytes), TxID, TxHash, `CoinsRoot`, `OwnInputHash`.
+- Signature messages for modes 00/01/02 on spend invocations; a mint invocation's message
+  (needs the accounting delta) is an explicit `unsupported` result. BIP340 signing via nakamoto
+  `SigningKey`; verification of a spend witness's signature.
+- Legacy coins (P01 "Spending a legacy coin"): the `LegacyCoinOutput` wire (`80 || value ||
+  Bytes(scriptPubKey)`, value in `MoneyRange`, script at most 10,000 bytes) wherever a coin's
+  output wire is used (`CoinsRoot`, `OwnInputHash`); `decodeLotusV2CoinOutput` tells the two
+  encodings apart by the first byte. Legacy-bridge signing messages (`LegacyBridgeLeaf` in
+  `SpendSelector`, branch 0) for P2PKH and P2SH; building and verifying P2PKH bridge spends
+  (BIP340 under `public_key[1..33]`, an invalid signature rejects). P2SH script evaluation (the
+  legacy interpreter with ECDSA/legacy Schnorr) is an explicit `unsupported` result: only its
+  signing messages are checked, against the lotusd vectors.
+- Not implemented (explicit, not silent): VM execution, accounting and fee rules (the fee rule
+  is wallet policy and is changing upstream, see below), UTXO/state commitments, block headers.
+
+Fees: lotusd's current rule is 1 atom per signed byte (regtest profile: "the specification's
+original 1000 atoms/kB and 546 atoms"). The spec's pending rule (subsidy-indexed cu term plus a
+byte fee) replaces it before genesis, so the wallet keeps the fee rule as its own replaceable
+policy (`LOTUS_V2_FEE_PER_BYTE`), not a nakamoto consensus fact.
+
+### Stage 2 status and evidence (2026-11-19)
+
+Landed on the task branch: `LOTUS_V2_REGTEST` and `src/lotus-v2/` in nakamoto (entry
+`@frank/nakamoto/lotus-v2`, also re-exported from the root); `packages/wallet/lotus-v2/native.ts`
+deleted; the wallet, chain adapter, Chronik indexer and regtest harness build through nakamoto.
+Wallet behaviour and stored formats are unchanged (same addresses, roots, TxIDs and sizes; the
+wallet suites pass unmodified apart from imports).
+
+Evidence:
+
+- nakamoto unit tests (`test/lotus-v2.jest.test.ts`) against copied vectors: lotusd
+  `src/test/data/lotus_v2_address.json` (every valid and invalid address with its reason), the
+  `addresses.md` type-1 vector, lotusd `test_commitment.cpp` (branch leaves/nodes, every domain
+  tag, `IndexedTreeRoot` for 0..5 leaves), and the Lotus compiler fixtures
+  `reference-signed-payment-v1.json` (wire, TxID, TxHash, CoinsRoot, OwnInputHash, the three
+  signing messages, the FULL signature) and `key3-one-output.json` / `key4-two-outputs.json`
+  (a nakamoto-built spend is byte-identical, BIP340 with all-zero aux). All other nakamoto suites
+  (BTC/BCH/XEC/XPI v1/DOGE/LTC) unchanged and green.
+- real `lotusd -regtest` (build c944520e13; codec files `signing.cpp`, `transaction.cpp`,
+  `output.cpp`, `address.cpp`, `commitment.cpp`, `tagged_hash.cpp` are byte-identical in
+  38cfb7d273 and in `scratch/v2fix/audit`): `wallet.regtest` 11/11, `relay.regtest` 2/2 (relay
+  built from this branch), and the new `chain-objects.regtest` 3/3: a 5-input, 37-output payment
+  (odd layers in both indexed trees), a type-0 address over a two-leaf `PUSH32 key CHECKSIG` tree
+  spent through a membership proof with modes 01 and 02, and parsing the node's own blocks
+  (coinbase included) to the TxIDs it reports.
+
+Spec/code disagreements found, and the rulings on them (questions sent to the Lotus session
+`lotus-86`; answers relayed by the coordinator, 2026-11-19: "spec is normative; the node changes,
+not the spec"):
+
+1. JSON-RPC prints hashes byte-reversed (`src/rpc/mempool.cpp:203` `GetHex()`); C04/P01 say
+   digests display in digest order. **Ruling:** digest order; the node will print txid, block id
+   and token id like Chronik `/v2` (fix queued). Frank keeps the reversal behind one switch,
+   `LOTUS_V2_RPC_REVERSES_HASHES` in `lotus-v2/network.ts`, to drop when the Lotus session says
+   the binary has the fix. Legacy Chronik routes (`/tx/:id`) are a separate boundary
+   (`legacyChronikTxid`), not covered by that fix.
+2. CHECKSIG with an empty signature pushes false (`vm.cpp:1979-1989`); P01 says there is no
+   empty-signature special case. **Ruling:** script error per P01; the node behaviour is a
+   consensus bug to be fixed before genesis, and the `signing.cpp:127` pure-mode-0 classifier will
+   stop counting a 65-byte operand ending in `00`. Nakamoto implements the spec:
+   `verifyLotusV2Signature` throws `LotusV2ScriptError` for any operand that is not 64 bytes or
+   64 + `01`/`02` (empty included), for mode 02 without a paired output, and for an invalid x-only
+   key; only a well-formed signature that does not verify is `false`.
+3. The node rejects `HAS_STATE` with `IS_BURN`, and token/state outputs in a coinbase.
+   **Ruling:** real rules, being added to P01/C05. Nakamoto follows the node.
+4. The node has legacy coin entries (leading byte `0x80`) and a legacy-bridge leaf
+   (`H_branch(03 || …)`) not in P01/P02. **Ruling:** consensus; v7 can spend a legacy-output coin.
+   The spec now has it (P01 "Spending a legacy coin", uncommitted in the Lotus checkout on
+   2026-11-19; worked example = lotusd `src/test/data/v2_legacy_bridge.json` "P2PKH bridge").
+   Implemented as above; all nine `v2_legacy_bridge.json` messages and the worked example's
+   coin wire, bridge leaf, CoinLeaf, OwnInputHash and TxID are nakamoto test vectors. The node's
+   `DecodeCoinOutput` does not check `MoneyRange` on a legacy coin's value (import does, in
+   `legacy_coin.h`); nakamoto follows P01 and checks it in the codec. lotusd is adding the check
+   (ruling 10).
+5. Address decode order. **Ruling:** prefix, length, alphabet, checksum, version, padding, with
+   the spec's reason strings; "wrong network" is a caller-side check after a successful decode
+   against the string's own prefix, and a corrupted string with a known prefix is `bad checksum`.
+   Nakamoto now checks the network last (after version and padding); the lotusd invalid vectors
+   give the same reasons decoded as mainnet or as regtest, and the wallet surfaces exactly
+   `bad checksum`.
+
+Second batch of rulings (lotus-86 spec update, relayed by the coordinator, 2026-11-19;
+"implement the spec, not the node"):
+
+6. Output flags: valid flags are `00`–`05` only (no `HAS_STATE` with `IS_BURN`); a present
+   `state_root` is nonzero; coinbase outputs need `(flags & 05) == 0`. Nakamoto's parser already
+   enforces all three; regression tests cover each.
+7. Hash display: digest order everywhere, input and output. Frank's only reversal is still the
+   one switch for the node's JSON-RPC (item 1); nothing else reverses.
+8. CHECKSIG (validation.md "Signature-operand cases"): an empty operand with a valid key is a
+   script error, as are 63-, 66- and `00`-terminated 65-byte operands; a correctly sized but
+   invalid signature pushes false. The node instead pushes false on empty and throws NULLFAIL on
+   an invalid signature (fixes pending). Nakamoto implements the spec; tests cover every case.
+9. (Superseded by ruling 10.) Token output amounts were to take the full u64 range, with the
+   node's `INT64_MAX` limit called a bug; the owner decision in ruling 10 bounds them by
+   `MAX_MONEY` instead.
+10. C16a `MAX_MONEY` (lotus-86, 2026-11-19, then an owner decision via lotus-86 the same day
+    that overrides the first ruling's token exemption; spec updated in C04, C16a and history,
+    node fix in progress). **Ruling:** `MoneyRange` (`0 <= v <= MAX_MONEY = 2^62`) bounds every
+    amount: native outputs, spendable or `IS_BURN` (lotusd `consensus/tx_check.cpp:52` already
+    checks burns), token output amounts, and mint amounts. Token supply across mints stays
+    uncapped. The number is "recommended, awaiting owner sign-off" and may change; the
+    structure will not. Nakamoto defines it once, `LOTUS_V2_MAX_MONEY` in
+    `src/lotus-v2/transaction.ts`, with one predicate `lotusV2MoneyRange`. The output codec
+    applies it to every output amount (`output amount`) on encode and parse, and the legacy
+    coin codec uses the same predicate. A mint amount (`positive_delta`) is not on the wire; it
+    enters only the mint selector, which nakamoto reports as unsupported, so the predicate is
+    exported for that path when it exists. lotusd is adding `MoneyRange` to
+    `DecodeCoinOutput`/`ValidLegacyCoin`, so the node will match P01 and nakamoto on legacy coin
+    values.
+
+Review follow-ups (independent review, 2026-11-19): an address checksum constant is checked
+against `addresses.md`'s prefix table (a descriptor that disagrees throws instead of silently
+encoding another network's checksum); `signLotusV2Transaction` refuses a signer whose x-only key
+is not the template's (templates now carry `publicKey`); strict-parse rejections have regression
+tests.
+
+The Coin record's 17-byte lifespan suffix (P02, fixed in the reference model this week) is not
+in any signature message (`CoinEntry` is `Bytes(Output)` only) and Frank does not encode Coin
+records, so nothing here depends on it.
+
+Current node build: `/Users/shammah/repos/lotus/daemon/.build/v2-current/lotusd`,
+v0.34.1-ea95b1631f2c (branch `scratch/v2fix/audit` at ea95b1631f, kept by ref
+`keep/v2-current-ea95b1631f`; BUILD-INFO: RelWithDebInfo, Chronik on, regtest only; still prints
+JSON-RPC h32 reversed and has the CHECKSIG empty/invalid-signature cases backwards, fixes
+pending, so `LOTUS_V2_RPC_REVERSES_HASHES` stays true). The codec sources (`signing.cpp`,
+`transaction.cpp`, `output.cpp`, `address.cpp`, `commitment.cpp`) and `v2_legacy_bridge.json`
+are unchanged between 38cfb7d273 and ea95b1631f. The regtest suites
+(`packages/wallet/lotus-v2/wallet.regtest.jest.test.ts`, `chain-objects.regtest.jest.test.ts`,
+`relay.regtest.jest.test.ts` with `CASHWEBD_BIN`) run with `LOTUSD_BIN` set to it and
+`FRANK_REQUIRE_NODES=1`. Rerun them when the RPC hash-order fix lands (then set the switch to
+false) or the fee rule (1 atom/byte) changes.
+
 ## Regtest only (owner ruling, 2026-11-19)
 
 Lotus v2 native (v7) transactions are rejected outside regtest. Frank therefore has only the
 regtest registry row (no Lotus v2 testnet or mainnet rows), and refuses at every boundary with
 `LotusV2UnsupportedNetworkError` ("supported only on regtest"):
 
-- the codec (`native.ts`): every entry point that addresses, hashes or signs takes a network and
-  accepts only `regtest`; a well-formed mainnet (`xpi1`) or testnet (`txpi1`) address is refused as
+- the wallet's chain boundary (`lotus-v2/network.ts`, over `@frank/nakamoto/lotus-v2`): every
+  entry point that addresses, hashes or signs takes a network and accepts only `regtest`; a well-formed mainnet (`xpi1`) or testnet (`txpi1`) address is refused as
   unsupported, not as malformed;
 - the wallet (`LotusV2Wallet.create`, `lotusV2NetworkOf`): opens only a chain whose client registry
   row is family `bitcoin`, kind `lotus`, network `regtest`, before touching the indexer or seed;
 - the chain adapter (`createLotusV2Chain`) and `openRelayUtxoChain` (adapter chosen by kind; Lotus
   v1 `xpi-*` rows have no wallet and are refused).
 
-Tests: `lotus-v2/native.jest.test.ts` (codec and wallet refusals), `chain/base-chain.jest.test.ts`
+Tests: `lotus-v2/network.jest.test.ts` (boundary and wallet refusals), `chain/base-chain.jest.test.ts`
 (chain adapter refusal), and the regtest suite's "recipient of another network" case.
 
 How the node enforces it (checked, Lotus repo unchanged): the build used here
-(`daemon/.build/v2/src/lotusd`, v0.34.1-c944520e13c9) does **not** refuse to start on mainnet. It
-logs "This network uses a placeholder Lotus V2 genesis block" and keeps running; the current
-source's `src/init.cpp` (~line 2686, `IsPlaceholderGenesis`) only warns. `kernel/chainparams.cpp`
+(`daemon/.build/v2/src/lotusd`, v0.34.1-c944520e13c9) is stale and does **not** refuse to start on
+mainnet (it only warns about a placeholder genesis). The current V2 stack
+(`scratch/smt/utxoC-folded6`, 38cfb7d273) refuses to start on any network whose consensus
+constants or genesis are unset (`V2NetworkStartupError`, `src/pow/pow.cpp:104`, called from
+`AppInitSanityChecks` in `src/init.cpp:3024`); per the Lotus coordinator that startup gate is the
+intended way v7 stays off mainnet/testnet until launch (no mempool gate), and once mainnet
+launches v7 is native there. The remainder of this paragraph describes the stale build. `kernel/chainparams.cpp`
 defines separate mainnet/testnet V2 chain ids and genesis blocks, so a v7 transaction signed for
 regtest (ChainID zero) cannot verify on another network, but no startup or mempool gate that
 rejects v7 off regtest was found, and acceptance of v7 off regtest was not tested. The checkout
@@ -42,15 +235,15 @@ probe that saw a refusal may have used another build. Frank's refusal does not d
 
 ## Decisions taken for stage 1 (owner defaults, recorded)
 
-| #   | Decision                                                                                                                                                                                                                                                                                                                | Status after investigation                                                                                                                                                                                                                                                                                                                                                                                                                              |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| D1  | New registry row `lotus-v2-regtest` in `docs/protocol/chains/v1.json`: family `bitcoin`, network `regtest`, CAIP-2 `bip122:lotus-v2-regtest`, operator block checkpoint, proxy capabilities `json-rpc` and `chronik`. Client extension: kind `lotus`, 6 decimals, unit `rXPI`. The Lotus v1 rows `xpi-*` are untouched. | Holds.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| D2  | Identity, directory and DM stamps stay on the EVM key and the EVM messaging chain (`ActiveChain`, Monad). Lotus is the base wallet for balance, receive, send and history.                                                                                                                                              | Holds. This removes the need to split `ActiveChain` now: `ActiveChain` is the _messaging_ contract and stays EVM; the base wallet uses the existing family-neutral `NativeAssetChain` / `NativeWalletHandle` contracts, which already have no EVM pieces.                                                                                                                                                                                               |
-| D3  | A Lotus v2 family adapter, a peer of the eCash (`EcashWallet`) and Electrum (`UtxoWallet`) adapters, implementing `NativeWalletHandle` where family-neutral.                                                                                                                                                            | Holds.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| D4  | The base chain is chosen by configuration (registry row), replacing the hard-wired choice; an unknown identifier is rejected, never defaulted to Monad.                                                                                                                                                                 | Narrowed, see "Base chain seam". `chain/index.ts`'s module-level `MonadChain` is the messaging chain (D2) and stays; the _base wallet_ chain is a new configured seam.                                                                                                                                                                                                                                                                                  |
-| D5  | Lotus v1 code (bitcore-lib-xpi, legacy-wallet, nakamoto xpi, relay `lotus_adapter.rs`) is not deleted here.                                                                                                                                                                                                             | Follow-up F1.                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| D6  | No fake chain: tests run on a real `lotusd -regtest` with Chronik, gated by `nodeSuiteReady` / `FRANK_REQUIRE_NODES`, with a `findLotusd` helper.                                                                                                                                                                       | Holds.                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| D7  | Reuse `@lotus/v2-payment-compiler` if consumable.                                                                                                                                                                                                                                                                       | **Not consumable**: it is `private: true`, unpublished, and lives in the Lotus repository (`tools/lotus-v2-compiler`). Frank has its own minimal codec (`packages/wallet/lotus-v2/native.ts`) that follows the compiler's transaction runtime framing for exactly one shape (type-1 keyhash spends, native single-branch outputs, FULL signatures). The node, not the compiler, is the arbiter: every byte is checked by `lotusd` in the regtest suite. |
+| #   | Decision                                                                                                                                                                                                                                                                                                                | Status after investigation                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| D1  | New registry row `lotus-v2-regtest` in `docs/protocol/chains/v1.json`: family `bitcoin`, network `regtest`, CAIP-2 `bip122:lotus-v2-regtest`, operator block checkpoint, proxy capabilities `json-rpc` and `chronik`. Client extension: kind `lotus`, 6 decimals, unit `rXPI`. The Lotus v1 rows `xpi-*` are untouched. | Holds.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| D2  | Identity, directory and DM stamps stay on the EVM key and the EVM messaging chain (`ActiveChain`, Monad). Lotus is the base wallet for balance, receive, send and history.                                                                                                                                              | Holds. This removes the need to split `ActiveChain` now: `ActiveChain` is the _messaging_ contract and stays EVM; the base wallet uses the existing family-neutral `NativeAssetChain` / `NativeWalletHandle` contracts, which already have no EVM pieces.                                                                                                                                                                                                                                                     |
+| D3  | A Lotus v2 family adapter, a peer of the eCash (`EcashWallet`) and Electrum (`UtxoWallet`) adapters, implementing `NativeWalletHandle` where family-neutral.                                                                                                                                                            | Holds.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| D4  | The base chain is chosen by configuration (registry row), replacing the hard-wired choice; an unknown identifier is rejected, never defaulted to Monad.                                                                                                                                                                 | Narrowed, see "Base chain seam". `chain/index.ts`'s module-level `MonadChain` is the messaging chain (D2) and stays; the _base wallet_ chain is a new configured seam.                                                                                                                                                                                                                                                                                                                                        |
+| D5  | Lotus v1 code (bitcore-lib-xpi, legacy-wallet, nakamoto xpi, relay `lotus_adapter.rs`) is not deleted here.                                                                                                                                                                                                             | Follow-up F1.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| D6  | No fake chain: tests run on a real `lotusd -regtest` with Chronik, gated by `nodeSuiteReady` / `FRANK_REQUIRE_NODES`, with a `findLotusd` helper.                                                                                                                                                                       | Holds.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| D7  | Reuse `@lotus/v2-payment-compiler` if consumable.                                                                                                                                                                                                                                                                       | **Not consumable**: it is `private: true`, unpublished, and lives in the Lotus repository (`tools/lotus-v2-compiler`). Stage 1 had its own minimal codec in the wallet; stage 2 replaced it with `@frank/nakamoto/lotus-v2` (written from the spec). It followed the compiler's transaction runtime framing for exactly one shape (type-1 keyhash spends, native single-branch outputs, FULL signatures). The node, not the compiler, is the arbiter: every byte is checked by `lotusd` in the regtest suite. |
 
 Node build used: `/Users/shammah/repos/lotus/daemon/.build/v2/src/lotusd` (0.34.1, built
 2026-11-02). It accepts native v7 transactions and type-1 addresses on regtest, serves
@@ -96,7 +289,7 @@ Tests take the binary from `LOTUSD_BIN` (or `lotusd` on `PATH`).
 | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Lotus v2 protocol identity (id, family, network, CAIP-2, proxy capabilities, probes)                | `docs/protocol/chains/v1.json` row `lotus-v2-regtest`                                                                                                                                                                                                                                            |
 | Presentation (kind `lotus`, unit, 6 decimals, wallet indexer `chronik`)                             | client extension in `packages/wallet/chain/chains-registry.ts`                                                                                                                                                                                                                                   |
-| ChainID, address format, keyhash program, output/tx framing, TxID, signing message                  | `packages/wallet/lotus-v2/native.ts` (pure; no I/O)                                                                                                                                                                                                                                              |
+| ChainID, address format, keyhash program, output/tx framing, TxID, signing message                  | `@frank/nakamoto/lotus-v2` (stage 2; pure, no I/O). The wallet's `lotus-v2/network.ts` adds only the regtest-only rule, hex and the RPC id order                                                                                                                                                 |
 | Which coins are unspent                                                                             | the chain, read through Chronik `/v2/branches/utxos`; rebuilt on every sync, never cached for selection                                                                                                                                                                                          |
 | Next receive/change index, recorded sends (exact signed bytes + claimed inputs), inputs known spent | the wallet's durable store (`LotusV2WalletStore`), one per wallet, keyed by chain and first address                                                                                                                                                                                              |
 | Keys and signing                                                                                    | the wallet's HD account from the `ecash-bch-wallet` domain root (the Bitcoin-family root), path `m/44'/10605'/0'` (SLIP-44 coin type of Lotus), receive `0/i`, change `1/i`; x-only BIP340 keys                                                                                                  |
@@ -104,8 +297,9 @@ Tests take the binary from `LOTUSD_BIN` (or `lotusd` on `PATH`).
 | Which network is the base wallet                                                                    | host configuration `QCLI_FRANK_BASE_CHAIN` / `FRANK_BASE_CHAIN`, validated against the client registry by `resolveBaseChain` (`packages/wallet/chain/base-chain.ts`); unknown or walletless ids are refused; absent means the EVM primary network, as today (seam landed; host wiring is gap G1) |
 | Identity, directory, DM stamps, topics, games, swaps                                                | unchanged: EVM (`ActiveChain`)                                                                                                                                                                                                                                                                   |
 
-Dependency direction: `lotus-v2/native.ts` depends only on `@noble/curves` and
-`@noble/hashes`. `lotus-v2/wallet.ts` depends on `native.ts`, `chain/chain-wallet.ts` contracts
+Dependency direction (stage 2): `@frank/nakamoto/lotus-v2` depends only on `@noble/curves` and
+`@noble/hashes` (BLAKE3 from the already-pinned `@noble/hashes` 1.8.0; no new dependency).
+`lotus-v2/network.ts` depends on nakamoto. `lotus-v2/wallet.ts` depends on `network.ts`, `chain/chain-wallet.ts` contracts
 and `@frank/nakamoto` HD derivation. `lotus-v2/chronik.ts` (indexer) uses `fetch` for the `/v2`
 JSON routes and `chronik-client` for the legacy `GET /tx`, `POST /broadcast-tx` and
 `GET /block` routes (it never parses a transaction).

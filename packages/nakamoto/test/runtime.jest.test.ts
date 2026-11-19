@@ -49,6 +49,7 @@ describe('runtime constraints', () => {
       './hd',
       './integer',
       './keys',
+      './lotus-v2',
       './reader',
       './script',
       './script-num',
@@ -92,6 +93,7 @@ describe('runtime constraints', () => {
       'script',
       'block',
       'curve',
+      'lotus-v2',
       'backend',
     ])
   })

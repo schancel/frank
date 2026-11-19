@@ -292,7 +292,7 @@ export { createUtxoChain } from "./utxo-chain";
 export { openRelayUtxoChain } from "./utxo-family";
 export type { RelayUtxoChain } from "./utxo-family";
 export { resolveBaseChain, UnsupportedBaseChainError } from "./base-chain";
-export { LotusV2UnsupportedNetworkError } from "../lotus-v2/native";
+export { LotusV2UnsupportedNetworkError } from "../lotus-v2/network";
 export type { UtxoChain, UtxoChainConfig } from "./utxo-chain";
 
 export {

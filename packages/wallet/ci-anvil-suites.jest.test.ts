@@ -27,6 +27,8 @@ const NOT_IN_CI: Record<string, string> = {
     'needs solonet (monad-regtest) and a cashwebd relay build; runs only with FRANK_REGTEST_LIVE=1',
   'packages/wallet/lotus-v2/wallet.regtest.jest.test.ts':
     'needs a lotusd built from the Lotus repository v2 series (LOTUSD_BIN); Lotus v2 publishes no release a hosted job can fetch',
+  'packages/wallet/lotus-v2/chain-objects.regtest.jest.test.ts':
+    'needs a lotusd built from the Lotus repository v2 series (LOTUSD_BIN); Lotus v2 publishes no release a hosted job can fetch',
   'packages/wallet/lotus-v2/relay.regtest.jest.test.ts':
     'needs a Lotus v2 lotusd (LOTUSD_BIN, no published release) and a cashwebd-exe build (CASHWEBD_BIN)',
 }

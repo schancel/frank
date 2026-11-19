@@ -40,18 +40,14 @@ import { getChainRegistryEntry } from "../chain/chains-registry";
 import { recordWalletFailure } from "../wallet-failure";
 import { LotusV2BroadcastRefused, type LotusV2Indexer } from "./chronik";
 import {
-  branchLeaf,
-  decodeAddress,
-  encodeKeyhashAddress,
-  keyhashOf,
-  keyhashProgram,
+  keyhashPaymentSize,
+  lotusV2AddressRoot,
+  lotusV2KeyhashDestination,
   LotusV2UnsupportedNetworkError,
   type LotusV2Network,
-  nativeTransactionSize,
-  signNativeTransaction,
-  toHex,
-  xOnlyPublicKey,
-} from "./native";
+  lotusV2XOnlyKey,
+  signKeyhashPayment,
+} from "./network";
 
 /** BIP44 account under the Bitcoin-family domain root: SLIP-44 coin type 10605 (Lotus). */
 export const LOTUS_V2_ACCOUNT_PATH = "m/44'/10605'/0'";
@@ -199,10 +195,10 @@ export function planLotusV2Send(coins: readonly LotusV2Coin[], value: bigint): L
   for (const coin of candidates) {
     inputs.push(coin);
     total += coin.value;
-    const feeWithChange = BigInt(nativeTransactionSize(inputs.length, 2)) * LOTUS_V2_FEE_PER_BYTE;
+    const feeWithChange = BigInt(keyhashPaymentSize(inputs.length, 2)) * LOTUS_V2_FEE_PER_BYTE;
     if (total >= value + feeWithChange + LOTUS_V2_DUST_ATOMS)
       return { inputs, fee: feeWithChange, change: total - value - feeWithChange };
-    const feeWithout = BigInt(nativeTransactionSize(inputs.length, 1)) * LOTUS_V2_FEE_PER_BYTE;
+    const feeWithout = BigInt(keyhashPaymentSize(inputs.length, 1)) * LOTUS_V2_FEE_PER_BYTE;
     if (total >= value + feeWithout) return { inputs, fee: total - value };
   }
   throw recordWalletFailure(new Error("Insufficient funds for this amount and its network fee"), {
@@ -356,7 +352,7 @@ export class LotusV2Wallet implements NativeWalletHandle {
       const outputs = [{ value: params.value, root: recipientRoot }];
       if (plan.change !== undefined)
         outputs.push({ value: plan.change, root: this.rootAt(1, changeIndex) });
-      const tx = signNativeTransaction({
+      const tx = signKeyhashPayment({
         network: this.network,
         inputs: plan.inputs.map((coin) => ({
           txid: coin.txid,
@@ -513,22 +509,22 @@ export class LotusV2Wallet implements NativeWalletHandle {
     return Uint8Array.from(this.nodeAt(chain, index).privateKey.bytes);
   }
 
-  private keyhashAt(chain: 0 | 1, index: number): Uint8Array {
-    return keyhashOf(xOnlyPublicKey(this.secretAt(chain, index)));
+  private destinationAt(chain: 0 | 1, index: number) {
+    return lotusV2KeyhashDestination(this.network, lotusV2XOnlyKey(this.secretAt(chain, index)));
   }
 
   private rootAt(chain: 0 | 1, index: number): string {
-    return toHex(branchLeaf(keyhashProgram(this.keyhashAt(chain, index))));
+    return this.destinationAt(chain, index).root;
   }
 
   private addressAt(chain: 0 | 1, index: number): string {
-    return encodeKeyhashAddress(this.network, this.keyhashAt(chain, index));
+    return this.destinationAt(chain, index).address;
   }
 
   /** The branch root to pay; any address of another network is refused. */
   private recipientRoot(input: string): string {
     try {
-      return decodeAddress(this.network, input.trim()).root;
+      return lotusV2AddressRoot(this.network, input.trim());
     } catch (error) {
       if (error instanceof LotusV2UnsupportedNetworkError) throw error;
       throw new Error(

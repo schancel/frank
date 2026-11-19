@@ -1,0 +1,288 @@
+{
+  "schema": "lotus-v2/payment-fixture/1",
+  "source": "contract Payment<owner: PublicKey> { function spend(signature: Signature) { require(checksig(signature, owner)); } }",
+  "artifact": {
+    "schema": "lotus-v2/payment-artifact/1",
+    "target": "P01-P02-P03-candidate-2026-10-14",
+    "contract": "Payment",
+    "constructor": [
+      {
+        "name": "owner",
+        "type": "PublicKey",
+        "bytes": 32
+      }
+    ],
+    "methods": [
+      {
+        "name": "spend",
+        "args": [
+          {
+            "name": "signature",
+            "type": "Signature",
+            "bytes": [
+              64,
+              64
+            ]
+          }
+        ],
+        "path": [
+          0
+        ]
+      }
+    ],
+    "scriptHex": "20e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13bb",
+    "policy": {
+      "branches": [
+        "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+      ],
+      "paths": [
+        [
+          0
+        ]
+      ],
+      "leaf": "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+    },
+    "sourceMap": [
+      {
+        "source": {
+          "start": 104,
+          "end": 109
+        },
+        "byteStart": 0,
+        "byteEnd": 33,
+        "op": "PUSH_32"
+      },
+      {
+        "source": {
+          "start": 76,
+          "end": 112
+        },
+        "byteStart": 33,
+        "byteEnd": 34,
+        "op": "CHECKSIG"
+      }
+    ],
+    "staticResources": {
+      "scriptBytes": 34,
+      "opcodes": 2,
+      "maxStackItems": 2,
+      "dynamicSignatureCheck": true
+    }
+  },
+  "context": {
+    "chainId": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "outpoint": {
+      "txid": "2222222222222222222222222222222222222222222222222222222222222222",
+      "index": 0
+    },
+    "sequence": 4294967295,
+    "lock": "1",
+    "profile": "payment-fixture-p01-v1",
+    "signingMode": 0,
+    "coin": {
+      "flags": 0,
+      "valueAtoms": "300000",
+      "branches": [
+        "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+      ],
+      "paths": [
+        [
+          0
+        ]
+      ]
+    },
+    "coinWire": "00e093040000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b010100",
+    "outputs": [
+      {
+        "flags": 0,
+        "valueAtoms": "60000",
+        "branches": [
+          "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+        ],
+        "paths": [
+          [
+            0
+          ]
+        ]
+      },
+      {
+        "flags": 0,
+        "valueAtoms": "239000",
+        "branches": [
+          "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+        ],
+        "paths": [
+          [
+            0
+          ]
+        ]
+      }
+    ]
+  },
+  "valid": {
+    "wire": "07000000010000000000000001000200222222222222222222222222222222222222222222222222222222222222222200000000ffffffff0100012220e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13bb000140a7ad0531d68563341c7ab003a874b17ada6ee53a7c04fc4fc1e4670df8005357766c621cd16fce139876d13367a4045f1f62347b38d68beb3b29fc640969ed420060ea000000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b0101000098a5030000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b010100",
+    "txid": "179c6bde200f22593daaa64e9437f678f7918e8ba4f4a00c6ed975b3cb1a8706",
+    "txhash": "c48d9113239a4fca0a6848b4655f6025c6ae3ab7dbca16bee4bdaf9fa6d204f1",
+    "message": "0d405f8ed692d69de47ce38ee58c0c40e843d8f82f5d95be0ba29850d46df7eb",
+    "signature": "a7ad0531d68563341c7ab003a874b17ada6ee53a7c04fc4fc1e4670df8005357766c621cd16fce139876d13367a4045f1f62347b38d68beb3b29fc640969ed42",
+    "feeAtoms": "1000",
+    "expectedStage": "signature",
+    "stages": {
+      "assembly": "passed",
+      "framing": "passed",
+      "signature": "passed",
+      "invocation": "unavailable",
+      "contextual": "unavailable",
+      "block": "unavailable"
+    }
+  },
+  "mutations": [
+    {
+      "name": "changed-output-value",
+      "wire": "07000000010000000000000001000200222222222222222222222222222222222222222222222222222222222222222200000000ffffffff0100012220e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13bb000140a7ad0531d68563341c7ab003a874b17ada6ee53a7c04fc4fc1e4670df8005357766c621cd16fce139876d13367a4045f1f62347b38d68beb3b29fc640969ed42005fea000000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b0101000098a5030000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b010100",
+      "context": {
+        "chainId": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "owner": "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+        "coin": {
+          "flags": 0,
+          "valueAtoms": "300000",
+          "branches": [
+            "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+          ],
+          "paths": [
+            [
+              0
+            ]
+          ]
+        },
+        "coinWire": "00e093040000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b010100",
+        "outputs": [
+          {
+            "flags": 0,
+            "valueAtoms": "59999",
+            "branches": [
+              "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+            ],
+            "paths": [
+              [
+                0
+              ]
+            ]
+          },
+          {
+            "flags": 0,
+            "valueAtoms": "239000",
+            "branches": [
+              "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+            ],
+            "paths": [
+              [
+                0
+              ]
+            ]
+          }
+        ]
+      },
+      "expectedStage": "signature",
+      "expectedReason": "signature verification failed"
+    },
+    {
+      "name": "changed-chain-id",
+      "wire": "07000000010000000000000001000200222222222222222222222222222222222222222222222222222222222222222200000000ffffffff0100012220e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13bb000140a7ad0531d68563341c7ab003a874b17ada6ee53a7c04fc4fc1e4670df8005357766c621cd16fce139876d13367a4045f1f62347b38d68beb3b29fc640969ed420060ea000000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b0101000098a5030000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b010100",
+      "context": {
+        "chainId": "100102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "owner": "e493dbf1c10d80f3581e4904930b1404cc6c13900ee0758474fa94abe8c4cd13",
+        "coin": {
+          "flags": 0,
+          "valueAtoms": "300000",
+          "branches": [
+            "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+          ],
+          "paths": [
+            [
+              0
+            ]
+          ]
+        },
+        "coinWire": "00e093040000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b010100",
+        "outputs": [
+          {
+            "flags": 0,
+            "valueAtoms": "60000",
+            "branches": [
+              "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+            ],
+            "paths": [
+              [
+                0
+              ]
+            ]
+          },
+          {
+            "flags": 0,
+            "valueAtoms": "239000",
+            "branches": [
+              "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+            ],
+            "paths": [
+              [
+                0
+              ]
+            ]
+          }
+        ]
+      },
+      "expectedStage": "signature",
+      "expectedReason": "signature verification failed"
+    },
+    {
+      "name": "changed-owner",
+      "wire": "07000000010000000000000001000200222222222222222222222222222222222222222222222222222222222222222200000000ffffffff0100012220f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9bb000140a7ad0531d68563341c7ab003a874b17ada6ee53a7c04fc4fc1e4670df8005357766c621cd16fce139876d13367a4045f1f62347b38d68beb3b29fc640969ed420060ea000000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b0101000098a5030000000000016953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b010100",
+      "context": {
+        "chainId": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+        "owner": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+        "coin": {
+          "flags": 0,
+          "valueAtoms": "300000",
+          "branches": [
+            "d0c0707d9e50c9c3aedc8409e2df04bb920a3d9f669e80a36d2f68ea1e3f0d2a"
+          ],
+          "paths": [
+            [
+              0
+            ]
+          ]
+        },
+        "coinWire": "00e09304000000000001d0c0707d9e50c9c3aedc8409e2df04bb920a3d9f669e80a36d2f68ea1e3f0d2a010100",
+        "outputs": [
+          {
+            "flags": 0,
+            "valueAtoms": "60000",
+            "branches": [
+              "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+            ],
+            "paths": [
+              [
+                0
+              ]
+            ]
+          },
+          {
+            "flags": 0,
+            "valueAtoms": "239000",
+            "branches": [
+              "6953c4a17eb69137dc4a1ade0b970d9a27067453d4981aea06ed398b876b892b"
+            ],
+            "paths": [
+              [
+                0
+              ]
+            ]
+          }
+        ]
+      },
+      "expectedStage": "signature",
+      "expectedReason": "signature verification failed"
+    }
+  ]
+}

@@ -3,7 +3,7 @@
 // Feature entries: ./integer ./script ./script-num ./base58 ./base58check
 // ./varint ./reader ./convert-bits ./base32 ./encoding-error ./constructors
 // ./bech32 ./cashaddr ./address ./backend ./keys ./hd ./transaction ./sign
-// ./block ./curve.
+// ./block ./curve ./lotus-v2.
 
 export const PACKAGE_NAME = '@frank/nakamoto'
 
@@ -335,3 +335,6 @@ export type {
   PsbtWitnessUtxo,
   SignPsbtOptions,
 } from './psbt.js'
+
+// Lotus v2 native chain objects (also the ./lotus-v2 entry).
+export * from './lotus-v2.js'

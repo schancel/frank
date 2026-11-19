@@ -8,7 +8,7 @@
  * `nodeSuiteReady`, which skips them as NOT RUN, or fails them under FRANK_REQUIRE_NODES=1.
  *
  * The faucet is a public test key whose native coinbases the node mines; `fund` pays from a
- * matured coinbase with a native v7 transaction built by Frank's own codec and mines a block.
+ * matured coinbase with a native v7 transaction built through @frank/nakamoto and mines a block.
  */
 import { spawn, spawnSync, type ChildProcess } from "child_process";
 import { existsSync, mkdtempSync, rmSync } from "fs";
@@ -18,17 +18,13 @@ import { join } from "path";
 
 import type { NodeBinary } from "../node-binaries.testutil";
 import {
-  branchLeaf,
-  decodeAddress,
-  encodeKeyhashAddress,
-  keyhashOf,
-  keyhashProgram,
-  nativeTransactionSize,
+  keyhashPaymentSize,
+  lotusV2AddressRoot,
+  lotusV2KeyhashDestination,
+  lotusV2XOnlyKey,
   rpcTxid,
-  signNativeTransaction,
-  toHex,
-  xOnlyPublicKey,
-} from "./native";
+  signKeyhashPayment,
+} from "./network";
 
 type Env = Record<string, string | undefined>;
 
@@ -135,9 +131,10 @@ export async function startLotusRegtest(lotusd: string): Promise<LotusRegtest> {
     // Faucet: public test scalar 7. Its coinbases are the only funds on this chain.
     const faucetSecret = new Uint8Array(32);
     faucetSecret[31] = 7;
-    const faucetKeyhash = keyhashOf(xOnlyPublicKey(faucetSecret));
-    const faucetAddress = encodeKeyhashAddress("regtest", faucetKeyhash);
-    const faucetRoot = toHex(branchLeaf(keyhashProgram(faucetKeyhash)));
+    const { address: faucetAddress, root: faucetRoot } = lotusV2KeyhashDestination(
+      "regtest",
+      lotusV2XOnlyKey(faucetSecret)
+    );
     const used = new Set<string>();
     const waitIndexed = async () => {
       const height = await rpc<number>("getblockcount");
@@ -183,12 +180,12 @@ export async function startLotusRegtest(lotusd: string): Promise<LotusRegtest> {
         );
       if (!coin) throw new Error("The faucet has no matured coinbase left");
       used.add(`${coin.txid}:${coin.out_idx}`);
-      const fee = BigInt(nativeTransactionSize(1, 2));
-      const tx = signNativeTransaction({
+      const fee = BigInt(keyhashPaymentSize(1, 2));
+      const tx = signKeyhashPayment({
         network: "regtest",
         inputs: [{ txid: coin.txid, outIdx: coin.out_idx, value: BigInt(coin.value), secret: faucetSecret }],
         outputs: [
-          { value: atoms, root: decodeAddress("regtest", address).root },
+          { value: atoms, root: lotusV2AddressRoot("regtest", address) },
           { value: BigInt(coin.value) - atoms - fee, root: faucetRoot },
         ],
       });

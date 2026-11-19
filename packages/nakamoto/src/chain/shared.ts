@@ -126,6 +126,7 @@ const HD_TEST_PRIV = 0x04358394
 export function chain(
   fields: Omit<
     ChainDescriptor,
+    | 'format'
     | 'protocolId'
     | 'proxyFamily'
     | 'allowedProxyCapabilities'
@@ -141,6 +142,7 @@ export function chain(
   const protocolId = fields.protocolId ?? `${fields.family}-${fields.network}`
   return Object.freeze({
     ...fields,
+    format: 'bitcoin' as const,
     lotusNetChar: fields.lotusNetChar ?? null,
     merkleOddRule: fields.merkleOddRule ?? 'duplicate-last',
     protocolId,

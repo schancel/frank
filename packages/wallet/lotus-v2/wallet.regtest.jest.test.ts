@@ -16,7 +16,7 @@ import { nodeSuiteReady } from "../node-binaries.testutil";
 import { createLotusV2Chain } from "./chain";
 import { chronikLotusV2Indexer, LotusV2BroadcastRefused, type LotusV2Indexer } from "./chronik";
 import { findLotusd, lotusdBinary, startLotusRegtest, type LotusRegtest } from "./lotusd-regtest.testutil";
-import { nativeTransactionSize } from "./native";
+import { keyhashPaymentSize } from "./network";
 import { LotusV2Wallet, memoryLotusV2WalletStore, type LotusV2WalletStore } from "./wallet";
 
 const lotusd = findLotusd();
@@ -81,7 +81,7 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     expect(await indexer.transactionState(sent.txHash)).toBe("pending");
     await node.mine(1);
     expect(await bob.wallet.getBalance()).toBe(3n * XPI);
-    const fee = BigInt(nativeTransactionSize(1, 2));
+    const fee = BigInt(keyhashPaymentSize(1, 2));
     expect(await alice.wallet.getBalance()).toBe(10n * XPI - 3n * XPI - fee);
     expect(alice.wallet.coins().map((coin) => coin.origin)).toEqual(["change"]);
     expect(alice.wallet.pendingSends()).toEqual([]);
@@ -117,7 +117,7 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     await node.mine(1);
     expect(await indexer.transactionState(txid)).toBe("confirmed");
     expect(await bob.wallet.getBalance()).toBe(4n * XPI);
-    expect(await after.getBalance()).toBe(10n * XPI - 4n * XPI - BigInt(nativeTransactionSize(1, 2)));
+    expect(await after.getBalance()).toBe(10n * XPI - 4n * XPI - BigInt(keyhashPaymentSize(1, 2)));
     expect(after.pendingSends()).toEqual([]);
     // Reopening again sends nothing more.
     await open(alice.seed, alice.store);
@@ -174,7 +174,7 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     expect(deviceTwo.pendingSends()).toEqual([]);
     await node.mine(1);
     expect(await bob.wallet.getBalance()).toBe(XPI);
-    const remaining = 2n * XPI - XPI - BigInt(nativeTransactionSize(1, 2));
+    const remaining = 2n * XPI - XPI - BigInt(keyhashPaymentSize(1, 2));
     expect(await deviceOne.getBalance()).toBe(remaining);
     expect(await deviceTwo.getBalance()).toBe(remaining);
   }, 60_000);
@@ -202,7 +202,7 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     await expect(indexer.broadcast(exposed!)).rejects.toBeInstanceOf(LotusV2BroadcastRefused);
     // Settled as mined: the claim is not released, so its coin is never offered again.
     expect(alice.wallet.pendingSends()).toEqual([]);
-    const fee = BigInt(nativeTransactionSize(1, 2));
+    const fee = BigInt(keyhashPaymentSize(1, 2));
     expect(await alice.wallet.getBalance()).toBe(4n * XPI - XPI - fee);
     // The remaining coin pays a second send; nothing spends the first coin again.
     await alice.wallet.sendNative({ recipient, value: XPI });
@@ -225,7 +225,7 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     // Once mature the node accepts the spend.
     await miner.wallet.sendNative({ recipient, value: XPI });
     await node.mine(1);
-    expect(await miner.wallet.getBalance()).toBe(matured - XPI - BigInt(nativeTransactionSize(1, 2)));
+    expect(await miner.wallet.getBalance()).toBe(matured - XPI - BigInt(keyhashPaymentSize(1, 2)));
   }, 120_000);
 
   it("gathers several coins into one send, and refuses a send whose fee is above the reviewed maximum", async () => {
@@ -239,7 +239,7 @@ suite("Lotus v2 wallet on a real regtest node", () => {
       checkpoint: node.checkpoint,
       storeFor: () => memoryLotusV2WalletStore(),
     }).nativeTransfers.estimateLegacyFee!({ wallet: alice.wallet, recipient, value: (5n * XPI) / 2n });
-    const fee = BigInt(nativeTransactionSize(3, 2));
+    const fee = BigInt(keyhashPaymentSize(3, 2));
     expect(quote).toEqual({ totalFee: fee, inputCount: 3, deliveryFee: fee });
     await expect(
       alice.wallet.sendNative({ recipient, value: (5n * XPI) / 2n, maxFee: fee - 1n })

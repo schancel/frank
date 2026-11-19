@@ -329,9 +329,14 @@ export class LotusV2Wallet implements NativeWalletHandle {
    */
   async getNativeTransfers(): Promise<readonly NativeTransferRecord[]> {
     await this.ensureDiscovered();
-    const { sends, pending, receiveIndex } = await this.exclusive(async () => this.state);
+    const { sends, pending, receiveIndex, changeIndex } = await this.exclusive(async () => this.state);
     const unmined = new Set(pending.map((send) => send.txid));
     const own = new Set(sends.map((send) => send.txid));
+    // A mined send's block, from its change output (a send without change has none to read).
+    const sentHeight = new Map<string, number>();
+    for (let index = 0; index < changeIndex; index++)
+      for (const output of await this.indexer.listOutputs(this.rootAt(1, index)))
+        if (own.has(output.txid)) sentHeight.set(output.txid, output.height);
     const received = new Map<string, { value: bigint; height: number }>();
     for (let index = 0; index <= receiveIndex; index++)
       for (const output of await this.indexer.listOutputs(this.rootAt(0, index))) {
@@ -351,6 +356,7 @@ export class LotusV2Wallet implements NativeWalletHandle {
           fee: BigInt(send.fee),
           recipient: send.recipient,
           state: unmined.has(send.txid) ? "pending" : "confirmed",
+          ...(sentHeight.has(send.txid) ? { height: sentHeight.get(send.txid) } : {}),
           recordedAt: send.recordedAt,
         })
       ),

@@ -208,9 +208,10 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     expect(await bob.wallet.getNativeTransfers()).toEqual([]);
     await node.mine(1);
     await alice.wallet.getBalance();
-    expect((await alice.wallet.getNativeTransfers()).find((row) => row.direction === "sent")).toMatchObject({
-      state: "confirmed",
-    });
+    const mined = (await alice.wallet.getNativeTransfers()).find((row) => row.direction === "sent")!;
+    expect(mined.state).toBe("confirmed");
+    // Its block, read from its change output.
+    expect(mined.height).toBeGreaterThan(node.checkpoint.height);
     const bobRows = await bob.wallet.getNativeTransfers();
     expect(bobRows).toEqual([
       expect.objectContaining({ direction: "received", txid: sent.txHash, value: 2n * XPI, state: "confirmed" }),

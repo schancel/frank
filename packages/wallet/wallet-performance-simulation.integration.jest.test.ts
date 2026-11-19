@@ -1,8 +1,12 @@
 /**
- * INTEGRATION & PERFORMANCE BENCHMARK: Real-world wallet latency, RPC coalescing,
- * construction on spend, high-volume inbox decryption, and journal scaling.
+ * INTEGRATION & PERFORMANCE BENCHMARK: wallet open, RPC coalescing, paid sends, high-volume
+ * inbox decryption, and journal scaling. The budgets are machine independent: counted work
+ * (node requests, signatures, transactions, relay requests), exact where it is deterministic,
+ * and process CPU time. Wall-clock time is logged for reading but never asserted, because on a
+ * shared CI runner it measures the runner's load as much as the wallet.
  */
 import { performance } from 'node:perf_hooks'
+import { SigningKey } from 'ethers'
 import {
   chainHttpRequests,
   fixture,
@@ -48,6 +52,30 @@ function percentile(sortedMs: readonly number[], p: number): number {
   return sortedMs[idx]
 }
 
+/** How many requests of each method, keyed in sorted order so they compare and print stably. */
+function countByMethod(methods: readonly string[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const method of [...methods].sort()) counts[method] = (counts[method] ?? 0) + 1
+  return counts
+}
+
+/**
+ * Wall and process CPU (user + system) time of `run`, in ms. CPU is what these budgets assert:
+ * it counts only the work this process did, so a busy or descheduled runner does not inflate
+ * it. Wall is printed beside it for reading, never asserted.
+ */
+async function measured<T>(run: () => Promise<T> | T): Promise<{ value: T; wallMs: number; cpuMs: number }> {
+  const cpuBefore = process.cpuUsage()
+  const t0 = performance.now()
+  const value = await run()
+  const wallMs = performance.now() - t0
+  const cpu = process.cpuUsage(cpuBefore)
+  return { value, wallMs, cpuMs: (cpu.user + cpu.system) / 1000 }
+}
+
+const timing = ({ wallMs, cpuMs }: { wallMs: number; cpuMs: number }) =>
+  `CPU ${cpuMs.toFixed(1)} ms, wall ${wallMs.toFixed(1)} ms (reported only)`
+
 describe('Wallet real-world performance & reliability simulation (integration)', () => {
   jest.setTimeout(60_000)
 
@@ -63,17 +91,18 @@ describe('Wallet real-world performance & reliability simulation (integration)',
   })
 
   afterEach(async () => {
+    jest.restoreAllMocks()
     if (f) {
       await f.close()
       f = undefined
     }
   })
 
-  it('opens two real custody wallets and coalesces concurrent balance reads within latency budget', async () => {
-    const openStart = performance.now()
-    f = await fixture({ subAccountPoolSize: 4 })
-    const openElapsedMs = performance.now() - openStart
-    expect(openElapsedMs).toBeLessThan(1500)
+  it('opens two real custody wallets and coalesces concurrent balance reads within CPU and request budgets', async () => {
+    const open = await measured(() => fixture({ subAccountPoolSize: 4 }))
+    f = open.value
+    // The accounts holding funds that the seed walk finds in this fixture: one balance read each.
+    const FUNDED_ACCOUNTS = 6
     const reads = () => {
       const balance = providerRequests.filter(r => r === 'getBalance').length
       const nonce = providerRequests.filter(r => r === 'getTransactionCount').length
@@ -81,12 +110,11 @@ describe('Wallet real-world performance & reliability simulation (integration)',
       return { balance, nonce }
     }
     const twelveReads = async (wallet: EvmChainWalletHandle) => {
-      const start = performance.now()
-      const balances = await Promise.all(
-        Array.from({ length: 12 }, () => wallet.getBalance()),
+      const timed = await measured(() =>
+        Promise.all(Array.from({ length: 12 }, () => wallet.getBalance())),
       )
-      for (const bal of balances) expect(bal).toBeGreaterThan(0n)
-      return performance.now() - start
+      for (const bal of timed.value) expect(bal).toBeGreaterThan(0n)
+      return timed
     }
 
     // A store never walked (a new or restored device): before its first balance is shown the
@@ -97,34 +125,50 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     await twelveReads(f.alice)
     const first = reads()
     expect(first.nonce).toBe(2 * SEED_DISCOVERY_GAP)
-    expect(first.balance - 2 * SEED_DISCOVERY_GAP).toBeLessThanOrEqual(8)
+    expect(first.balance).toBe(2 * SEED_DISCOVERY_GAP + FUNDED_ACCOUNTS)
 
-    // Coalescing: 12 concurrent calls on a walked wallet collapse into one wave of at most 8
-    // account reads, and the seed is not walked again.
+    // Coalescing: 12 concurrent calls on a walked wallet collapse into one wave of one read per
+    // account the walk found (within the wave limit of 8), and the seed is not walked again.
     f.alice.invalidateBalanceCache!()
     providerRequests.length = 0
-    const balanceElapsedMs = await twelveReads(f.alice)
+    const coalesced = await twelveReads(f.alice)
     const steady = reads()
     expect(steady.nonce).toBe(0)
-    expect(steady.balance).toBeLessThanOrEqual(8)
-    expect(balanceElapsedMs).toBeLessThan(200)
+    expect(steady.balance).toBe(FUNDED_ACCOUNTS)
 
     // The store keeps what the walk found: a reopened wallet's first balance needs no walk.
     await f.alice.close()
     const reopened = (await f.chain.createWallet(roots(0))) as EvmChainWalletHandle
     try {
       providerRequests.length = 0
-      const reopenElapsedMs = await twelveReads(reopened)
+      const reopenedReads = await twelveReads(reopened)
       const again = reads()
       expect(again.nonce).toBe(0)
-      expect(again.balance).toBeLessThanOrEqual(8)
-      expect(reopenElapsedMs).toBeLessThan(200)
+      expect(again.balance).toBe(FUNDED_ACCOUNTS)
+      console.log(
+        `wallet open: ${timing(open)}; twelve coalesced balance reads: ${timing(coalesced)}; ` +
+          `after reopen: ${timing(reopenedReads)}`,
+      )
+      // CPU ceilings: the wall budgets these replaced, kept as they were, since an idle run's CPU
+      // here is about its wall time. Measured on an Apple M-series laptop: open ~150-190 ms, each
+      // wave ~3-5 ms, unchanged with every core saturated. The request counts above are the
+      // tight check.
+      expect(open.cpuMs).toBeLessThan(1500)
+      expect(coalesced.cpuMs).toBeLessThan(200)
+      expect(reopenedReads.cpuMs).toBeLessThan(200)
     } finally {
       await reopened.close()
     }
   })
 
   it('sends paid direct messages without prefunding sender accounts', async () => {
+    // Change amounts carry jitter from Math.random, and they decide which coins later sends
+    // spend and so how much each send asks of the node. A fixed sequence makes that work the
+    // same on every run, so it can be asserted exactly below.
+    let entropy = 1
+    jest
+      .spyOn(Math, 'random')
+      .mockImplementation(() => (entropy = (entropy * 48_271) % 2_147_483_647) / 2_147_483_647)
     f = await fixture({ subAccountPoolSize: 6 })
     installCanonicalDirectory(
       f.alice,
@@ -137,12 +181,16 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     const bobMailbox: InboxRecord[] = []
     mailboxes.set(toHex(f.bob.identity.compressedPubKey), bobMailbox)
 
+    // The work of one send, counted where it leaves the wallet: JSON-RPC calls by method,
+    // signatures, chain HTTP calls and relay requests. These are exact on any machine.
+    const signatures = jest.spyOn(SigningKey.prototype, 'sign')
     const send = async (text: string) => {
       chainHttpRequests.length = 0
       providerBroadcasts.length = 0
       f!.setMailbox(bobMailbox)
       const requestsBefore = f!.requests.length
       const providerRequestsBefore = providerRequests.length
+      const signaturesBefore = signatures.mock.calls.length
       const cpuBefore = process.cpuUsage()
       const t0 = performance.now()
       const sent = await f!.chain.directMessages.send({
@@ -151,14 +199,10 @@ describe('Wallet real-world performance & reliability simulation (integration)',
         items: [{ type: 'text', text }],
         stampValue: STAMP,
       })
-      const elapsed = performance.now() - t0
+      const wallMs = performance.now() - t0
       const cpu = process.cpuUsage(cpuBefore)
       f!.setMailbox(undefined)
       expect(sent.stampValueWei).toBe(STAMP)
-      // Every message spends coins the wallet already holds, with zero on-the-spot funding txs
-      expect(
-        chainHttpRequests.filter(r => r === 'submitRawTransaction'),
-      ).toHaveLength(0)
       // The bundle is what the wallet broadcast plus what the relay broadcast on storing the
       // message (its carried payments, which reach the chain only after that).
       const relayed = offlineChain.relayBroadcasts
@@ -167,11 +211,18 @@ describe('Wallet real-world performance & reliability simulation (integration)',
             .reduce((n, request) => n + restoreCanonicalRequest(request).parts.transactions.length, 0)
         : 0
       return {
-        elapsed, transactions: providerBroadcasts.length + relayed,
-        cpuUserMs: cpu.user / 1000, cpuSystemMs: cpu.system / 1000,
-        providerRequests: providerRequests.length - providerRequestsBefore,
-        chainRequests: chainHttpRequests.length,
-        relayRequests: f!.requests.length - requestsBefore,
+        wallMs,
+        cpuUserMs: cpu.user / 1000,
+        cpuSystemMs: cpu.system / 1000,
+        cpuMs: (cpu.user + cpu.system) / 1000,
+        work: {
+          transactions: providerBroadcasts.length + relayed,
+          signatures: signatures.mock.calls.length - signaturesBefore,
+          provider: countByMethod(providerRequests.slice(providerRequestsBefore)),
+          // Every message spends coins the wallet already holds: no on-the-spot funding.
+          chain: countByMethod(chainHttpRequests),
+          relayRequests: f!.requests.length - requestsBefore,
+        },
       }
     }
 
@@ -182,40 +233,83 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     // sub-account pool this budget was first written for: it is bounded by its chain work here
     // and not timed.
     const MAX_BUNDLE = 1 + 20 // the fixture policy's maxChangeOutputs
-    let distributing = 0
+    const distribution: number[] = []
     for (;;) {
-      const { transactions } = await send(`distribute-${distributing}`)
-      expect(transactions).toBeLessThanOrEqual(MAX_BUNDLE)
-      if (transactions < MAX_BUNDLE) break
-      distributing++
-      expect(distributing).toBeLessThanOrEqual(3)
+      const { work } = await send(`distribute-${distribution.length}`)
+      expect(work.chain).toEqual({})
+      expect(work.transactions).toBeLessThanOrEqual(MAX_BUNDLE)
+      distribution.push(work.transactions)
+      if (work.transactions < MAX_BUNDLE || distribution.length > 3) break
     }
 
-    // Now measure critical-path send latency across sequential paid messages
-    const sendLatenciesMs: number[] = []
-    const sendDiagnostics: string[] = []
+    // Then sequential paid messages: their counted work and their CPU time are the budget.
     const messageCount = 5
-    for (let i = 0; i < messageCount; i++) {
-      const sample = await send(`fast-message-${i}`)
-      sendLatenciesMs.push(sample.elapsed)
-      sendDiagnostics.push(
-        `sample ${i + 1}: wall ${sample.elapsed.toFixed(1)} ms, CPU user ${sample.cpuUserMs.toFixed(1)} ms, system ${sample.cpuSystemMs.toFixed(1)} ms, transactions ${sample.transactions}, provider requests ${sample.providerRequests}, chain requests ${sample.chainRequests}, relay requests ${sample.relayRequests}`,
-      )
-    }
+    const samples: Awaited<ReturnType<typeof send>>[] = []
+    for (let i = 0; i < messageCount; i++) samples.push(await send(`fast-message-${i}`))
 
-    const sorted = [...sendLatenciesMs].sort((a, b) => a - b)
-    const p50 = percentile(sorted, 50)
-    const p95 = percentile(sorted, 95)
-    // The measured numbers stay in the CI log, so a margin can be read from a passing run.
+    const sortedWall = samples.map(s => s.wallMs).sort((a, b) => a - b)
+    const sortedCpu = samples.map(s => s.cpuMs).sort((a, b) => a - b)
+    const cpuMedianMs = percentile(sortedCpu, 50)
+    const cpuMaxMs = sortedCpu[sortedCpu.length - 1]
+    // Kept in the CI log so a margin can be read from any run. Wall time is reported only: on a
+    // shared runner it includes time the process was not scheduled at all (one recorded failure
+    // took 786.9 ms of wall for 96.6 ms of CPU), so it measured the runner, not the wallet.
     console.log(
-      `steady paid DM sends: ${sendLatenciesMs.map(ms => ms.toFixed(1)).join(', ')} ms; p50 ${p50.toFixed(1)}, p95 ${p95.toFixed(1)}`,
+      `steady paid DM sends: wall ${samples.map(s => s.wallMs.toFixed(1)).join(', ')} ms ` +
+        `(p50 ${percentile(sortedWall, 50).toFixed(1)}, p95 ${percentile(sortedWall, 95).toFixed(1)}, reported only); ` +
+        `CPU ${samples.map(s => s.cpuMs.toFixed(1)).join(', ')} ms (median ${cpuMedianMs.toFixed(1)}, max ${cpuMaxMs.toFixed(1)})`,
     )
-    // Offline fixture diagnostics, not a network SLA. Process-wide CPU brackets the unchanged
-    // wall timer; CPU versus wall alone cannot prove cause, and unseeded work remains nonidentical.
-    console.log(`offline fixture paid DM diagnostics: ${sendDiagnostics.join('; ')}`)
-    expect(p50).toBeLessThan(110)
-    expect(p95).toBeLessThan(180)
-    expect(bobMailbox).toHaveLength(distributing + 1 + messageCount)
+    console.log(
+      `offline fixture paid DM diagnostics: ${samples
+        .map((s, i) => `sample ${i + 1}: wall ${s.wallMs.toFixed(1)} ms, CPU user ${s.cpuUserMs.toFixed(1)} ms, system ${s.cpuSystemMs.toFixed(1)} ms, work ${JSON.stringify(s.work)}`)
+        .join('; ')}`,
+    )
+
+    // Counted work, exact. With the entropy seeded above the sequence of sends is the same on
+    // every machine, so any change in what a send asks of the node, signs, or sends to the relay
+    // shows here first. The deposit is spread by two full bundles and one of five; the first two
+    // measured messages still carry change transactions, and from the third on a send is one
+    // payment.
+    expect(distribution).toEqual([MAX_BUNDLE, MAX_BUNDLE, 5])
+    const steady = {
+      transactions: 1,
+      signatures: 1,
+      provider: { getBalance: 6, getBlock: 2, getBlockNumber: 2, getTransactionCount: 10, getTransactionReceipt: 2 },
+      chain: {},
+      relayRequests: 1,
+    }
+    expect(samples.map(s => s.work)).toEqual([
+      {
+        transactions: 3,
+        signatures: 3,
+        provider: { broadcastTransaction: 2, getBalance: 12, getBlock: 6, getBlockNumber: 5, getTransactionCount: 18, getTransactionReceipt: 6 },
+        chain: {},
+        relayRequests: 1,
+      },
+      {
+        transactions: 2,
+        signatures: 2,
+        provider: { broadcastTransaction: 1, getBalance: 10, getBlock: 4, getBlockNumber: 4, getTransactionCount: 16, getTransactionReceipt: 4 },
+        chain: {},
+        relayRequests: 1,
+      },
+      steady,
+      steady,
+      steady,
+    ])
+
+    // CPU budget: process user + system time across the awaited send, which does not grow when
+    // the runner is busy or the process is descheduled. Measured before these limits were set,
+    // over 58 ubuntu-latest runs of this job (same five sends, entropy not yet seeded): median
+    // 41-89 ms, max 69-155 ms per run, including the five runs whose wall-clock gate failed
+    // (wall up to 786.9 ms). On an Apple M-series laptop: median ~35-41 ms, max ~65-76 ms, and
+    // the same with 36 busy-loop processes saturating its 18 cores (wall then up to 203 ms).
+    // The limits are about twice the worst CI value: runner variance stays under them, and a
+    // send needing roughly double the CPU fails. Extra requests, signatures or transactions are
+    // caught by the exact counts above, not by these.
+    expect(cpuMedianMs).toBeLessThan(170)
+    expect(cpuMaxMs).toBeLessThan(300)
+    expect(bobMailbox).toHaveLength(distribution.length + messageCount)
   })
 
   it('decrypts, authenticates directory admission, and verifies stamps for a 20-message inbox batch within budget', async () => {
@@ -249,16 +343,21 @@ describe('Wallet real-world performance & reliability simulation (integration)',
     }
     expect(bobMailbox).toHaveLength(batchSize)
 
-    const pollStart = performance.now()
-    const received = await f.chain.directMessages.fetchSince({
-      wallet: f.bob,
-      sinceMs: 0,
-    })
-    const pollElapsedMs = performance.now() - pollStart
+    providerRequests.length = 0
+    chainHttpRequests.length = 0
+    const poll = await measured(() =>
+      f!.chain.directMessages.fetchSince({ wallet: f!.bob, sinceMs: 0 }),
+    )
+    const pollWork = { provider: countByMethod(providerRequests), chain: countByMethod(chainHttpRequests) }
+    console.log(`20-message inbox poll: ${timing(poll)}; work ${JSON.stringify(pollWork)}`)
 
-    expect(received).toHaveLength(batchSize)
-    const perMessageMs = pollElapsedMs / batchSize
-    expect(perMessageMs).toBeLessThan(55)
+    expect(poll.value).toHaveLength(batchSize)
+    // Stamps are verified from the transactions the messages carry: the poll asks the node
+    // nothing.
+    expect(pollWork).toEqual({ provider: {}, chain: {} })
+    // CPU ceiling per message: the wall budget this replaced, kept as it was. Measured on an
+    // Apple M-series laptop: ~8-10 ms per message, unchanged with every core saturated.
+    expect(poll.cpuMs / batchSize).toBeLessThan(55)
   })
 
   it('scales EvmNativeOperationJournal reservation queries in sub-millisecond time across 100 operations', async () => {
@@ -309,15 +408,20 @@ describe('Wallet real-world performance & reliability simulation (integration)',
         }
       }
 
-      const queryStart = performance.now()
-      for (let q = 0; q < 200; q++) {
-        expect(journal.referencesSpendIndex(85)).toBe(true)
-        expect(journal.referencesSpendIndex(10)).toBe(false)
-        expect(journal.canSelect(addresses[85], 0)).toBe(false)
-        expect(journal.canSelect(addresses[10], 0)).toBe(true)
-      }
-      const queryElapsedMs = performance.now() - queryStart
-      expect(queryElapsedMs).toBeLessThan(50)
+      const queries = await measured(() => {
+        for (let q = 0; q < 200; q++) {
+          expect(journal.referencesSpendIndex(85)).toBe(true)
+          expect(journal.referencesSpendIndex(10)).toBe(false)
+          expect(journal.canSelect(addresses[85], 0)).toBe(false)
+          expect(journal.canSelect(addresses[10], 0)).toBe(true)
+        }
+      })
+      console.log(`800 journal reservation queries: ${timing(queries)}`)
+      // CPU ceiling for 800 queries, under a quarter of a millisecond each. Process CPU here
+      // includes the garbage collector's helper threads, so it runs above wall: ~15-17 ms on an
+      // Apple M-series laptop (wall ~11 ms), and CI is about 2.7x slower per core. A scan that
+      // grew with the journal's history would exceed it.
+      expect(queries.cpuMs).toBeLessThan(200)
     } finally {
       await journal.Close()
       await rm(root, { recursive: true, force: true })

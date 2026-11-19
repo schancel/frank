@@ -121,8 +121,8 @@ jobs:
           yarn workspace @frank/contracts test --ci --runInBand
           yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts
 
-  # Its own job, so it runs beside wallet-monad-chain instead of lengthening it, and so the
-  # latency budgets are measured without other jest workers competing for the CPU.
+  # Its own job, so it runs beside wallet-monad-chain instead of lengthening it. Its budgets are
+  # counted work and CPU time, not wall-clock latency, so a busy shared runner does not fail it.
   wallet-budgets:
     runs-on: ubuntu-latest
     steps:
@@ -131,7 +131,7 @@ jobs:
         with:
           node-version: "26"
       - run: yarn install
-      - name: Wallet latency and request budgets
+      - name: Wallet CPU and request budgets
         run: yarn workspace @frank/wallet test --ci --runInBand wallet-performance-simulation.integration.jest.test.ts
 
   bot-demo-suites:

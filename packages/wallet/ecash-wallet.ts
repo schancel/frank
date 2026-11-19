@@ -21,6 +21,7 @@ import type {
   XecHtlcSpend,
   XecHtlcTerms,
 } from "./ecash-htlc";
+import { isXecHtlcLockOperationId } from "./ecash-htlc";
 import { validateEcashStealthReceipt } from "./ecash-stealth";
 import type {
   EcashStealthDerivation,
@@ -382,6 +383,8 @@ export class EcashWallet implements NativeWalletHandle {
   readonly chainUtxoPool?: ChainUtxoPool;
   private readonly nativeAttemptKey: string;
   private balanceRefresh: Promise<bigint> | undefined;
+  /** Where the next balance refresh resumes reconciling open operations. */
+  private reconcileCursor = 0;
   /** Derived in-memory display projection; never used by selection or signing. */
   private balanceObservation: EcashBalanceObservation | undefined;
 
@@ -1237,6 +1240,55 @@ export class EcashWallet implements NativeWalletHandle {
     );
   }
 
+  /**
+   * Part of the ordinary balance refresh: reads what the chain says of up to
+   * ECASH_RECONCILE_PER_REFRESH exposed or submitted operations (the next ones each time), so a
+   * send that landed is confirmed, and one another device's final spend made impossible is
+   * marked conflicted, without a restart. Chain reads only: nothing is signed or broadcast. A
+   * failed read leaves that operation as it was, for the next refresh.
+   */
+  private async reconcileOpenOperations(): Promise<void> {
+    const open = this.loadLedger().operations.filter(
+      (operation) =>
+        operation.state === "exposed" || operation.state === "submitted"
+    );
+    if (open.length === 0) return;
+    const count = Math.min(open.length, ECASH_RECONCILE_PER_REFRESH);
+    const start = this.reconcileCursor % open.length;
+    this.reconcileCursor = start + count;
+    for (let i = 0; i < count; i++)
+      await this.reconcileNativeOperation(
+        open[(start + i) % open.length].operationId
+      ).catch(() => undefined);
+  }
+
+  /**
+   * What is known of a transaction this wallet signed. The chain's answer when it has one; when
+   * the chain does not know it, "failed" if it is an attempt that can never land: an operation's
+   * conflicted attempt (its current one, or an earlier one since retried with fresh inputs).
+   * An exposed or submitted operation it belongs to is reconciled first, so the conflict is
+   * found when it is asked about. Otherwise "unknown".
+   */
+  async getNativeTransactionStatus(
+    transaction: ChainTransaction
+  ): Promise<"confirmed" | "failed" | "pending" | "unknown"> {
+    const status = await this.getTransactionStatus(transaction);
+    if (status !== "unknown") return status;
+    const txid = transaction.txHash;
+    const operation = this.loadLedger().operations.find(
+      (item) =>
+        item.transactions[0].txid === txid ||
+        item.conflictedAttempts?.some((attempt) => attempt.txid === txid)
+    );
+    if (operation === undefined) return "unknown";
+    if (operation.transactions[0].txid !== txid) return "failed";
+    const current = await this.reconcileNativeOperation(operation.operationId);
+    if (current.transactions[0].txid !== txid) return "failed";
+    if (current.state === "conflicted") return "failed";
+    if (current.state === "confirmed") return "confirmed";
+    return "unknown";
+  }
+
   private async finalConflict(
     operation: EcashNativeOperation
   ): Promise<EcashOperationConflict | undefined> {
@@ -1311,6 +1363,7 @@ export class EcashWallet implements NativeWalletHandle {
     if (floor > 0) this.preparationBackend().restoreChangeIndex(floor);
     await this.restoreStealthReceipts();
     await this.backend.sync();
+    await this.reconcileOpenOperations();
     return this.exclusive(() => {
       const ledger = this.loadLedger();
       const excluded = this.exclusions(ledger);
@@ -1501,6 +1554,100 @@ export class EcashWallet implements NativeWalletHandle {
     }
     return this.submitNativeOperation(operation.operationId);
   }
+}
+
+/** At most this many open eCash operations are reconciled per balance refresh. */
+const ECASH_RECONCILE_PER_REFRESH = 8;
+
+/**
+ * One plain eCash send of this device, as its operation journal records it. `pending`: signed,
+ * not yet accepted by the network; `sent`: accepted, not yet in a block; `confirmed`: in a block;
+ * `conflicted`: it did not go through, because another of the account's devices spent one of its
+ * coins (a final spend), so nothing was paid and it can be retried as the same send. A retried
+ * send is `conflicted` until the retry is handed to the network.
+ */
+export interface EcashSend {
+  readonly operationId: string;
+  readonly recipient: string;
+  readonly valueSats: string;
+  readonly feeSats: string;
+  /** The transaction of its current attempt. */
+  readonly txid: string;
+  readonly state: "pending" | "sent" | "confirmed" | "conflicted";
+  /** Transactions of earlier attempts that did not go through, oldest first. */
+  readonly conflictedTxids: readonly string[];
+}
+
+/** The plain-send capability of an eCash wallet: its sends, and an explicit retry of one. */
+export interface EcashSends {
+  readonly chainIdentifier: string;
+  /** This device's plain sends (not swap locks), as recorded; a local read only. */
+  sends(): readonly EcashSend[];
+  /**
+   * Sends a conflicted send again: same recipient, amount and fee ceiling, fresh coins. Only on
+   * the user's explicit request. Repeating it (a second click, or after a restart) hands the
+   * same retry to the network again and never signs a second payment.
+   */
+  retry(operationId: string): Promise<EcashSend>;
+}
+
+function ecashSendOf(operation: EcashNativeOperation): EcashSend | undefined {
+  const retrying =
+    operation.state === "prepared" && operation.conflictedAttempts !== undefined;
+  const state =
+    operation.state === "conflicted" || retrying
+      ? "conflicted"
+      : operation.state === "exposed"
+      ? "pending"
+      : operation.state === "submitted"
+      ? "sent"
+      : operation.state === "confirmed"
+      ? "confirmed"
+      : undefined;
+  // Unexposed or released operations moved nothing: no row.
+  if (state === undefined) return undefined;
+  return {
+    operationId: operation.operationId,
+    recipient: operation.intent.recipient,
+    valueSats: operation.intent.value,
+    feeSats: operation.fee,
+    txid: operation.transactions[0].txid,
+    state,
+    conflictedTxids: (operation.conflictedAttempts ?? []).map(
+      (attempt) => attempt.txid
+    ),
+  };
+}
+
+/** `wallet`'s plain-send capability when it is an eCash wallet, otherwise `undefined`. */
+export function ecashSendsOf(
+  wallet: NativeWalletHandle
+): EcashSends | undefined {
+  if (!(wallet instanceof EcashWallet)) return undefined;
+  const plainSend = (operation: EcashNativeOperation) =>
+    // A swap's lock is shown and retried by its swap, never here.
+    !isXecHtlcLockOperationId(operation.operationId);
+  return Object.freeze({
+    chainIdentifier: wallet.chainIdentifier,
+    sends: () =>
+      wallet
+        .getEcashOperations()
+        .filter(plainSend)
+        .flatMap((operation) => ecashSendOf(operation) ?? []),
+    async retry(operationId: string) {
+      const operation = wallet
+        .getEcashOperations()
+        .find((item) => item.operationId === operationId);
+      if (operation === undefined || !plainSend(operation))
+        throw new Error("Unknown eCash send");
+      await wallet.retryConflictedNativeOperation(operationId);
+      await wallet.submitNativeOperation(operationId);
+      const sent = wallet
+        .getEcashOperations()
+        .find((item) => item.operationId === operationId)!;
+      return ecashSendOf(sent)!;
+    },
+  });
 }
 
 /** The per-swap eCash HTLC public-key capability of a wallet: public keys only, never secrets. */

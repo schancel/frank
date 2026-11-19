@@ -39,8 +39,10 @@ suite('two devices of one eCash seed spend the same coin on a real xec-regtest n
       /device 2 reconciled its operation as conflicted by \w+/,
       /device 2 restarted keeps the conflicted state and never rebroadcasts it/,
       /device 2 retried the same intent from fresh inputs; the payee got each payment exactly once/,
+      /a plain send that lost the race is found conflicted by the balance refresh; its txid reads failed/,
+      /two Retry clicks sent the plain send once more, the same intent; the payee got it exactly once/,
     ])
       expect(checks.some(line => expected.test(line))).toBe(true)
-    expect(output).toMatch(/eCash input-conflict regtest: OK \(5 checks\)/)
+    expect(output).toMatch(/eCash input-conflict regtest: OK \(7 checks\)/)
   }, 300_000)
 })

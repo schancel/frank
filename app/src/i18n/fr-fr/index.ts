@@ -1740,6 +1740,21 @@ export const rawFrFR = {
     unableCopyAddress: 'Impossible de copier l’adresse Monad',
   },
   walletHistory: {
+    ecashSend: {
+      to: 'Envoyé à',
+      status: {
+        pending: 'En attente',
+        sent: 'Envoyé',
+        confirmed: 'Confirmé',
+        conflicted: "N'a pas abouti",
+      },
+      conflicted:
+        "N'a pas abouti : un autre de vos appareils a dépensé les mêmes pièces. Rien n'a été payé.",
+      retry: 'Réessayer',
+      retryNote:
+        "Le renvoie à la même adresse, pour le même montant, depuis d'autres pièces.",
+      retryFailed: "L'envoi n'a pas pu être réessayé pour le moment.",
+    },
     transfers: 'Transferts',
     to: 'À',
     contract: 'Contrat',

@@ -44,6 +44,10 @@ const {
   TESTNET_NEGOTIATION_POLICY,
 } = require('@frank/swap-protocol/src/negotiation')
 const { encodeSignedSwapEvent } = require('@frank/swap-protocol/src')
+const {
+  fixtureAccept,
+  fixtureOfferFields,
+} = require('@frank/swap-protocol/src/negotiation-fixtures.testutil')
 const { activeChain, setActiveChain } = require('@frank/wallet/chain')
 const { messagingStateOwner } = require('../utils/messaging-state')
 const {
@@ -165,11 +169,11 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     }
     const offerRes = await buildNegotiationOffer(
       context,
-      {
+      fixtureOfferFields({
         xecPrincipal: 25_000n,
         evmPrincipal: 1_000_000_000_000_000n,
         expiry: 3_000_000_000n,
-      },
+      }),
       async (d: Uint8Array) => new Uint8Array(aliceId.signHash(Buffer.from(d))),
     )
     const offerBytes = encodeSignedSwapEvent(offerRes.value).value
@@ -177,7 +181,7 @@ describe('SignedNegotiationCard principal execution & recovery flow (S7, S8)', (
     const acceptRes = await buildNegotiationResponse(
       context,
       offerBytes,
-      'accept',
+      fixtureAccept(),
       async (d: Uint8Array) => new Uint8Array(bobId.signHash(Buffer.from(d))),
     )
     const acceptBytes = encodeSignedSwapEvent(acceptRes.value).value

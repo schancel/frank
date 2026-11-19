@@ -11,6 +11,7 @@ import {
   type NativeWalletHandle,
   type RelayUtxoChain,
 } from '@frank/wallet/chain'
+import { xecHtlcKeysOf, type XecHtlcKeys } from '@frank/wallet/ecash-wallet'
 import { accountSession } from './session'
 
 export interface OpenUtxoWallet {
@@ -67,6 +68,15 @@ export function openUtxoWallet(
     void relayChain.close().catch(() => undefined)
   })
   return opening
+}
+
+/** The per-swap HTLC key capability of the account's wallet on an eCash chain. */
+export async function openXecHtlcKeys(
+  chainIdentifier: string,
+): Promise<XecHtlcKeys> {
+  const keys = xecHtlcKeysOf((await openUtxoWallet(chainIdentifier)).wallet)
+  if (!keys) throw new Error('eCash HTLC keys are unavailable for this wallet')
+  return keys
 }
 
 /** The wallets of the current account that are already open. Opens nothing. */

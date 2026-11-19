@@ -8,6 +8,10 @@ import {
 } from '../negotiation'
 import { encodeSignedSwapEvent, type SwapResult } from '../index'
 import {
+  fixtureAccept,
+  fixtureOfferFields,
+} from '../negotiation-fixtures.testutil'
+import {
   NegotiationJournal,
   inspectNegotiationJournalRecord,
   type NegotiationJournalAdmission,
@@ -85,11 +89,7 @@ export async function signed(index = 0) {
       must(
         await buildNegotiationOffer(
           context(index),
-          {
-            xecPrincipal: 12345n,
-            evmPrincipal: 1000000000000000001n,
-            expiry: 2000000000n,
-          },
+          fixtureOfferFields(),
           sign(1),
         ),
       ),
@@ -101,7 +101,7 @@ export async function signed(index = 0) {
         await buildNegotiationResponse(
           context(index),
           first,
-          'accept',
+          fixtureAccept(),
           sign(2),
         ),
       ),

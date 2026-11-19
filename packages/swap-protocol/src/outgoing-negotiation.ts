@@ -10,13 +10,17 @@ import {
   buildNegotiationOffer,
   buildNegotiationResponse,
   decodeNegotiationEventStandalone,
-  encodeOfferPayload,
   negotiationIdentityKeyId,
+  negotiationLockWindow,
   negotiationTermsHash,
+  offerSwapIdTranscript,
+  validateOfferFields,
   TESTNET_NEGOTIATION_POLICY,
+  type AcceptFields,
   type NegotiationContext,
   type NegotiationDigestSigner,
   type NegotiationEvent,
+  type OfferFields,
 } from './negotiation'
 import { encodeSignedSwapEvent, type SwapResult } from './index'
 
@@ -30,16 +34,16 @@ const checkedBytes = (value: unknown, length: number): Uint8Array => {
     throw new Error('Invalid local intent bytes')
   return new Uint8Array(value)
 }
+const LOCAL_INTENT_LABEL = 'frank/swap-negotiation-local-intent/v2'
 export type LocalNegotiationIntent = {
   readonly context: NegotiationContext
 } & (
-  | {
-      readonly action: 'offer'
-      readonly xecPrincipal: bigint
-      readonly evmPrincipal: bigint
-      readonly expiry: bigint
-    }
-  | { readonly action: 'accept' | 'reject'; readonly offerBytes: Uint8Array }
+  | ({ readonly action: 'offer' } & OfferFields)
+  | ({
+      readonly action: 'accept'
+      readonly offerBytes: Uint8Array
+    } & AcceptFields)
+  | { readonly action: 'reject'; readonly offerBytes: Uint8Array }
 )
 export interface NegotiationClaim {
   readonly version: 1
@@ -84,6 +88,11 @@ export interface NegotiationAuthorization {
   assertCurrent(): void
   intentKey(transcript: Uint8Array): string
   messageId(transcript: Uint8Array): string
+  /**
+   * The 32-byte keyed hash of an offer swapId transcript under this account's private salt
+   * (`deriveOfferSwapId`). An offer is signed only for the swapId this returns.
+   */
+  offerSwapId(transcript: Uint8Array): Uint8Array
   assertAdmittedOffer(
     context: NegotiationContext,
     offerBytes: Uint8Array,
@@ -95,6 +104,19 @@ function uint256(value: bigint): Uint8Array {
   if (value <= 0n || value >= 1n << 256n)
     throw new Error('Invalid EVM principal')
   return fromHex(value.toString(16).padStart(64, '0'))
+}
+function offerFieldsOf(intent: OfferFields): OfferFields {
+  return {
+    xecPrincipal: intent.xecPrincipal,
+    evmPrincipal: intent.evmPrincipal,
+    expiry: intent.expiry,
+    hashLock: intent.hashLock,
+    xecRefundPublicKey: intent.xecRefundPublicKey,
+    evmRecipient: intent.evmRecipient,
+    xecRefundTime: intent.xecRefundTime,
+    evmExpiry: intent.evmExpiry,
+    evmHtlcContract: intent.evmHtlcContract,
+  }
 }
 function validate(intent: LocalNegotiationIntent): void {
   const { context } = intent
@@ -108,27 +130,18 @@ function validate(intent: LocalNegotiationIntent): void {
     throw new Error('Unsupported negotiation policy')
   checkedBytes(context.swapId, 32)
   if (intent.action === 'offer')
-    unwrap(
-      encodeOfferPayload(
-        {
-          payloadVersion: 1,
-          pairPolicyVersion: 1,
-          conversationId: context.conversationId,
-          parties: context.parties,
-          xecChainIdentifier: context.policy.xecChainIdentifier,
-          evmChainIdentifier: context.policy.evmChainIdentifier,
-          xecPrincipal: intent.xecPrincipal,
-          evmPrincipal: intent.evmPrincipal,
-          expiry: intent.expiry,
-        },
-        context,
-      ),
+    unwrap(validateOfferFields(context, offerFieldsOf(intent)))
+  else {
+    if (
+      unwrap(decodeNegotiationEventStandalone(intent.offerBytes, context))
+        .kind !== 'offer'
     )
-  else if (
-    unwrap(decodeNegotiationEventStandalone(intent.offerBytes, context))
-      .kind !== 'offer'
-  )
-    throw new Error('Response requires signed offer')
+      throw new Error('Response requires signed offer')
+    if (intent.action === 'accept') {
+      checkedBytes(intent.xecClaimPublicKey, 33)
+      checkedBytes(intent.evmSender, 20)
+    }
+  }
 }
 export function encodeLocalNegotiationIntent(
   intent: LocalNegotiationIntent,
@@ -137,10 +150,22 @@ export function encodeLocalNegotiationIntent(
   const { context: c } = intent
   const detail: Encodable =
     intent.action === 'offer'
-      ? [intent.xecPrincipal, uint256(intent.evmPrincipal), intent.expiry]
+      ? [
+          intent.xecPrincipal,
+          uint256(intent.evmPrincipal),
+          intent.expiry,
+          intent.hashLock,
+          intent.xecRefundPublicKey,
+          intent.evmRecipient,
+          intent.xecRefundTime,
+          intent.evmExpiry,
+          intent.evmHtlcContract,
+        ]
+      : intent.action === 'accept'
+      ? [intent.offerBytes, intent.xecClaimPublicKey, intent.evmSender]
       : [intent.offerBytes]
   const bytes = encodeCanonical([
-    'frank/swap-negotiation-local-intent/v1',
+    LOCAL_INTENT_LABEL,
     ['offer', 'accept', 'reject'].indexOf(intent.action),
     c.swapId,
     c.conversationId,
@@ -164,7 +189,7 @@ export function decodeLocalNegotiationIntent(
   if (
     !Array.isArray(v) ||
     v.length !== 9 ||
-    v[0] !== 'frank/swap-negotiation-local-intent/v1' ||
+    v[0] !== LOCAL_INTENT_LABEL ||
     ![0n, 1n, 2n].includes(v[1] as bigint) ||
     !Array.isArray(v[4]) ||
     v[4].length !== 2 ||
@@ -181,27 +206,42 @@ export function decodeLocalNegotiationIntent(
     policy: TESTNET_NEGOTIATION_POLICY,
   }
   const detail = v[8]
+  const integer = (value: unknown): bigint => {
+    if (typeof value !== 'bigint') throw new Error('Invalid offer intent')
+    return value
+  }
   let intent: LocalNegotiationIntent
   if (v[1] === 0n) {
-    if (
-      detail.length !== 3 ||
-      typeof detail[0] !== 'bigint' ||
-      typeof detail[2] !== 'bigint'
-    )
-      throw new Error('Invalid offer intent')
+    if (detail.length !== 9) throw new Error('Invalid offer intent')
     intent = {
       context,
       action: 'offer',
-      xecPrincipal: detail[0],
+      xecPrincipal: integer(detail[0]),
       evmPrincipal: BigInt('0x' + toHex(checkedBytes(detail[1], 32))),
-      expiry: detail[2],
+      expiry: integer(detail[2]),
+      hashLock: checkedBytes(detail[3], 32),
+      xecRefundPublicKey: checkedBytes(detail[4], 33),
+      evmRecipient: checkedBytes(detail[5], 20),
+      xecRefundTime: integer(detail[6]),
+      evmExpiry: integer(detail[7]),
+      evmHtlcContract: checkedBytes(detail[8], 20),
+    }
+  } else if (v[1] === 1n) {
+    if (detail.length !== 3 || !(detail[0] instanceof Uint8Array))
+      throw new Error('Invalid response intent')
+    intent = {
+      context,
+      action: 'accept',
+      offerBytes: new Uint8Array(detail[0]),
+      xecClaimPublicKey: checkedBytes(detail[1], 33),
+      evmSender: checkedBytes(detail[2], 20),
     }
   } else {
     if (detail.length !== 1 || !(detail[0] instanceof Uint8Array))
       throw new Error('Invalid response intent')
     intent = {
       context,
-      action: v[1] === 1n ? 'accept' : 'reject',
+      action: 'reject',
       offerBytes: new Uint8Array(detail[0]),
     }
   }
@@ -250,6 +290,32 @@ function bind(
       auth.conversationId.replace(/-/g, '')
   )
     throw new Error('Negotiation authorization context changed')
+  // A signs an offer only for the swapId its own account derives from these facts, never one
+  // supplied by a peer or reused from another offer: the swap secret depends on the swapId.
+  if (intent.action === 'offer') {
+    const derived = auth.offerSwapId(
+      unwrap(
+        offerSwapIdTranscript({
+          policy: intent.context.policy,
+          conversationId: intent.context.conversationId,
+          parties: intent.context.parties,
+          xecPrincipal: intent.xecPrincipal,
+          evmPrincipal: intent.evmPrincipal,
+          expiry: intent.expiry,
+          xecRefundTime: intent.xecRefundTime,
+          evmExpiry: intent.evmExpiry,
+          evmRecipient: intent.evmRecipient,
+          evmHtlcContract: intent.evmHtlcContract,
+        }),
+      ),
+    )
+    if (
+      !(derived instanceof Uint8Array) ||
+      derived.length !== 32 ||
+      !equal(intent.context.swapId, derived)
+    )
+      throw new Error('Offer swap ID was not derived by this account')
+  }
   return toHex(unwrap(negotiationIdentityKeyId(auth.publicKey)))
 }
 function claimFor(
@@ -291,13 +357,27 @@ function signedRecord(
   if (event.kind !== intent.action)
     throw new Error('Stored signature action differs')
   if (intent.action === 'offer' && event.kind === 'offer') {
+    const t = event.terms
     if (
-      event.terms.xecPrincipal !== intent.xecPrincipal ||
-      event.terms.evmPrincipal !== intent.evmPrincipal ||
-      event.terms.expiry !== intent.expiry
+      t.xecPrincipal !== intent.xecPrincipal ||
+      t.evmPrincipal !== intent.evmPrincipal ||
+      t.expiry !== intent.expiry ||
+      t.xecRefundTime !== intent.xecRefundTime ||
+      t.evmExpiry !== intent.evmExpiry ||
+      !equal(t.hashLock, intent.hashLock) ||
+      !equal(t.xecRefundPublicKey, intent.xecRefundPublicKey) ||
+      !equal(t.evmRecipient, intent.evmRecipient) ||
+      !equal(t.evmHtlcContract, intent.evmHtlcContract)
     )
       throw new Error('Stored offer differs')
   } else if (intent.action !== 'offer' && event.kind !== 'offer') {
+    if (
+      intent.action === 'accept' &&
+      (event.kind !== 'accept' ||
+        !equal(event.terms.xecClaimPublicKey, intent.xecClaimPublicKey) ||
+        !equal(event.terms.evmSender, intent.evmSender))
+    )
+      throw new Error('Stored response differs')
     const offer = unwrap(
       decodeNegotiationEventStandalone(intent.offerBytes, intent.context),
     )
@@ -374,7 +454,20 @@ export async function authorizeNegotiation(input: {
       : offer?.kind === 'offer'
       ? offer.terms.expiry
       : 0n
-  if (input.now() >= expiry) throw new Error('Negotiation expired')
+  // Only an offer or accept commits to locks; GenericHTLC caps how far ahead T_B may lie.
+  const evmExpiry =
+    intent.action === 'offer'
+      ? intent.evmExpiry
+      : intent.action === 'accept' && offer?.kind === 'offer'
+      ? offer.terms.evmExpiry
+      : undefined
+  const assertSignable = () => {
+    const now = input.now()
+    if (now >= expiry) throw new Error('Negotiation expired')
+    if (evmExpiry !== undefined)
+      unwrap(negotiationLockWindow({ evmExpiry }, now))
+  }
+  assertSignable()
   if (intent.action !== 'offer')
     input.auth.assertAdmittedOffer(
       intent.context,
@@ -386,7 +479,7 @@ export async function authorizeNegotiation(input: {
   if (record.phase === 'signed') return signedRecord(record, intent, input.auth)
   const sign: NegotiationDigestSigner = async digest => {
     input.auth.assertCurrent()
-    if (input.now() >= expiry) throw new Error('Negotiation expired')
+    assertSignable()
     if (intent.action !== 'offer')
       input.auth.assertAdmittedOffer(
         intent.context,
@@ -399,11 +492,19 @@ export async function authorizeNegotiation(input: {
   }
   const event = unwrap(
     await (intent.action === 'offer'
-      ? buildNegotiationOffer(intent.context, intent, sign)
+      ? buildNegotiationOffer(intent.context, offerFieldsOf(intent), sign)
       : buildNegotiationResponse(
           intent.context,
           intent.offerBytes,
-          intent.action,
+          intent.action === 'accept'
+            ? {
+                kind: 'accept',
+                fields: {
+                  xecClaimPublicKey: intent.xecClaimPublicKey,
+                  evmSender: intent.evmSender,
+                },
+              }
+            : { kind: 'reject' },
           sign,
         )),
   )

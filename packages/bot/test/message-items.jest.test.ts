@@ -33,6 +33,10 @@ import {
   buildNegotiationResponse,
   TESTNET_NEGOTIATION_POLICY,
 } from '../../swap-protocol/src/negotiation'
+import {
+  fixtureAccept,
+  fixtureOfferFields,
+} from '../../swap-protocol/src/negotiation-fixtures.testutil'
 import type { ApplicationMessageItem } from '@frank/cashweb/types/messages'
 
 jest.mock('../../wallet/evm-provider', () =>
@@ -81,11 +85,10 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
         must(
           await buildNegotiationOffer(
             context,
-            {
-              xecPrincipal: 100n,
+            fixtureOfferFields({
+              xecPrincipal: 1000n,
               evmPrincipal: 1000000000000000000n,
-              expiry: 2000000000n,
-            },
+            }),
             signA,
           ),
         ),
@@ -183,7 +186,12 @@ it('actual app and all-bots registries carry signed offer/accept/reject bidirect
       (['accept', 'reject'] as const).map(async kind =>
         must(
           encodeSignedSwapEvent(
-            must(await buildNegotiationResponse(context, offer, kind, signB)),
+            must(await buildNegotiationResponse(
+              context,
+              offer,
+              kind === 'accept' ? fixtureAccept() : { kind },
+              signB,
+            )),
           ),
         ),
       ),

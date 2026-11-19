@@ -215,6 +215,7 @@ import { TESTNET_NEGOTIATION_POLICY } from '@frank/swap-protocol/src/negotiation
 import { negotiationRecoveryStatus } from '../utils/negotiation-recovery'
 import { accountSession } from '../accounts/session'
 import {
+  buildResponseIntent,
   captureNegotiation,
   sendNegotiation,
   negotiationCommandStatus,
@@ -492,17 +493,17 @@ export default defineComponent({
         const captured = await captureNegotiation({
           address,
           conversationId,
-          swapId: context.swapId,
           stampValue: 0n,
-          responseContext: context,
         })
+        const intent = await buildResponseIntent(
+          captured,
+          context,
+          encoded.value,
+          decision,
+        )
         if (this.address !== address || this.conversationId !== conversationId)
           throw new Error('Conversation changed during response')
-        await sendNegotiation(captured, {
-          context,
-          action: decision,
-          offerBytes: encoded.value,
-        })
+        await sendNegotiation(captured, intent)
       } catch (e) {
         this.error = negotiationErrorCode(e)
       } finally {

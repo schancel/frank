@@ -434,10 +434,8 @@
           :address="recipientAddress"
           :conversation-id="conversation?.id || ''"
           :conversation-name="conversation?.name || conversation?.topic || ''"
-          :swap-id="swapId"
           :stamp-value="swapStampValue"
           :stamp-unavailable="stampUnavailable"
-          @newOffer="swapId = newSwapId()"
           @close="swapDialog = false"
         />
         <forward-message-dialog
@@ -750,7 +748,6 @@ export default defineComponent({
       stealthReviewedRequest: null as StealthDialogRequest | null,
       stealthReviewSequence: 0,
       swapDialog: false,
-      swapId: crypto.getRandomValues(new Uint8Array(32)),
       forwardDialogOpen: false,
       messageToForward: null as ChatMessage | null,
       // Automatic dealer steps already attempted in this page session.
@@ -1898,9 +1895,6 @@ export default defineComponent({
       if (notSentMessage && this.stealthDialog)
         this.stealthQuote = { status: 'error', message: notSentMessage }
       if (!this.bottom) this.$nextTick(this.buttonScrollBottom)
-    },
-    newSwapId(): Uint8Array<ArrayBuffer> {
-      return crypto.getRandomValues(new Uint8Array(32))
     },
     openSwapDialog() {
       this.swapDialog = true

@@ -14,6 +14,7 @@ import {
   buildNegotiationOffer,
   TESTNET_NEGOTIATION_POLICY,
 } from '@frank/swap-protocol/src/negotiation'
+import { fixtureOfferFields } from '@frank/swap-protocol/src/negotiation-fixtures.testutil'
 import {
   encodeSignedSwapEvent,
   type SwapResult,
@@ -141,7 +142,7 @@ test('actual app construction recovers earlier signed history after ordinary pro
       must(
         await buildNegotiationOffer(
           context,
-          { xecPrincipal: 100n, evmPrincipal: 200n, expiry: 2000000000n },
+          fixtureOfferFields(),
           async digest => new Uint8Array(a.signHash(Buffer.from(digest))),
         ),
       ),

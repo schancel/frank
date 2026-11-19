@@ -8,6 +8,10 @@ import {
   buildNegotiationResponse,
   TESTNET_NEGOTIATION_POLICY,
 } from './negotiation'
+import {
+  fixtureAccept,
+  fixtureOfferFields,
+} from './negotiation-fixtures.testutil'
 import { createNegotiationMessagePlugin } from './message-plugin'
 
 function must<T>(v: SwapResult<T>): T {
@@ -28,7 +32,7 @@ beforeAll(async () => {
   const offer = must(
     await buildNegotiationOffer(
       context,
-      { xecPrincipal: 12345n, evmPrincipal: 10n ** 18n, expiry: 2000000000n },
+      fixtureOfferFields({ evmPrincipal: 10n ** 18n }),
       async d => a.signHash(Buffer.from(d)),
     ),
   )
@@ -39,8 +43,11 @@ beforeAll(async () => {
       must(
         encodeSignedSwapEvent(
           must(
-            await buildNegotiationResponse(context, encoded, kind, async d =>
-              b.signHash(Buffer.from(d)),
+            await buildNegotiationResponse(
+              context,
+              encoded,
+              kind === 'accept' ? fixtureAccept() : { kind },
+              async d => b.signHash(Buffer.from(d)),
             ),
           ),
         ),

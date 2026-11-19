@@ -16,6 +16,10 @@ import {
   type NegotiationContext,
 } from './negotiation'
 import {
+  fixtureAccept,
+  fixtureOfferFields,
+} from './negotiation-fixtures.testutil'
+import {
   NegotiationJournal,
   inspectNegotiationJournalRecord,
   NegotiationJournalError,
@@ -51,11 +55,7 @@ async function offer(value = 12345n, bound = context()) {
     must(
       await buildNegotiationOffer(
         bound,
-        {
-          xecPrincipal: value,
-          evmPrincipal: 1000000000000000001n,
-          expiry: 2000000000n,
-        },
+        fixtureOfferFields({ xecPrincipal: value }),
         sign(a),
       ),
     ),
@@ -66,7 +66,14 @@ async function response(
   decision: 'accept' | 'reject' = 'accept',
 ) {
   return encoded(
-    must(await buildNegotiationResponse(context(), first, decision, sign(b))),
+    must(
+      await buildNegotiationResponse(
+        context(),
+        first,
+        decision === 'accept' ? fixtureAccept() : { kind: 'reject' },
+        sign(b),
+      ),
+    ),
   )
 }
 const admission = (
@@ -154,7 +161,7 @@ it('pins the independently framed row key and exact normalized record vector', a
     engine = journal(store),
     first = await offer()
   expect(engine.rowKey).toBe(
-    '0095bc9b284097d543066203c099f158ef8e800f3097f7c30dace06c4c96e1cc',
+    '81c31f15d10427c73219c53954be269f725f37d6c7a8fd9b21b9b134956d7683',
   )
   await engine.admit(admission(first))
   const expected = {
@@ -173,7 +180,7 @@ it('pins the independently framed row key and exact normalized record vector', a
         '02c6047f9441ed7d6d3045406e95c07cd85c778e4b8cef3ca7abac09b95c709ee5',
       ],
       policy: {
-        name: 'xec-monad-testnet-v1',
+        name: 'xec-monad-testnet-v2',
         xecChainIdentifier: 'xec-testnet',
         evmChainIdentifier: 'monad-testnet',
       },
@@ -193,8 +200,27 @@ it('pins the independently framed row key and exact normalized record vector', a
   }
   expect(store.rows.get(engine.rowKey)).toBe(JSON.stringify(expected))
   expect(bytesToHex(sha256(Buffer.from(store.rows.get(engine.rowKey)!)))).toBe(
-    '40af427fdb183e11152fe892c2bfeab6cfa9b0ab0aa19f3aba461fd1820de045',
+    '1fba8b0e6458b0b890721143e18ba6fec1950ff4228ded1141e6fd27190643b8',
   )
+  // A row of the retired v1 payload/policy fails with what it is and how to reset.
+  for (const name of ['xec-monad-testnet-v1', 'xec-monad-regtest-proof-v1']) {
+    const old = JSON.stringify({
+      ...expected,
+      context: {
+        ...expected.context,
+        policy: { ...expected.context.policy, name },
+      },
+    })
+    expect(() => inspectNegotiationJournalRecord(old)).toThrow(
+      new RegExp(
+        `Unsupported old swap negotiation record \\(policy ${name}, payload v1\\).*Reset: delete`,
+      ),
+    )
+    store.rows.set(engine.rowKey, old)
+    await expect(engine.read()).rejects.toMatchObject({
+      code: 'corrupt-record',
+    })
+  }
 })
 
 it('reads absent state without writes and reconstructs reordered offer/accept/reject evidence across reopen', async () => {
@@ -213,7 +239,7 @@ it('reads absent state without writes and reconstructs reordered offer/accept/re
   expect(orphan.reduction.buffered).toHaveLength(1)
   expect(orphan.reduction.usableAcceptance).toBeNull()
   const complete = await journal(store).admit(admission(first))
-  expect(complete.reduction.usableAcceptance?.xecPrincipal).toBe(12345n)
+  expect(complete.reduction.usableAcceptance?.offer.xecPrincipal).toBe(12345n)
   const raw = store.rows.get(engine.rowKey),
     writes = store.writes
   const deliveredAgain = admission(first)
@@ -222,9 +248,9 @@ it('reads absent state without writes and reconstructs reordered offer/accept/re
   expect((await engine.admit(deliveredAgain)).admission).toBe('duplicate')
   expect(store.rows.get(engine.rowKey)).toBe(raw)
   expect(store.writes).toBe(writes)
-  expect((await engine.read()).reduction.usableAcceptance?.evmPrincipal).toBe(
-    1000000000000000001n,
-  )
+  expect(
+    (await engine.read()).reduction.usableAcceptance?.offer.evmPrincipal,
+  ).toBe(1000000000000000001n)
   const rejectedStore = new MemoryCas(),
     rejected = journal(rejectedStore)
   await rejected.admit(admission(await response(first, 'reject'), 1))
@@ -675,11 +701,7 @@ it('retains distinct valid signature bytes while leaving semantic duplicate redu
     must(
       await buildNegotiationOffer(
         context(),
-        {
-          xecPrincipal: 12345n,
-          evmPrincipal: 1000000000000000001n,
-          expiry: 2000000000n,
-        },
+        fixtureOfferFields(),
         async digest =>
           secp256k1
             .sign(digest, secret, {
@@ -726,7 +748,7 @@ it('admits the other local party with incoming offer and outbound response under
   }
   await engine.admit(incoming)
   const result = await engine.admit(outbound)
-  expect(result.reduction.usableAcceptance?.xecPrincipal).toBe(12345n)
+  expect(result.reduction.usableAcceptance?.offer.xecPrincipal).toBe(12345n)
   expect((await journal(store).read()).presence).toBe('absent')
   expect(store.rows.size).toBe(1)
 })

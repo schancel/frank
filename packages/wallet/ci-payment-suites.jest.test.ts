@@ -63,4 +63,13 @@ describe('the wallet suites hosted CI names', () => {
   ])('the wallet suite %s is run', name => {
     expect(named).toContain(name)
   })
+  // The escrow suites that run without a node: the anvil guard (ci-anvil-suites) does not see them.
+  it.each([
+    'swap-escrow.jest.test.ts',
+    'game-escrow.jest.test.ts',
+    'table-join.jest.test.ts',
+    'table-preimage.jest.test.ts',
+  ])('the escrow suite %s is run', name => {
+    expect(named).toContain(name)
+  })
 })

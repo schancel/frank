@@ -1,4 +1,5 @@
 import {
+  ecashFinality,
   ECASH_MAINNET_CHECKPOINT_HASH,
   ECASH_TESTNET_CHECKPOINT_HEIGHT,
   ECASH_TESTNET_CHECKPOINT_HASH,
@@ -392,5 +393,20 @@ describe("EcashWallet", () => {
         })
       ).rejects.toThrow("The checkpoint of xec-mainnet is fixed");
     });
+  });
+});
+
+describe("ecashFinality", () => {
+  it("is Avalanche on mainnet and testnet and one confirmation by default on regtest", () => {
+    expect(ecashFinality("xec-mainnet")).toEqual({ kind: "avalanche" });
+    expect(ecashFinality("ecash-testnet")).toEqual({ kind: "avalanche" });
+    expect(ecashFinality("xec-regtest")).toEqual({ kind: "confirmations", depth: 1 });
+    expect(ecashFinality("xec-regtest", { kind: "confirmations", depth: 3 })).toEqual({ kind: "confirmations", depth: 3 });
+  });
+
+  it("refuses confirmation-count finality outside regtest and a depth below one", () => {
+    expect(() => ecashFinality("xec-mainnet", { kind: "confirmations", depth: 6 })).toThrow(/xec-regtest only/);
+    expect(() => ecashFinality("xec-testnet", { kind: "confirmations", depth: 1 })).toThrow(/xec-regtest only/);
+    expect(() => ecashFinality("xec-regtest", { kind: "confirmations", depth: 0 })).toThrow(/at least 1/);
   });
 });

@@ -164,10 +164,18 @@ export function createXecHtlcSwapCapability(params: {
           recipient: { raw: xecHtlcAddress(chainIdentifier, input.terms) },
           value: xecHtlcFundingValue(input.principalSats),
         });
-      // The earlier lock can never land (a final spend took one of its inputs): the same
-      // authorized lock, same HTLC and amount, is signed again from fresh inputs.
-      else if (existing.state === "conflicted")
+      // The earlier lock can never land (a final spend took one of its inputs). If that spend
+      // pays this HTLC itself (another device of the account funded the same lock), the lock is
+      // funded: nothing is signed. Otherwise the same authorized lock, same HTLC and amount, is
+      // signed again from fresh inputs.
+      else if (existing.state === "conflicted") {
+        const spentBy = existing.conflict!.spentBy;
+        const script = hex(xecHtlcOutputScript(input.terms));
+        const conflicting = await chronik.tx(spentBy);
+        if (conflicting.outputs.some((output) => output.outputScript === script))
+          return { txid: spentBy, fundedElsewhere: true as const };
         await wallet.retryConflictedNativeOperation(operationId);
+      }
       // prepareNativeOperation is bound to the id: a second call returns the same operation.
       const sent = await wallet.submitNativeOperation(operationId);
       return { txid: sent.txHash };

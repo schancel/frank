@@ -5,16 +5,34 @@
  * ecash-preparation.jest.test.ts and on a real node in ecash-input-conflict.livecheck.ts.
  */
 import { createXecHtlcSwapCapability } from "./htlc-swap-capabilities";
+import { xecHtlcOutputScript, type XecHtlcTerms } from "../ecash-htlc";
 import type { EcashNativeOperation } from "../ecash-operation-store";
 
 const SWAP = "11".repeat(32);
 const ID = `swap:${SWAP}:xec-lock`;
+const TERMS: XecHtlcTerms = {
+  hashLock: new Uint8Array(32).fill(7),
+  claimPublicKey: new Uint8Array([2, ...new Array(32).fill(1)]),
+  refundPublicKey: new Uint8Array([3, ...new Array(32).fill(2)]),
+  refundTime: 1_800_000_000,
+};
+const SCRIPT = Buffer.from(xecHtlcOutputScript(TERMS)).toString("hex");
+const WINNER = "cc".repeat(32);
+const CONFLICT = { input: { txid: "dd".repeat(32), vout: 0 }, spentBy: WINNER };
 
-function harness(initial: EcashNativeOperation["state"], lookupFails = false) {
+function harness(
+  initial: EcashNativeOperation["state"],
+  lookupFails = false,
+  winnerScripts: string[] = ["76a914" + "00".repeat(20) + "88ac"]
+) {
   let state = initial;
   const calls: string[] = [];
   const op = () =>
-    ({ operationId: ID, state } as unknown as EcashNativeOperation);
+    ({
+      operationId: ID,
+      state,
+      ...(state === "conflicted" ? { conflict: CONFLICT } : {}),
+    } as unknown as EcashNativeOperation);
   const wallet = {
     chainIdentifier: "xec-regtest",
     htlcPublicKey: () => new Uint8Array(33),
@@ -45,7 +63,12 @@ function harness(initial: EcashNativeOperation["state"], lookupFails = false) {
   };
   const capability = createXecHtlcSwapCapability({
     wallet: wallet as never,
-    chronik: {} as never,
+    chronik: {
+      tx: async (txid: string) => {
+        calls.push(`tx:${txid === WINNER ? "winner" : txid}`);
+        return { txid, outputs: winnerScripts.map((outputScript) => ({ outputScript })) };
+      },
+    } as never,
     finality: { kind: "confirmations", depth: 1 },
   });
   return {
@@ -71,10 +94,21 @@ it("funds a conflicted lock again from fresh inputs under the same operation", a
   const { capability, calls } = harness("conflicted");
   await capability.fund({
     swapId: SWAP,
-    terms: {} as never,
+    terms: TERMS,
     principalSats: 10_000n,
   });
-  expect(calls).toEqual(["retry", "submit"]);
+  expect(calls).toEqual(["tx:winner", "retry", "submit"]);
+});
+
+it("never funds again when the conflicting spend itself pays this HTLC (another device locked it)", async () => {
+  const { capability, calls } = harness("conflicted", false, [
+    "76a914" + "00".repeat(20) + "88ac",
+    SCRIPT,
+  ]);
+  expect(
+    await capability.fund({ swapId: SWAP, terms: TERMS, principalSats: 10_000n })
+  ).toEqual({ txid: WINNER, fundedElsewhere: true });
+  expect(calls).toEqual(["tx:winner"]);
 });
 
 it("keeps the stored state when the reconcile lookup fails", async () => {

@@ -164,8 +164,13 @@ export function ecashFinality(
     (!Number.isSafeInteger(given.depth) || given.depth < 1)
   )
     throw new Error("eCash confirmation finality needs a depth of at least 1");
+  const regtest = canonicalEcashNetworkId(networkId) === "xec-regtest";
+  if (given?.kind === "confirmations" && !regtest)
+    throw new Error(
+      "Confirmation-count finality is for xec-regtest only; eCash mainnet and testnet use Avalanche"
+    );
   if (given !== undefined) return given;
-  return canonicalEcashNetworkId(networkId) === "xec-regtest"
+  return regtest
     ? { kind: "confirmations", depth: 1 }
     : { kind: "avalanche" };
 }

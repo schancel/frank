@@ -214,6 +214,7 @@ export function parseEcashOperationLedger(
       object(candidate.input) &&
       hash(candidate.input.txid) &&
       Number.isSafeInteger(candidate.input.vout) &&
+      Number(candidate.input.vout) >= 0 &&
       hash(candidate.spentBy) &&
       candidate.spentBy !== txid &&
       inputs.some(
@@ -235,7 +236,9 @@ export function parseEcashOperationLedger(
       throw new Error("Invalid eCash operation conflict");
     if (
       operation.conflictedAttempts !== undefined &&
+      // Present only on a retried operation, with at least one earlier attempt.
       (!Array.isArray(operation.conflictedAttempts) ||
+        operation.conflictedAttempts.length === 0 ||
         operation.conflictedAttempts.some(
           (attempt: unknown) =>
             !object(attempt) ||
@@ -246,7 +249,8 @@ export function parseEcashOperationLedger(
             attempt.conflict.spentBy === attempt.txid ||
             !object(attempt.conflict.input) ||
             !hash(attempt.conflict.input.txid) ||
-            !Number.isSafeInteger(attempt.conflict.input.vout)
+            !Number.isSafeInteger(attempt.conflict.input.vout) ||
+            Number(attempt.conflict.input.vout) < 0
         ))
     )
       throw new Error("Invalid eCash conflicted attempts");

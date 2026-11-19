@@ -375,13 +375,16 @@ export class HtlcSwapRunner {
         'The stored swap record belongs to other terms or another account',
       )
 
-    const [xecObservation, evmObservation, evmCalls, xecLockOperation] =
-      await Promise.all([
-        xec.observe(terms.xec.terms),
-        evm.observe(terms.evm.lockId),
-        evm.ownCalls(swapId),
-        role === 'A' ? xec.lockOperation(swapId) : Promise.resolve(undefined),
-      ])
+    // The lock operation is read (and reconciled) before the script: a lock that became
+    // conflicted because another device's lock to this same script went final is then always
+    // seen together with that lock's output, never as "conflicted and nothing funded".
+    const xecLockOperation =
+      role === 'A' ? await xec.lockOperation(swapId) : undefined
+    const [xecObservation, evmObservation, evmCalls] = await Promise.all([
+      xec.observe(terms.xec.terms),
+      evm.observe(terms.evm.lockId),
+      evm.ownCalls(swapId),
+    ])
     const decision = nextAction({
       role,
       now: clock.now(),
@@ -467,6 +470,8 @@ export class HtlcSwapRunner {
           fundingAuthorizedAt: current.fundingAuthorizedAt ?? clock.now(),
           xecLockOperationId: operationId,
         }))
+        // `fundedElsewhere`: the transaction that took this lock's input itself pays the HTLC;
+        // nothing was signed, and the next observation sees that output as the funding.
         await xec.fund({
           swapId,
           terms: terms.xec.terms,

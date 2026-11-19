@@ -867,6 +867,15 @@ type-27 frame naming one of them is treated as unsupported. Type 27 appears
 only inside encrypted message content, so a relay never sees it.
 `vectors/plugin-message-item.json` pins the container bytes and its rejections.
 
+A text identifier, like a type identifier, is never reused once its plugin is
+deleted: a new plugin takes a new identifier, so an old item can never be read
+as the new one. Retired identifiers, which no reader has a plugin for and so
+are kept as unsupported like any unknown identifier:
+
+| Identifier          | Retired    | Was                                                                                            |
+| ------------------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `swap-handshake-v1` | 2026-11-18 | An in-chat OTC swap and escrow handshake, superseded by the HTLC swap on `swap-negotiation-v1` |
+
 Type 25 (`channel-update-item`) provides universal peer-to-peer state execution for interactive turns, atomic swaps, and multi-network balance allocations across Monad, eCash, and Solana without gas friction. State updates are signed over the state digest and folded client-side.
 
 Direct-message stamps are payments to recipient-derived addresses. They are not

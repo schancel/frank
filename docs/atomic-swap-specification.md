@@ -383,8 +383,9 @@ T_A. It has no Lock, Claim, Refund or Cancel button.
   accounts is not moved there; a call that cannot be paid is retried on each tick.
 - `claimOwed` is not exercised on chain. The `htlc-record` note-to-self item has no consumer.
 - The `packages/contracts` suites are not run by hosted CI.
-- The older `swap-handshake-v1` plugin and `packages/docs/protocol/in-chat-swaps.md` are not part
-  of this swap and are to be deleted (plan PR 9).
+- The older `swap-handshake-v1` plugin, its chat card and its protocol page were deleted (plan
+  PR 9). The identifier is retired (`docs/protocol/cbor/README.md`); an old item is kept as
+  unsupported and the rest of its message is delivered.
 - Fixed: [#2084](https://github.com/schancel/frank/issues/2084), a second device of the account
   could not fund from eCash change the first device created (fixed by "A second device of the
   same account finds eCash change the first device made", #2090).

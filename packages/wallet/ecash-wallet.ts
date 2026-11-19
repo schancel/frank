@@ -1323,3 +1323,21 @@ export class EcashWallet implements NativeWalletHandle {
     return this.submitNativeOperation(operation.operationId);
   }
 }
+
+/** The per-swap eCash HTLC public-key capability of a wallet: public keys only, never secrets. */
+export interface XecHtlcKeys {
+  htlcPublicKey(swapId: string, role: XecHtlcBranch): Uint8Array;
+}
+/**
+ * `wallet`'s HTLC key capability when it is an eCash wallet, otherwise `undefined`. The typed
+ * way for hosts to reach `EcashWallet.htlcPublicKey` from a generic wallet handle.
+ */
+export function xecHtlcKeysOf(
+  wallet: NativeWalletHandle
+): XecHtlcKeys | undefined {
+  if (!(wallet instanceof EcashWallet)) return undefined;
+  return Object.freeze({
+    htlcPublicKey: (swapId: string, role: XecHtlcBranch) =>
+      wallet.htlcPublicKey(swapId, role),
+  });
+}

@@ -11,6 +11,7 @@ import {
   buildNegotiationResponse,
   decodeNegotiationEventStandalone,
   negotiationIdentityKeyId,
+  negotiationLockWindow,
   negotiationTermsHash,
   offerSwapIdTranscript,
   validateOfferFields,
@@ -453,7 +454,20 @@ export async function authorizeNegotiation(input: {
       : offer?.kind === 'offer'
       ? offer.terms.expiry
       : 0n
-  if (input.now() >= expiry) throw new Error('Negotiation expired')
+  // Only an offer or accept commits to locks; GenericHTLC caps how far ahead T_B may lie.
+  const evmExpiry =
+    intent.action === 'offer'
+      ? intent.evmExpiry
+      : intent.action === 'accept' && offer?.kind === 'offer'
+      ? offer.terms.evmExpiry
+      : undefined
+  const assertSignable = () => {
+    const now = input.now()
+    if (now >= expiry) throw new Error('Negotiation expired')
+    if (evmExpiry !== undefined)
+      unwrap(negotiationLockWindow({ evmExpiry }, now))
+  }
+  assertSignable()
   if (intent.action !== 'offer')
     input.auth.assertAdmittedOffer(
       intent.context,
@@ -465,7 +479,7 @@ export async function authorizeNegotiation(input: {
   if (record.phase === 'signed') return signedRecord(record, intent, input.auth)
   const sign: NegotiationDigestSigner = async digest => {
     input.auth.assertCurrent()
-    if (input.now() >= expiry) throw new Error('Negotiation expired')
+    assertSignable()
     if (intent.action !== 'offer')
       input.auth.assertAdmittedOffer(
         intent.context,

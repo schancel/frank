@@ -40,6 +40,11 @@ import {
   deriveOfferSwapId,
   offerSwapIdTranscript,
   validateOfferFields,
+  negotiationLockWindow,
+  latestNegotiationExpiry,
+  defaultNegotiationDeadlinesFor,
+  EVM_HTLC_MAX_LOCK_SECONDS,
+  EVM_HTLC_LOCK_CLOCK_MARGIN_SECONDS,
   type NegotiationContext,
   type AuthenticatedNegotiationContext,
 } from './negotiation'
@@ -1115,5 +1120,66 @@ describe('A derives the v2 swapId from its private salt and the offer facts', ()
         },
       }).ok,
     ).toBe(false)
+  })
+})
+
+describe('lock window and CLTV boundaries', () => {
+  const H = 3600n
+  const window = BigInt(
+    EVM_HTLC_MAX_LOCK_SECONDS - EVM_HTLC_LOCK_CLOCK_MARGIN_SECONDS,
+  )
+  it('refuses at signing time a T_B GenericHTLC could not lock (30 days less 1 h)', () => {
+    const fields = fixtureOfferFields()
+    expect(EVM_HTLC_MAX_LOCK_SECONDS).toBe(30 * 24 * 3600)
+    const edge = fields.evmExpiry - window
+    expect(negotiationLockWindow(fields, edge).ok).toBe(true)
+    expect(negotiationLockWindow(fields, edge - 1n)).toMatchObject({
+      ok: false,
+      error: { code: 'transition-rejected' },
+    })
+    expect(validateOfferFields(context(), fields, edge).ok).toBe(true)
+    expect(validateOfferFields(context(), fields, edge - 1n).ok).toBe(false)
+    // Without a clock the pure check (and the reducer) is unchanged.
+    expect(validateOfferFields(context(), fields).ok).toBe(true)
+  })
+  it('the latest selectable E keeps the default T_B inside the window', () => {
+    const now = 1_900_000_000n
+    const latest = must(latestNegotiationExpiry(TESTNET_NEGOTIATION_POLICY, now))
+    for (const [expiry, ok] of [
+      [latest, true],
+      [latest + 1n, false],
+    ] as const) {
+      const deadlines = must(
+        defaultNegotiationDeadlinesFor(TESTNET_NEGOTIATION_POLICY, expiry),
+      )
+      expect(negotiationLockWindow(deadlines, now).ok).toBe(ok)
+    }
+  })
+  it.each([
+    [500_000_000n, true],
+    [499_999_999n, false],
+    [(1n << 32n) - 1n, true],
+    [1n << 32n, false],
+  ])('T_A = %s accepted: %s', async (xecRefundTime, ok) => {
+    const deadlines = {
+      expiry: xecRefundTime - 24n * H,
+      evmExpiry: xecRefundTime - 12n * H,
+      xecRefundTime,
+    }
+    const built = await buildNegotiationOffer(
+      context(),
+      fixtureOfferFields(deadlines),
+      async d => signA(d),
+    )
+    expect(built.ok).toBe(ok)
+    const signedBad = changePayload(await offer(), f => {
+      f.set(8n, deadlines.expiry)
+      f.set(13n, deadlines.evmExpiry)
+      f.set(12n, deadlines.xecRefundTime)
+    })
+    expect(
+      must(reduceNegotiationStandalone([encoded(signedBad)], context()))
+        .violation === null,
+    ).toBe(ok)
   })
 })

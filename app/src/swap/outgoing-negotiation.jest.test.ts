@@ -453,3 +453,39 @@ test('expiry crossed during durable claim preserves unsigned claim and refuses s
     (await storage.outgoingApplicationMessages({ accountId: 'a' }))[0].phase,
   ).toBe('claimed')
 })
+test('an offer or accept whose MON lock GenericHTLC would refuse (T_B over 30 days less 1 h ahead) is never signed', async () => {
+  const window = 30n * 86400n - 3600n
+  const tooEarly = () => fields.evmExpiry - window - 1n
+  await expect(run(intent, auth(), tooEarly)).rejects.toThrow(
+    'would refuse the lock',
+  )
+  expect(signatures).toBe(0)
+  expect(
+    await storage.outgoingApplicationMessages({ accountId: 'a' }),
+  ).toHaveLength(0)
+  expect(
+    (await run(intent, auth(), () => fields.evmExpiry - window)).phase,
+  ).toBe('signed')
+  const offer = (
+    await storage.outgoingApplicationMessages({ accountId: 'a' })
+  )[0]
+  owner.getOutgoingApplicationMessage = key =>
+    storage.outgoingApplicationMessage({ intentKey: key, accountId: 'b' })
+  const response: LocalNegotiationIntent = {
+    action: 'accept',
+    context,
+    offerBytes: fromHex(
+      (offer as NegotiationRecord & { signedPayloadHex: string })
+        .signedPayloadHex,
+    ),
+    ...fixtureAcceptFields(),
+  }
+  await expect(run(response, auth(1), tooEarly)).rejects.toThrow(
+    'would refuse the lock',
+  )
+  expect(signatures).toBe(1)
+  // A reject commits to no lock, so the window does not apply to it.
+  expect(
+    (await run({ ...response, action: 'reject' }, auth(1), tooEarly)).phase,
+  ).toBe('signed')
+})

@@ -1192,6 +1192,8 @@ export const rawEnUS = {
         'Storage capacity reached. Saved authorizations remain retained.',
       expired:
         'Select a future expiry for a new authorization. Signed messages retain their original expiry.',
+      tooFar:
+        'Choose an earlier expiry: the swap contract accepts locks of at most 30 days.',
       conflict: 'This signing slot already names a different authorization.',
       invalidAmount:
         'Enter a positive exact decimal amount within native precision and protocol limits.',

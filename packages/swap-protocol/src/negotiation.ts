@@ -69,7 +69,8 @@ export interface NegotiationDeadlineRules {
   readonly minRefundGap: number
   /** R2 (T_B − E). */
   readonly minClaimWindow: number
-  /** R3 (T_A − E). Also keeps both locks inside GenericHTLC's 30-day maximum. */
+  /** R3 (T_A − E) only. How far T_B lies ahead of the signing time is the separate lock-window
+   * check (`negotiationLockWindow`), since it depends on the clock. */
   readonly maxSpan: number
   /** UI defaults: E = now + acceptance, T_B = E + evmAfterAcceptance, T_A = T_B + xecAfterEvm. */
   readonly defaults: {
@@ -910,8 +911,59 @@ function offerTermsOf(
 export function validateOfferFields(
   context: NegotiationContext,
   fields: OfferFields,
+  /** When given, also the lock-window check at this Unix time (see `negotiationLockWindow`). */
+  now?: bigint,
 ): SwapResult<OfferTerms> {
-  return result(() => offerTermsOf(snapshot(context), fields))
+  return result(() => {
+    const terms = offerTermsOf(snapshot(context), fields)
+    if (now !== undefined) must(negotiationLockWindow(terms, now))
+    return terms
+  })
+}
+/** GenericHTLC's MAX_LOCK_DURATION: a lock's expiresAt may be at most this far after its block. */
+export const EVM_HTLC_MAX_LOCK_SECONDS = 30 * 24 * 3600
+/** Allowance for this device's clock running behind the chain's block.timestamp. */
+export const EVM_HTLC_LOCK_CLOCK_MARGIN_SECONDS = 3600
+/**
+ * Refuses, at signing time `now`, terms whose MON lock GenericHTLC would reject: B locks after the
+ * accept, so T_B − now must leave the lock inside MAX_LOCK_DURATION (less the clock margin).
+ * Otherwise A's automatic XEC lock would fund a swap B can never lock, tying the XEC up until
+ * T_A. The XEC side has no such cap; R3 bounds T_A by E. Not a reducer rule: it depends on the
+ * clock, so offer and accept writers apply it when they sign.
+ */
+export function negotiationLockWindow(
+  terms: { readonly evmExpiry: bigint },
+  now: bigint,
+): SwapResult<void> {
+  return result(() => {
+    uint(now, U64, 'Current Unix seconds')
+    if (
+      terms.evmExpiry - now >
+      BigInt(EVM_HTLC_MAX_LOCK_SECONDS - EVM_HTLC_LOCK_CLOCK_MARGIN_SECONDS)
+    )
+      invalid(
+        'transition-rejected',
+        `EVM expiry is more than ${
+          EVM_HTLC_MAX_LOCK_SECONDS - EVM_HTLC_LOCK_CLOCK_MARGIN_SECONDS
+        } s ahead: the HTLC contract would refuse the lock`,
+      )
+  })
+}
+/** The latest acceptance deadline E whose default T_B passes `negotiationLockWindow` at `now`. */
+export function latestNegotiationExpiry(
+  selectedPolicy: NegotiationPairPolicy,
+  now: bigint,
+): SwapResult<bigint> {
+  return result(
+    () =>
+      uint(now, U64, 'Current Unix seconds') +
+      BigInt(
+        EVM_HTLC_MAX_LOCK_SECONDS -
+          EVM_HTLC_LOCK_CLOCK_MARGIN_SECONDS -
+          DEADLINE_RULES[policy(selectedPolicy).name].defaults
+            .evmAfterAcceptance,
+      ),
+  )
 }
 /** Builders refuse terms the reducer would treat as a violation. */
 export async function buildNegotiationOffer(

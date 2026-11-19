@@ -100,10 +100,10 @@ jest.mock('../utils/notifications', () => ({
 // this stand-in answers for the xec-testnet wallet without opening an eCash relay chain.
 jest.mock('../accounts/utxo-wallets', () => ({
   ...jest.requireActual('../accounts/utxo-wallets'),
-  openUtxoWallet: async (chainIdentifier: string) => {
+  openXecHtlcKeys: async (chainIdentifier: string) => {
     if (chainIdentifier !== 'xec-testnet')
       throw new Error('Unexpected UTXO chain')
-    return { wallet: { htlcPublicKey: mockXecHtlcPublicKey } }
+    return { htlcPublicKey: mockXecHtlcPublicKey }
   },
 }))
 function mockXecHtlcPublicKey(swapId: string, role: string): Uint8Array {
@@ -169,13 +169,16 @@ const {
   fixtureOfferFields,
 } = require('@frank/swap-protocol/src/negotiation-fixtures.testutil')
 jest.setTimeout(60000)
+// One acceptance deadline for the run, inside GenericHTLC's 30-day lock window, so the same
+// facts (and so the same swapId) are rebuilt on every call.
+const OFFER_EXPIRY = BigInt(Math.floor(Date.now() / 1000) + 86400)
 /** A's real v2 offer writer: deadlines, main account, HTLC, own swapId, hash lock, refund key. */
 async function offerFor(capture: unknown, xecPrincipal = 1000n) {
   const { buildOfferIntent } = require('./negotiation-commands')
   return buildOfferIntent(capture, {
     xecPrincipal,
     evmPrincipal: 500n,
-    expiry: 2000000000n,
+    expiry: OFFER_EXPIRY,
   })
 }
 const pass = defineComponent({
@@ -451,7 +454,15 @@ test.each([
     await form
       .find('[data-testid="swap-evm-amount"]')
       .setValue('0.000000000000000456')
-    await form.find('[data-testid="swap-expiry"]').setValue('2030-01-01T12:00')
+    await form.find('[data-testid="swap-expiry"]').setValue(
+      (() => {
+        const d = new Date(Date.now() + 2 * 86400000)
+        const pad = (n: number) => String(n).padStart(2, '0')
+        return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(
+          d.getDate(),
+        )}T12:00`
+      })(),
+    )
     await form.find('[data-testid="swap-review"]').trigger('click')
     await flushPromises()
     expect(form.find('[data-testid="swap-review-panel"]').exists()).toBe(true)

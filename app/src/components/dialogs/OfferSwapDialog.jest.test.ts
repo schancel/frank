@@ -11,6 +11,8 @@ jest.mock('../../swap/negotiation-commands', () => ({
   negotiationUnavailable: () => mockUnavailable,
   captureNegotiation: jest.fn(),
   buildOfferIntent: jest.fn(),
+  latestOfferExpiry: () =>
+    BigInt(Math.floor(Date.now() / 1000)) + 30n * 86400n - 13n * 3600n,
   sendNegotiation: jest.fn(),
   negotiationErrorCode: () => 'invalidAmount',
 }))
@@ -137,5 +139,33 @@ test('expiry preset populates future datetime and successful propose emits close
     expiry: expect.any(BigInt),
   })
   expect(sendNegotiation.mock.calls[0][1]).toMatchObject({ action: 'offer' })
+  w.unmount()
+})
+test('caps the expiry so the MON lock fits the 30-day contract maximum', async () => {
+  const { captureNegotiation } = jest.requireMock(
+    '../../swap/negotiation-commands',
+  )
+  captureNegotiation.mockClear()
+  const w = mountForm()
+  const max = w.find('[data-testid="swap-expiry"]').attributes('max')
+  expect(max).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/)
+  const days = (new Date(max!).getTime() - Date.now()) / 86400000
+  expect(days).toBeGreaterThan(29)
+  expect(days).toBeLessThan(30)
+  await w.find('[data-testid="swap-xec-amount"]').setValue('100')
+  await w.find('[data-testid="swap-evm-amount"]').setValue('1')
+  const late = new Date(Date.now() + 31 * 86400000)
+  const pad = (n: number) => String(n).padStart(2, '0')
+  await w
+    .find('[data-testid="swap-expiry"]')
+    .setValue(
+      `${late.getFullYear()}-${pad(late.getMonth() + 1)}-${pad(
+        late.getDate(),
+      )}T${pad(late.getHours())}:${pad(late.getMinutes())}`,
+    )
+  await w.find('[data-testid="swap-review"]').trigger('click')
+  await flushPromises()
+  expect(w.find('[data-testid="swap-review-panel"]').exists()).toBe(false)
+  expect(captureNegotiation).not.toHaveBeenCalled()
   w.unmount()
 })

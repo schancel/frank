@@ -13,7 +13,6 @@ import {
   htlcMainAccountOf,
   swapSecretCapabilityOf,
 } from '@frank/wallet/chain/evm-chain'
-import type { EcashWallet } from '@frank/wallet/ecash-wallet'
 import {
   authorizeNegotiation,
   type LocalNegotiationIntent,
@@ -25,12 +24,14 @@ import {
   decodeNegotiationEventStandalone,
   defaultNegotiationDeadlinesFor,
   deriveOfferSwapId,
+  latestNegotiationExpiry,
+  negotiationLockWindow,
   validateOfferFields,
   type NegotiationContext,
 } from '@frank/swap-protocol/src/negotiation'
 import type { SwapResult } from '@frank/swap-protocol/src'
 import { accountSession } from '../accounts/session'
-import { openUtxoWallet } from '../accounts/utxo-wallets'
+import { openXecHtlcKeys } from '../accounts/utxo-wallets'
 import { store } from '../adapters/level-message-store'
 import { useChatStore } from '../stores/chats'
 import { captureDirectoryPeer } from '../utils/directory-peer'
@@ -46,6 +47,7 @@ export const negotiationCommandStatus = shallowReactive({
 export function negotiationErrorCode(error: unknown): string {
   const detail = error instanceof Error ? error.message : String(error)
   if (/capacity/i.test(detail)) return 'capacity'
+  if (/would refuse the lock/i.test(detail)) return 'tooFar'
   if (/expired|expiry/i.test(detail)) return 'expired'
   if (/conflict|differs|different/i.test(detail)) return 'conflict'
   if (/amount|principal|precision|decimal/i.test(detail)) return 'invalidAmount'
@@ -161,6 +163,13 @@ export async function captureNegotiation(input: {
     stampValueWei: input.stampValue.toString(),
   }
 }
+const nowSeconds = () => BigInt(Math.floor(Date.now() / 1000))
+/** The latest acceptance deadline an offer made now may choose (Unix seconds). */
+export function latestOfferExpiry(): bigint {
+  return unwrap(
+    latestNegotiationExpiry(TESTNET_NEGOTIATION_POLICY, nowSeconds()),
+  )
+}
 const unwrap = <T>(value: SwapResult<T>): T => {
   if (!value.ok) throw new Error(value.error.detail ?? value.error.code)
   return value.value
@@ -190,13 +199,11 @@ async function xecHtlcPublicKey(
   swapId: Uint8Array,
   role: 'claim' | 'refund',
 ): Promise<Uint8Array> {
-  const { wallet } = await openUtxoWallet(
+  const keys = await openXecHtlcKeys(
     TESTNET_NEGOTIATION_POLICY.xecChainIdentifier,
   )
   captured.auth.assertCurrent()
-  return (
-    wallet as unknown as Pick<EcashWallet, 'htlcPublicKey'>
-  ).htlcPublicKey(toHex(swapId), role)
+  return keys.htlcPublicKey(toHex(swapId), role)
 }
 /**
  * A's complete v2 offer: the default deadlines for the chosen acceptance deadline E, A's main
@@ -251,7 +258,7 @@ export async function buildOfferIntent(
     evmHtlcContract,
   }
   // Refuse at review what signing would refuse (dust principal, deadline rules).
-  unwrap(validateOfferFields(intent.context, intent))
+  unwrap(validateOfferFields(intent.context, intent, nowSeconds()))
   return intent
 }
 /**
@@ -272,6 +279,8 @@ export async function buildResponseIntent(
   if (offer.kind !== 'offer') throw new Error('Response requires signed offer')
   if (toHex(offer.terms.evmHtlcContract) !== toHex(htlcContract()))
     throw new Error('Offer names a different HTLC contract (conflict)')
+  // B's lock must fit GenericHTLC's maximum duration, or A would fund a swap B cannot lock.
+  unwrap(negotiationLockWindow(offer.terms, nowSeconds()))
   const evmSender = evmMainAccount(captured.wallet)
   const xecClaimPublicKey = await xecHtlcPublicKey(
     captured,

@@ -94,6 +94,7 @@
           outlined
           dense
           type="datetime-local"
+          :max="expiryMax"
           stack-label
           :label="$t('signedSwap.expiry', { timezone })"
           class="swap-field"
@@ -280,6 +281,7 @@ import {
 import {
   buildOfferIntent,
   captureNegotiation,
+  latestOfferExpiry,
   sendNegotiation,
   negotiationCommandStatus,
   negotiationUnavailable,
@@ -290,6 +292,13 @@ import { negotiationRecoveryStatus } from '../../utils/negotiation-recovery'
 import { store } from '../../adapters/level-message-store'
 import { accountSession } from '../../accounts/session'
 import SignedNegotiationCard from '../../swap/SignedNegotiationCard.vue'
+/** `datetime-local` value (minutes) of a local time. */
+function localDateTime(target: Date): string {
+  const pad = (n: number) => String(n).padStart(2, '0')
+  return `${target.getFullYear()}-${pad(target.getMonth() + 1)}-${pad(
+    target.getDate(),
+  )}T${pad(target.getHours())}:${pad(target.getMinutes())}`
+}
 export default defineComponent({
   name: 'OfferSwapDialog',
   components: { SignedNegotiationCard },
@@ -338,6 +347,10 @@ export default defineComponent({
     },
     unavailable(): string {
       return this.stampUnavailable ? 'unsupported' : negotiationUnavailable()
+    },
+    /** GenericHTLC caps a lock at 30 days, so E is capped such that the default T_B fits. */
+    expiryMax(): string {
+      return localDateTime(new Date(Number(latestOfferExpiry()) * 1000))
     },
     expiryDisplay(): string {
       return new Date(this.expiryInput).toLocaleString(undefined, {
@@ -391,13 +404,9 @@ export default defineComponent({
       if (this.status.error) this.status.error = ''
     },
     applyExpiryPreset(hours: number) {
-      const target = new Date(Date.now() + hours * 3600 * 1000)
-      const pad = (n: number) => String(n).padStart(2, '0')
-      this.expiryInput = `${target.getFullYear()}-${pad(
-        target.getMonth() + 1,
-      )}-${pad(target.getDate())}T${pad(target.getHours())}:${pad(
-        target.getMinutes(),
-      )}`
+      this.expiryInput = localDateTime(
+        new Date(Date.now() + hours * 3600 * 1000),
+      )
     },
     pendingTerms(record: NegotiationRecord): string {
       try {
@@ -488,6 +497,8 @@ export default defineComponent({
         const ms = new Date(this.expiryInput).getTime()
         if (!Number.isFinite(ms) || ms <= Date.now())
           throw new Error('Negotiation expired')
+        if (BigInt(Math.floor(ms / 1000)) > latestOfferExpiry())
+          throw new Error('Expiry too far: the contract would refuse the lock')
         const original = {
           address: this.address,
           conversationId: this.conversationId,

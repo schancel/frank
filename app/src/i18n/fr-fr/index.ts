@@ -1219,6 +1219,8 @@ export const rawFrFR = {
         'Capacité atteinte. Les autorisations enregistrées sont conservées.',
       expired:
         'Sélectionnez une expiration future pour une nouvelle autorisation. Les messages signés gardent leur expiration initiale.',
+      tooFar:
+        'Choisissez une expiration plus proche : le contrat d’échange accepte des verrous de 30 jours au plus.',
       conflict:
         'Cet emplacement de signature contient déjà une autorisation différente.',
       invalidAmount:

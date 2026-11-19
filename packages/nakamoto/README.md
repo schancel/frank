@@ -33,8 +33,14 @@ the test vectors in `test/fixtures/lotus-v2/` come from lotusd and the Lotus
 reference tool. Legacy coins (P01 "Spending a legacy coin") are parsed and
 their P2PKH and P2SH bridge signing messages computed; P2PKH bridge spends are
 built and verified, P2SH script evaluation is an explicit unsupported error.
-VM execution, accounting, fees and block/state commitments are not
-implemented; a mint signature message is an explicit unsupported error.
+Fees are computed from the spec without running scripts: `lotusV2StaticCost`
+(P05 static cost algebra, approved schedule), `lotusV2RequiredFee` under a
+`LotusV2FeeRule` (the byte floor lotusd enforces today, or rule (c) with
+caller-supplied E and subsidy indices), and `buildLotusV2Transaction`, which
+signs a transaction paying exactly that fee
+(`docs/plans/lotus-v2-base/README.md` "Fees"). VM execution and block/state
+commitments are not implemented; a mint signature message is an explicit
+unsupported error.
 
 It does not read or write CashWeb CBOR. `@frank/codec` and `frank-cbor`
 marshal a frame and pass the digest bytes into a nakamoto sign or hash call.

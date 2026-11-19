@@ -2266,14 +2266,16 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
           }),
       )
       let returned = false
-      const first = f.wallet.reobserveNativeOperations!()
-      const tick = first.then(() => {
+      const tick = f.wallet.reobserveNativeOperations!().then(() => {
         returned = true
       })
       await settle()
       expect(answer).toBeDefined()
-      // A second tick while the first is in flight starts nothing: it joins the running pass.
-      expect(f.wallet.reobserveNativeOperations!()).toBe(first)
+      // A second tick while the lookup is in flight joins it and asks the node nothing more.
+      const asked = f.probes()
+      const second = f.wallet.reobserveNativeOperations!().then(() => undefined)
+      await settle()
+      expect(f.probes()).toBe(asked)
       // A Send of another coin is not held behind the unanswered lookup.
       const sent = await f.wallet.sendLegacy!({
         recipient: { raw: expected[1].main },
@@ -2288,6 +2290,7 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
       expect(returned).toBe(false)
       await f.wallet.close()
       await tick
+      await second
       answer(null)
       await settle()
       await settle()
@@ -2298,77 +2301,181 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
     }
   })
 
-  test('ticks faster than a slow node answers run one pass at a time, each step once per pass (#1835)', async () => {
+  /** The re-observation steps, each counted, with how many of one step ever ran side by side.
+   * `hold(name)` makes that step's next run wait until released. (#1835) */
+  const steps = (f: Awaited<ReturnType<typeof pendingCall>>) => {
+    const internals = evmWalletInternals(f.wallet)
+    const owner = internals.nativeOperationOwner!
+    type Name =
+      | 'reobservePending'
+      | 'resendMissingContractCalls'
+      | 'recheckRecentInclusions'
+      | 'archived'
+      | 'stampFunding'
+    const calls: Record<Name, number> = {
+      reobservePending: 0,
+      resendMissingContractCalls: 0,
+      recheckRecentInclusions: 0,
+      archived: 0,
+      stampFunding: 0,
+    }
+    const inFlight = { ...calls }
+    const most = { ...calls }
+    const holds = new Map<Name, Promise<void>>()
+    const counted = (name: Name, original: () => Promise<unknown>) => async () => {
+      calls[name]++
+      inFlight[name]++
+      most[name] = Math.max(most[name], inFlight[name])
+      try {
+        const held = holds.get(name)
+        holds.delete(name)
+        if (held) await held
+        await original()
+      } finally {
+        inFlight[name]--
+      }
+    }
+    for (const name of [
+      'reobservePending',
+      'resendMissingContractCalls',
+      'recheckRecentInclusions',
+    ] as const) {
+      const original = owner[name].bind(owner)
+      jest.spyOn(owner, name).mockImplementation(counted(name, original))
+    }
+    // The archived own-move step reads one journal history page per run.
+    const historyPage = EvmNativeOperationJournal.prototype.historyPage
+    jest
+      .spyOn(EvmNativeOperationJournal.prototype, 'historyPage')
+      .mockImplementation(function (this: EvmNativeOperationJournal, input) {
+        let page!: ReturnType<typeof historyPage>
+        return counted('archived', async () => {
+          page = historyPage.call(this, input)
+          await page
+        })().then(() => page)
+      })
+    const stamp = internals.recoverStampFunding
+    internals.recoverStampFunding = counted('stampFunding', async () => stamp?.())
+    return {
+      calls,
+      most,
+      hold(name: Name) {
+        let release!: () => void
+        holds.set(name, new Promise<void>(resolve => (release = resolve)))
+        return () => release()
+      },
+    }
+  }
+
+  test('ticks faster than a slow node answers never run one re-observation step twice at once (#1835)', async () => {
     const time = clock()
     const f = await pendingCall(time)
-    const owner = evmWalletInternals(f.wallet).nativeOperationOwner!
-    let inFlight = 0
-    let mostInFlight = 0
-    const counted = <K extends 'reobservePending' | 'resendMissingContractCalls' | 'recheckRecentInclusions'>(name: K) => {
-      const original = owner[name].bind(owner)
-      return jest.spyOn(owner, name).mockImplementation(async () => {
-        inFlight++
-        mostInFlight = Math.max(mostInFlight, inFlight)
-        try {
-          await original()
-        } finally {
-          inFlight--
-        }
-      })
-    }
-    const pending = counted('reobservePending')
-    const resend = counted('resendMissingContractCalls')
-    const recheck = counted('recheckRecentInclusions')
-    // Past the pass floor and the member's wait: the next pass probes, and the node is slow.
+    const s = steps(f)
     time.advance(600_000)
-    let answer!: (receipt: null) => void
-    f.receipt.mockImplementationOnce(
-      () =>
-        new Promise(resolve => {
-          answer = resolve
-        }),
+    // The node does not answer receipt lookups for now.
+    const answers: Array<() => void> = []
+    const answered = f.receipt.getMockImplementation()!
+    f.receipt.mockImplementation(
+      hash => new Promise(resolve => answers.push(() => resolve(answered(hash)))),
     )
-    const first = f.wallet.reobserveNativeOperations!()
-    await settle()
-    expect(answer).toBeDefined()
-    // A poll ticking every few milliseconds while the probe is unanswered.
-    const ticks = Array.from({ length: 20 }, () => f.wallet.reobserveNativeOperations!())
-    for (const tick of ticks) expect(tick).toBe(first)
-    await settle()
-    expect(pending).toHaveBeenCalledTimes(1)
-    expect(resend).not.toHaveBeenCalled()
-    expect(recheck).not.toHaveBeenCalled()
-    answer(null)
-    await Promise.all([first, ...ticks])
-    expect(pending).toHaveBeenCalledTimes(1)
-    expect(resend).toHaveBeenCalledTimes(1)
-    expect(recheck).toHaveBeenCalledTimes(1)
-    expect(mostInFlight).toBe(1)
-    // The pass is over: the next tick starts a fresh one.
+    const ticks: Promise<void>[] = []
+    for (let i = 0; i < 20; i++) {
+      ticks.push(f.wallet.reobserveNativeOperations!())
+      await settle()
+    }
+    expect(answers.length).toBeGreaterThan(0)
+    // Steps waiting on a receipt are joined, not started again.
+    expect(s.calls.reobservePending).toBe(1)
+    expect(s.calls.resendMissingContractCalls).toBe(1)
+    f.receipt.mockImplementation(answered)
+    for (const answer of answers.splice(0)) answer()
+    await Promise.all(ticks)
     await f.wallet.reobserveNativeOperations!()
-    expect(pending).toHaveBeenCalledTimes(2)
-    expect(resend).toHaveBeenCalledTimes(2)
-    expect(recheck).toHaveBeenCalledTimes(2)
-    expect(mostInFlight).toBe(1)
+    expect(s.most).toEqual({
+      reobservePending: 1,
+      resendMissingContractCalls: 1,
+      recheckRecentInclusions: 1,
+      archived: 1,
+      stampFunding: 1,
+    })
+    expect(s.calls.reobservePending).toBe(2)
   })
 
-  test('a pass that throws clears the guard: the next tick runs a fresh pass (#1835)', async () => {
+  test('archived recovery held on a slow read: the next tick still runs the receipt lookups, the lost-broadcast look and the inclusion re-check (#1835)', async () => {
+    const time = clock()
+    const f = await pendingCall(time)
+    const s = steps(f)
+    const release = s.hold('archived')
+    const first = f.wallet.reobserveNativeOperations!()
+    await settle()
+    expect(s.calls.archived).toBe(1)
+    const ran = { ...s.calls }
+    time.advance(600_000)
+    const probes = f.probes()
+    // The second tick joins the held archived step, and starts the others again.
+    const second = f.wallet.reobserveNativeOperations!()
+    for (let i = 0; i < 10; i++) await settle()
+    expect(s.calls.reobservePending).toBe(ran.reobservePending + 1)
+    expect(s.calls.resendMissingContractCalls).toBe(ran.resendMissingContractCalls + 1)
+    expect(s.calls.recheckRecentInclusions).toBe(ran.recheckRecentInclusions + 1)
+    // The member was looked at again while archived recovery still waits.
+    expect(f.probes()).toBeGreaterThan(probes)
+    expect(s.calls.archived).toBe(1)
+    release()
+    await Promise.all([first, second])
+    await f.wallet.reobserveNativeOperations!()
+    expect(s.calls.archived).toBe(2)
+    expect(s.most.archived).toBe(1)
+  })
+
+  test('a receipt lookup the node never answers: the next tick still runs archived recovery and stamp funding recovery (#1835)', async () => {
+    const time = clock()
+    const f = await pendingCall(time)
+    const s = steps(f)
+    time.advance(600_000)
+    let answer!: () => void
+    const answered = f.receipt.getMockImplementation()!
+    f.receipt.mockImplementationOnce(
+      hash => new Promise(resolve => (answer = () => resolve(answered(hash)))),
+    )
+    const first = f.wallet.reobserveNativeOperations!()
+    while (!answer) await settle()
+    for (let i = 0; i < 10; i++) await settle()
+    const ran = { ...s.calls }
+    expect(ran.archived).toBe(1)
+    expect(ran.stampFunding).toBe(1)
+    // The second tick joins the step that waits on the node, and starts the others again.
+    const second = f.wallet.reobserveNativeOperations!()
+    for (let i = 0; i < 10; i++) await settle()
+    expect(s.calls.archived).toBe(2)
+    expect(s.calls.stampFunding).toBe(2)
+    expect(s.most.archived).toBe(1)
+    answer()
+    await Promise.all([first, second])
+  })
+
+  test('a step that throws clears only its own guard (#1835)', async () => {
     const f = await pendingCall(clock())
+    const s = steps(f)
+    const release = s.hold('reobservePending')
     const owner = evmWalletInternals(f.wallet).nativeOperationOwner!
-    const recheck = jest
-      .spyOn(owner, 'recheckRecentInclusions')
-      .mockRejectedValueOnce(new Error('journal closed mid-pass'))
-    const pending = jest.spyOn(owner, 'reobservePending')
-    const failed = f.wallet.reobserveNativeOperations!()
-    // A tick while the failing pass runs joins it, and sees the same failure.
-    expect(f.wallet.reobserveNativeOperations!()).toBe(failed)
-    await expect(failed).rejects.toThrow('journal closed mid-pass')
-    expect(pending).toHaveBeenCalledTimes(1)
-    const next = f.wallet.reobserveNativeOperations!()
-    expect(next).not.toBe(failed)
-    await expect(next).resolves.toBeUndefined()
-    expect(pending).toHaveBeenCalledTimes(2)
-    expect(recheck).toHaveBeenCalledTimes(2)
+    const recheck = owner.recheckRecentInclusions
+    jest
+      .mocked(recheck)
+      .mockImplementationOnce(() => Promise.reject(new Error('journal closed mid-pass')))
+    const first = f.wallet.reobserveNativeOperations!()
+    first.catch(() => undefined)
+    for (let i = 0; i < 10; i++) await settle()
+    const second = f.wallet.reobserveNativeOperations!()
+    for (let i = 0; i < 10; i++) await settle()
+    // The failed step starts again; the held one is joined.
+    expect(jest.mocked(recheck)).toHaveBeenCalledTimes(2)
+    expect(s.calls.reobservePending).toBe(1)
+    release()
+    await expect(first).rejects.toThrow('journal closed mid-pass')
+    await expect(second).resolves.toBeUndefined()
+    await f.wallet.reobserveNativeOperations!()
+    expect(s.calls.reobservePending).toBe(2)
   })
 
   test('a lookup deadline ends the tick and leaves the call exactly as it was', async () => {

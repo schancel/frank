@@ -2776,9 +2776,20 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           >;
           let balancePartsRefresh: Promise<BalanceParts> | undefined;
           let balanceReadGeneration = 0;
-          // The one native re-observation pass in flight for this wallet (`reobserveNativeOperations`),
-          // if any. Cleared when that pass settles, whether it resolved or threw.
-          let nativeReobservation: Promise<void> | undefined;
+          // The re-observation steps in flight for this wallet (`reobserveNativeOperations`), by
+          // name. Each entry is cleared when its own step settles, whether it resolved or threw.
+          const reobservationSteps = new Map<string, Promise<void>>();
+          const reobservationStep = (name: string, run: () => Promise<void>): Promise<void> => {
+            const running = reobservationSteps.get(name);
+            if (running) return running;
+            const step: Promise<void> = Promise.resolve()
+              .then(run)
+              .finally(() => {
+                if (reobservationSteps.get(name) === step) reobservationSteps.delete(name);
+              });
+            reobservationSteps.set(name, step);
+            return step;
+          };
           // Existing financial invalidations detach older display reads as well as cached totals.
           const invalidateBalanceRead = (affectedAddress?: string): void => {
             if (affectedAddress !== undefined) transactionSetRuntime.coinListSync.markDirty(affectedAddress);
@@ -3227,49 +3238,52 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // the hosts' existing polls, never at open. The network reads run under the wallet
             // lifetime only (inside the consolidator), outside this wallet's queue.
             //
-            // One pass per wallet at a time: a call while a pass runs (a poll ticking faster than
-            // a slow node answers) joins that pass and starts none of its steps again. No trailing
-            // pass is queued: every host poll calls again, so what arrived mid-pass is the next
-            // tick's, and each step already keeps its own floor and backoff.
+            // Each step runs at most once at a time, on its own: a tick starts every step that is
+            // idle and joins any still running, so a slow node holding one step (an unanswered
+            // receipt probe, an archived page read) never holds the others, and fast ticks never
+            // run a step twice side by side. None needs another's result: each looks at the
+            // journal itself. Resolves when every step this tick started or joined has ended;
+            // rejects with the first step that failed.
             reobserveNativeOperations() {
               const internals = evmWalletInternals(wallet);
               const owner = internals.nativeOperationOwner;
               if (!owner || internals.closed) return Promise.resolve();
-              if (nativeReobservation) return nativeReobservation;
-              // A contract call the node was seen not to know is handed to it again (the same
-              // signed bytes), so a lost broadcast cannot hold the main account for good.
-              // A contract call or cancellation in a recent block is read again until it is deep
-              // enough, so a reorganisation that moves it (another fee) is caught and told.
-              const pass: Promise<void> = owner
-                .reobservePending()
-                .then(() => owner.resendMissingContractCalls())
-                .then(() => owner.recheckRecentInclusions())
-                .then(async () => {
-                  // A blocked archived obligation remains observable without suppressing unrelated
-                  // authorized recovery or funding. No network task owns a wallet-wide queue.
-                  const results = await Promise.allSettled([
-                    transactionOwner.runLifetime(() => recoverArchivedOwnMoves()),
-                    transactionOwner.runLifetime(() => transactionSetSubmission.reconcileAuthorized()),
-                    internals.recoverStampFunding?.(),
-                  ]);
-                  await releaseSettledMainAccounts(wallet, false);
-                  const failed = results.find(result => result.status === 'rejected');
-                  if (failed?.status === 'rejected') throw failed.reason;
-                })
-                .catch((error) => {
-                  if (isChainUnreachableError(error)) {
-                    throw error instanceof ChainUnreachableError
-                      ? error
-                      : new ChainUnreachableError(error);
-                  }
-                  throw error;
-                })
-                .finally(() => {
-                  // A pass that threw clears the guard too: the next tick starts a fresh one.
-                  if (nativeReobservation === pass) nativeReobservation = undefined;
-                });
-              nativeReobservation = pass;
-              return pass;
+              const steps: Promise<void>[] = [
+                // Pending members' bounded receipt lookups (already guarded in the consolidator;
+                // joined here as the others are).
+                reobservationStep("reobserve-pending", () => owner.reobservePending()),
+                // A contract call the node was seen not to know is handed to it again (the same
+                // signed bytes), so a lost broadcast cannot hold the main account for good.
+                reobservationStep("resend-missing-contract-calls", () => owner.resendMissingContractCalls()),
+                // A contract call or cancellation in a recent block is read again until it is deep
+                // enough, so a reorganisation that moves it (another fee) is caught and told.
+                reobservationStep("recheck-recent-inclusions", () => owner.recheckRecentInclusions()),
+                // A blocked archived obligation remains observable without suppressing unrelated
+                // authorized recovery or funding. No network task owns a wallet-wide queue.
+                // Guarded by its own pass (`archivedRecoveryPass`).
+                Promise.resolve().then(() => transactionOwner.runLifetime(() => recoverArchivedOwnMoves())),
+                // Joined per transaction set, so a newly stranded set starts beside a slow one.
+                Promise.resolve()
+                  .then(() => transactionOwner.runLifetime(() => transactionSetSubmission.reconcileAuthorized()))
+                  .then(() => undefined),
+                // Guarded by its own run (`recoverStampFunding`).
+                Promise.resolve().then(() => internals.recoverStampFunding?.()),
+              ].map((step) =>
+                // What a step learned frees the main account as soon as that step ends (a local
+                // read of the journal, no request), not when the slowest step does.
+                step.finally(() => releaseSettledMainAccounts(wallet, false))
+              );
+              return Promise.allSettled(steps).then((results) => {
+                const failed = results.find((result) => result.status === "rejected");
+                if (failed?.status !== "rejected") return;
+                const error = failed.reason;
+                if (isChainUnreachableError(error)) {
+                  throw error instanceof ChainUnreachableError
+                    ? error
+                    : new ChainUnreachableError(error);
+                }
+                throw error;
+              });
             },
             async watchNativeOperation(operationId) {
               requireOpenWallet(wallet);

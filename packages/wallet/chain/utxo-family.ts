@@ -108,9 +108,9 @@ export function openRelayUtxoChain(params: {
         url: `${relay}/chain-rpc/${chainIdentifier}/chronik`,
       }),
       checkpoint,
-      storeFor: (firstAddress) =>
+      storeFor: (firstAddress, run) =>
         params.lotusStoreFor?.(chainIdentifier, firstAddress) ??
-        browserLotusV2WalletStore(`${chainIdentifier}:${firstAddress}`),
+        browserLotusV2WalletStore({ chainIdentifier, checkpointHash: run.hash, firstAddress }),
     });
     return {
       chain,

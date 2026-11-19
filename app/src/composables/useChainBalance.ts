@@ -48,7 +48,7 @@ import {
 } from './useBalance'
 import { useSafeOracleStore } from '../stores/oracle'
 import { walletSupport } from '../utils/wallet-support'
-import { WALLET_CONFIGS } from '../utils/wallet-configs'
+import { MAIN_WALLET_ID, WALLET_CONFIGS } from '../utils/wallet-configs'
 
 export interface TokenItem {
   id: string
@@ -859,5 +859,26 @@ export function useMultichainBalance(
         await fetchChainBalance(chain, true)
       }
     },
+  }
+}
+
+/**
+ * The account's main balance: the configured base wallet's (`MAIN_WALLET_ID`, see
+ * accounts/base-wallet.ts), else the messaging chain's wallet, as before. The drawer shows it.
+ */
+export function useMainBalance() {
+  const main = useChainBalance(MAIN_WALLET_ID)
+  return {
+    formattedBalance: main.formattedBalance,
+    loaded: main.loaded,
+    hasError: main.hasError,
+    exactBalance: computed(() => {
+      const presentation = main.presentation.value
+      return presentation.status === 'available'
+        ? presentation.observation.exactBalance
+        : presentation.status === 'unavailable'
+        ? presentation.lastKnown?.exactBalance
+        : undefined
+    }),
   }
 }

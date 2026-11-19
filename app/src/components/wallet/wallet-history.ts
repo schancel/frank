@@ -5,6 +5,7 @@ import {
   type ContactPaymentInfo,
   type EvmExternalDeposit,
   type EvmNativeOperationStatus,
+  type NativeTransferRecord,
   type NativeWalletHandle,
   type NotedSendPurpose,
   type NotedSendStatus,
@@ -142,6 +143,31 @@ export type WalletHistoryLoad =
       depositsUnread?: boolean
     }
   | { status: 'unsupported' | 'unavailable' }
+
+/**
+ * A family wallet's own plain sends and receipts (`getNativeTransfers`, for example Lotus v2):
+ * their owners are that wallet's records and its indexer. Read again whenever History is.
+ */
+export interface NativeTransferLoad {
+  status: 'loading' | 'available' | 'unavailable'
+  /** The last rows read; kept while a later read is loading or failed. */
+  rows: readonly NativeTransferRecord[]
+}
+
+/** One read of a wallet's native transfers, never throwing; `previous` rows stay on failure. */
+export async function loadNativeTransfers(
+  wallet: NativeWalletHandle,
+  chainIdentifier: string,
+  previous: readonly NativeTransferRecord[] = [],
+): Promise<NativeTransferLoad> {
+  if (wallet.chainIdentifier !== chainIdentifier || !wallet.getNativeTransfers)
+    return { status: 'unavailable', rows: [] }
+  try {
+    return { status: 'available', rows: await wallet.getNativeTransfers() }
+  } catch {
+    return { status: 'unavailable', rows: previous }
+  }
+}
 
 /** Archived operations read per page, and the most pages one load reads. */
 const HISTORY_PAGE = 100

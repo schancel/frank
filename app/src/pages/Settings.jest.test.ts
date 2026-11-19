@@ -729,6 +729,21 @@ describe('Network Environment & Chains Section', () => {
     wrapper.unmount()
   })
 
+  it('states the main-balance network (the messaging chain when none is configured)', async () => {
+    const router = await openAt('/settings/networking')
+    const wrapper = mountSettings(router)
+    const { activeChain, getChainRegistryEntry } = await import(
+      '@frank/wallet/chain'
+    )
+    expect(
+      wrapper.get('[data-test="settings-main-balance-network"]').text(),
+    ).toContain('settings.mainBalanceNetwork')
+    expect(
+      wrapper.get('[data-test="settings-main-balance-network-name"]').text(),
+    ).toBe(getChainRegistryEntry(activeChain.chainIdentifier)!.name)
+    wrapper.unmount()
+  })
+
   it('renders the supported settlement networks list', async () => {
     const router = await openAt('/settings/networking')
     const wrapper = mountSettings(router)

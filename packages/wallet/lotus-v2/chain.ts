@@ -15,7 +15,10 @@ export interface LotusV2ChainConfig {
   readonly indexer: LotusV2Indexer;
   /** The node's operator checkpoint block for this regtest run. */
   readonly checkpoint: { readonly height: number; readonly hash: string };
-  readonly storeFor: (firstAddress: string) => LotusV2WalletStore;
+  readonly storeFor: (
+    firstAddress: string,
+    checkpoint: { readonly height: number; readonly hash: string }
+  ) => LotusV2WalletStore;
 }
 
 export interface LotusV2Chain extends Omit<NativeAssetChain, "createWallet"> {

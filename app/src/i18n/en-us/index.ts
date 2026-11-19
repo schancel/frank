@@ -1717,6 +1717,17 @@ export const rawEnUS = {
       retryFailed: 'The send could not be retried just now.',
     },
     transfers: 'Transfers',
+    nativeTransfer: {
+      loading: "Reading this wallet's transfers.",
+      unavailable:
+        'Transfers could not be read just now. They are shown again when the network answers.',
+      received: 'Received',
+      inBlock: 'In block {height}.',
+      status: {
+        pending: 'Pending',
+        confirmed: 'Confirmed',
+      },
+    },
     to: 'To',
     contract: 'Contract',
     details: 'Details',
@@ -1977,6 +1988,8 @@ export const rawEnUS = {
     gateways: 'Gateways',
     networkModeTitle: 'Network Environment & Chains',
     testnetMode: 'Testnet Mode',
+    mainBalanceNetwork: 'Main balance',
+    messagingNetwork: 'messages and stamps on {network}',
     testnetActiveBanner:
       'Testnet is active across Monad and all secondary settlement networks.',
     mainnetActiveBanner:

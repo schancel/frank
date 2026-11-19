@@ -228,7 +228,7 @@ export {
   balanceOfParts,
 } from "./active-chain";
 
-export type { NativeTransactionAttemptStore } from "./chain-wallet";
+export type { NativeTransactionAttemptStore, NativeTransferRecord } from "./chain-wallet";
 export type {
   NotedSend,
   NotedSendPurpose,

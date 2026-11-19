@@ -39,6 +39,8 @@ export interface LotusV2Indexer {
   listUnspent(root: string): Promise<readonly LotusV2IndexedCoin[]>;
   /** True once a confirmed output was ever locked to `root`. */
   hasHistory(root: string): Promise<boolean>;
+  /** Every confirmed native output ever locked to exactly `root`, spent or not (History). */
+  listOutputs(root: string): Promise<readonly LotusV2IndexedCoin[]>;
   /** `confirmed` when mined, `pending` while in the mempool, `unknown` when the node lacks it. */
   transactionState(txid: string): Promise<"confirmed" | "pending" | "unknown">;
   /** Throws {@link LotusV2BroadcastRefused} when the node says no; any other error is unknown. */
@@ -104,32 +106,34 @@ export function chronikLotusV2Indexer(params: {
     record.branches.length === 1 &&
     record.branches[0] === root &&
     JSON.stringify(record.paths) === "[[0]]";
-  return {
-    async listUnspent(root) {
-      const coins: LotusV2IndexedCoin[] = [];
-      let cursor: string | null = null;
-      // Bounded: 100 pages of 100 outputs per address is far more than a wallet address holds.
-      for (let page = 0; page < 100; page++) {
-        const result = await post("/v2/branches/utxos", {
-          any_branch: [root],
-          page_size: 100,
-          ...(cursor ? { cursor } : {}),
+  const list = async (route: string, root: string, unspentOnly: boolean) => {
+    const coins: LotusV2IndexedCoin[] = [];
+    let cursor: string | null = null;
+    // Bounded: 100 pages of 100 outputs per address is far more than a wallet address holds.
+    for (let page = 0; page < 100; page++) {
+      const result = await post(route, {
+        any_branch: [root],
+        page_size: 100,
+        ...(cursor ? { cursor } : {}),
+      });
+      for (const { record } of result.outputs) {
+        if ((unspentOnly && record.spend !== null) || !matches(root, record)) continue;
+        coins.push({
+          txid: record.txid,
+          outIdx: record.out_idx,
+          value: BigInt(record.value),
+          height: Number(record.creation.height),
+          coinbase: record.creation.tx_index === 0,
         });
-        for (const { record } of result.outputs) {
-          if (record.spend !== null || !matches(root, record)) continue;
-          coins.push({
-            txid: record.txid,
-            outIdx: record.out_idx,
-            value: BigInt(record.value),
-            height: Number(record.creation.height),
-            coinbase: record.creation.tx_index === 0,
-          });
-        }
-        cursor = result.cursor;
-        if (!cursor) return coins;
       }
-      throw new Error("Lotus Chronik returned too many pages of coins for one address");
-    },
+      cursor = result.cursor;
+      if (!cursor) return coins;
+    }
+    throw new Error("Lotus Chronik returned too many pages of outputs for one address");
+  };
+  return {
+    listUnspent: (root) => list("/v2/branches/utxos", root, true),
+    listOutputs: (root) => list("/v2/branches/outputs", root, false),
     async hasHistory(root) {
       const result = await post("/v2/branches/outputs", { any_branch: [root], page_size: 1 });
       return result.outputs.length > 0;

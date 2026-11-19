@@ -17,7 +17,12 @@ import { createLotusV2Chain } from "./chain";
 import { chronikLotusV2Indexer, LotusV2BroadcastRefused, type LotusV2Indexer } from "./chronik";
 import { findLotusd, lotusdBinary, startLotusRegtest, type LotusRegtest } from "./lotusd-regtest.testutil";
 import { keyhashPaymentSize } from "./network";
-import { LotusV2Wallet, memoryLotusV2WalletStore, type LotusV2WalletStore } from "./wallet";
+import {
+  browserLotusV2WalletStore,
+  LotusV2Wallet,
+  memoryLotusV2WalletStore,
+  type LotusV2WalletStore,
+} from "./wallet";
 
 const lotusd = findLotusd();
 const suite = nodeSuiteReady("lotus-v2 wallet.regtest", [lotusdBinary(lotusd)]) ? describe : describe.skip;
@@ -177,6 +182,96 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     const remaining = 2n * XPI - XPI - BigInt(keyhashPaymentSize(1, 2));
     expect(await deviceOne.getBalance()).toBe(remaining);
     expect(await deviceTwo.getBalance()).toBe(remaining);
+    // History: device one shows its send; device two's refused one paid nothing and is absent.
+    expect((await deviceOne.getNativeTransfers()).filter((row) => row.direction === "sent")).toHaveLength(1);
+    expect((await deviceTwo.getNativeTransfers()).filter((row) => row.direction === "sent")).toEqual([]);
+  }, 60_000);
+
+  it("a record of another regtest run is refused; that run's browser record is another key, with no old sends", async () => {
+    const alice = await fresh();
+    await node.fund((await alice.wallet.getReceiveAddress()).raw, 3n * XPI);
+    await alice.wallet.sendNative({ recipient: await (await fresh()).wallet.getReceiveAddress(), value: XPI });
+    // Another run: another checkpoint block. The same record must not carry over.
+    const otherRun = { height: 2, hash: await node.rpc<string>("getblockhash", [2]) };
+    await expect(
+      LotusV2Wallet.create({
+        chainIdentifier: "lotus-v2-regtest",
+        seed: alice.seed,
+        indexer,
+        storeFor: () => alice.store,
+        checkpoint: otherRun,
+      })
+    ).rejects.toThrow(/another regtest run/);
+    // In the browser the run is part of the key: that run starts from an empty record.
+    const storage = new Map<string, string>();
+    (globalThis as { localStorage?: unknown }).localStorage = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => void storage.set(key, value),
+    };
+    try {
+      const browserStore = (checkpoint: { height: number; hash: string }) => (firstAddress: string) =>
+        browserLotusV2WalletStore({ chainIdentifier: "lotus-v2-regtest", checkpointHash: checkpoint.hash, firstAddress });
+      const seed = Uint8Array.from(randomBytes(32));
+      const first = await LotusV2Wallet.create({
+        chainIdentifier: "lotus-v2-regtest",
+        seed,
+        indexer,
+        storeFor: browserStore(node.checkpoint),
+        checkpoint: node.checkpoint,
+      });
+      await node.fund((await first.getReceiveAddress()).raw, 2n * XPI);
+      await first.sendNative({ recipient: await (await fresh()).wallet.getReceiveAddress(), value: XPI });
+      expect((await first.getNativeTransfers()).some((row) => row.direction === "sent")).toBe(true);
+      const second = await LotusV2Wallet.create({
+        chainIdentifier: "lotus-v2-regtest",
+        seed,
+        indexer,
+        storeFor: browserStore(otherRun),
+        checkpoint: otherRun,
+      });
+      expect((await second.getNativeTransfers()).filter((row) => row.direction === "sent")).toEqual([]);
+    } finally {
+      delete (globalThis as { localStorage?: unknown }).localStorage;
+    }
+  }, 60_000);
+
+  it("History: a send is pending until mined, then confirmed; each receipt is one row with its block", async () => {
+    const alice = await fresh();
+    const bob = await fresh();
+    const fundTxid = await node.fund((await alice.wallet.getReceiveAddress()).raw, 6n * XPI);
+    const recipient = await bob.wallet.getReceiveAddress();
+    const sent = await alice.wallet.sendNative({ recipient, value: 2n * XPI });
+    const fee = BigInt(keyhashPaymentSize(1, 2));
+    const before = await alice.wallet.getNativeTransfers();
+    expect(before).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ direction: "received", txid: fundTxid, value: 6n * XPI, state: "confirmed" }),
+        expect.objectContaining({
+          direction: "sent",
+          txid: sent.txHash,
+          value: 2n * XPI,
+          fee,
+          recipient: recipient.raw,
+          state: "pending",
+        }),
+      ])
+    );
+    expect(before).toHaveLength(2);
+    // Confirmed-only index: Bob sees nothing until the block.
+    expect(await bob.wallet.getNativeTransfers()).toEqual([]);
+    await node.mine(1);
+    await alice.wallet.getBalance();
+    const mined = (await alice.wallet.getNativeTransfers()).find((row) => row.direction === "sent")!;
+    expect(mined.state).toBe("confirmed");
+    // Its block, read from its change output.
+    expect(mined.height).toBeGreaterThan(node.checkpoint.height);
+    const bobRows = await bob.wallet.getNativeTransfers();
+    expect(bobRows).toEqual([
+      expect.objectContaining({ direction: "received", txid: sent.txHash, value: 2n * XPI, state: "confirmed" }),
+    ]);
+    expect(bobRows[0]!.height).toBeGreaterThan(node.checkpoint.height);
+    // The change went to a change address: it is not a receipt.
+    expect((await alice.wallet.getNativeTransfers()).filter((row) => row.direction === "received")).toHaveLength(1);
   }, 60_000);
 
   it("recorded bytes another party mined before the wallet's own broadcast settle the send; nothing is paid twice", async () => {

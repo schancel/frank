@@ -68,7 +68,7 @@
                   :data-test="`${wallet.id}-balance-stale-indicator`"
                 />{{ nativeBalance(wallet.id) }}
                 <mailbox-status-indicator
-                  v-if="wallet.isMain"
+                  v-if="wallet.isMessaging"
                   class="q-ml-xs"
                 />
               </q-item-label>
@@ -158,7 +158,7 @@
                       :data-test="`${wallet.id}-balance-stale-indicator`"
                     />{{ nativeBalance(wallet.id) }}
                     <mailbox-status-indicator
-                      v-if="wallet.isMain"
+                      v-if="wallet.isMessaging"
                       class="q-ml-xs"
                     />
                   </q-item-label>

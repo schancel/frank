@@ -193,6 +193,28 @@
                 {{ $t('settings.mainnetActiveBanner') }}
               </q-banner>
 
+              <!-- Which network holds the main balance, and which one messages and stamps run
+                on: the build's configuration (QCLI_FRANK_BASE_CHAIN), stated, not chosen. -->
+              <div class="q-mb-md" data-test="settings-main-balance-network">
+                <div class="text-body2 text-weight-medium">
+                  {{ $t('settings.mainBalanceNetwork') }}
+                </div>
+                <div
+                  class="text-caption settings-muted"
+                  data-test="settings-main-balance-network-name"
+                >
+                  {{ mainBalanceNetwork.main }}
+                  <template v-if="mainBalanceNetwork.messaging">
+                    ·
+                    {{
+                      $t('settings.messagingNetwork', {
+                        network: mainBalanceNetwork.messaging,
+                      })
+                    }}
+                  </template>
+                </div>
+              </div>
+
               <div
                 class="text-caption text-weight-medium settings-muted q-mb-xs"
               >
@@ -747,6 +769,10 @@ import { activeChain, getChainRegistryEntry } from '@frank/wallet/chain'
 import { DEFAULT_CHAIN_STATIC_STAMP_COIN } from '@frank/wallet/oracle'
 import { loadMonadChainConfigFromEnv } from '@frank/wallet/chain/evm-chain'
 import { WALLET_CONFIGS, getWalletNetworkLabel } from 'src/utils/wallet-configs'
+import {
+  MAIN_WALLET_CHAIN,
+  mainBalanceNetworkNames,
+} from 'src/accounts/base-wallet'
 import { walletSupport } from 'src/utils/wallet-support'
 import { COLOR_SCHEMES, type ColorScheme } from 'src/utils/color-scheme'
 import {
@@ -1323,6 +1349,10 @@ export default defineComponent({
       resetColdVaultSweep,
       flushPendingEdits,
       getWalletNetworkLabel,
+      mainBalanceNetwork: mainBalanceNetworkNames(
+        MAIN_WALLET_CHAIN,
+        activeChain.chainIdentifier,
+      ),
       supportedChains: WALLET_CONFIGS.filter(c => c.enabled !== false),
       chainStatus,
       chainStatusKey: (chain: { id: string }) => {

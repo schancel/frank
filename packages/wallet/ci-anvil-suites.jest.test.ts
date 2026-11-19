@@ -29,6 +29,8 @@ const NOT_IN_CI: Record<string, string> = {
     'needs a lotusd built from the Lotus repository v2 series (LOTUSD_BIN); Lotus v2 publishes no release a hosted job can fetch',
   'packages/wallet/lotus-v2/chain-objects.regtest.jest.test.ts':
     'needs a lotusd built from the Lotus repository v2 series (LOTUSD_BIN); Lotus v2 publishes no release a hosted job can fetch',
+  'app/src/accounts/base-wallet.regtest.jest.test.ts':
+    'needs a Lotus v2 lotusd (LOTUSD_BIN, no published release); the relay is CASHWEBD_BIN or a Cargo build',
   'packages/wallet/lotus-v2/relay.regtest.jest.test.ts':
     'needs a Lotus v2 lotusd (LOTUSD_BIN, no published release) and a cashwebd-exe build (CASHWEBD_BIN)',
 }

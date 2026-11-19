@@ -62,8 +62,9 @@ jest.mock('src/stores/forum', () => ({
 jest.mock('src/composables/useActiveWallet', () => ({
   useActiveWallet: jest.fn(() => Promise.resolve({})),
 }))
-jest.mock('src/composables/useBalance', () => ({
-  useBalance: () => balance,
+// The drawer shows the main balance (the configured base wallet, else the messaging chain's).
+jest.mock('src/composables/useChainBalance', () => ({
+  useMainBalance: () => balance,
 }))
 jest.mock('src/utils/runtime-mode', () => ({
   legacyLotusModeEnabled: () => runtime.legacy,

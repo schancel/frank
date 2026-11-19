@@ -681,12 +681,25 @@
                     :transaction-explorer-link="transactionExplorerLink"
                     :retry="retryEcashSend"
                   />
+                  <native-transfer-history
+                    v-if="nativeTransfers"
+                    :chain-identifier="nativeTransfers.chainIdentifier"
+                    :load="nativeTransfers.load"
+                    :show-empty="!historyGroups.length"
+                    :native-unit="nativeUnit"
+                    :native-amount="nativeBaseAmount"
+                    :transaction-explorer-link="transactionExplorerLink"
+                  />
                   <wallet-history
-                    v-if="!ecashSends || historyGroups.length"
+                    v-if="
+                      (!ecashSends && !nativeTransfers) || historyGroups.length
+                    "
                     :chain-identifier="historyChainIdentifier"
                     :groups="historyGroups"
                     :inspection-status="
-                      ecashSends ? 'available' : nativeOperations.status
+                      ecashSends || nativeTransfers
+                        ? 'available'
+                        : nativeOperations.status
                     "
                     :deposits-unread="
                       nativeOperations.status === 'available' &&
@@ -773,10 +786,15 @@ import { useSwapActivity } from 'src/swap/useSwapActivity'
 import { useEvmTokenBalances } from 'src/composables/useEvmTokenBalances'
 import { transactionExplorerUrl } from 'src/utils/explorer'
 import { displayAmountText } from 'src/utils/chain-amount'
-import { MAIN_WALLET_ID, WALLET_CONFIGS } from 'src/utils/wallet-configs'
+import {
+  MAIN_WALLET_ID,
+  MESSAGING_WALLET_ID,
+  WALLET_CONFIGS,
+} from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import WalletHistory from 'src/components/wallet/WalletHistory.vue'
 import EcashSendHistory from 'src/components/wallet/EcashSendHistory.vue'
+import NativeTransferHistory from 'src/components/wallet/NativeTransferHistory.vue'
 import {
   ecashSendsOf,
   type EcashSend,
@@ -789,8 +807,10 @@ import WalletNetworkSwitcher from 'src/components/wallet/WalletNetworkSwitcher.v
 import EarlierWalletStateNotice from 'src/components/wallet/EarlierWalletStateNotice.vue'
 import {
   buildWalletHistoryGroups,
+  loadNativeTransfers,
   loadWalletHistory,
   readWalletDeposits,
+  type NativeTransferLoad,
   type WalletHistoryLoad,
 } from 'src/components/wallet/wallet-history'
 import { walletSupport } from 'src/utils/wallet-support'
@@ -815,6 +835,7 @@ export default defineComponent({
     BalanceBreakdown,
     WalletHistory,
     EcashSendHistory,
+    NativeTransferHistory,
     TempoPathUsdPanel,
     DappBridgePanel,
     ExtensionPopoutBtn,
@@ -910,13 +931,13 @@ export default defineComponent({
     const isPrimaryStampChain = computed(
       () =>
         selectedChainAdapter.value?.isPrimaryStampChain ??
-        currentWalletConfig.value?.isMain ??
+        currentWalletConfig.value?.isMessaging ??
         false,
     )
     const supportsHeldContactPayments = computed(
       () =>
         selectedChainAdapter.value?.supportsHeldContactPayments ??
-        currentWalletConfig.value?.isMain ??
+        currentWalletConfig.value?.isMessaging ??
         false,
     )
     const sendLabel = computed(() => ({
@@ -951,7 +972,7 @@ export default defineComponent({
     const canBreakDownBalance = computed(
       () =>
         (selectedChainAdapter.value?.supportsSubAccountBreakdown ??
-          currentWalletConfig.value?.isMain ??
+          currentWalletConfig.value?.isMessaging ??
           false) &&
         !!balanceObservation.value,
     )
@@ -1128,6 +1149,11 @@ export default defineComponent({
       reloadHistory?.()
     }
 
+    // A family wallet's own sends and receipts (`getNativeTransfers`, Lotus v2); unset elsewhere.
+    const nativeTransfers = shallowRef<
+      { chainIdentifier: string; load: NativeTransferLoad } | undefined
+    >()
+
     const nativePresentation = shallowRef({
       unit: '',
       toDisplayAmount: (value: bigint) => value.toString(),
@@ -1155,12 +1181,13 @@ export default defineComponent({
         addressRetry.value,
       ],
       async ([status, , chain], _previous, onCleanup) => {
-        const isMainChain = chain === MAIN_WALLET_ID
+        const isMessagingChain = chain === MESSAGING_WALLET_ID
         addressAvailability.value = 'loading'
         reloadHistory = undefined
         ecashSends.value = undefined
+        nativeTransfers.value = undefined
         nativeOperations.value = {
-          status: isMainChain ? 'unavailable' : 'unsupported',
+          status: isMessagingChain ? 'unavailable' : 'unsupported',
         }
         const capturedChain = network.value
         if (status !== 'ready') {
@@ -1180,8 +1207,12 @@ export default defineComponent({
           capability.entry.id,
           capability.entry,
         )
-        const rotatesAddress = adapter?.rotatesReceiveAddress ?? false
-        const isPrimaryChain = adapter?.isPrimaryStampChain ?? isMainChain
+        // A Bitcoin-family network without a presentation adapter (Lotus v2) is still a UTXO
+        // wallet the session opens through `openUtxoWallet`, as Send and the balance do.
+        const rotatesAddress =
+          adapter?.rotatesReceiveAddress ??
+          capability.entry.family === 'bitcoin'
+        const isPrimaryChain = adapter?.isPrimaryStampChain ?? isMessagingChain
         // A rotating-address wallet (e.g. UTXO) derives its next unused receive address, so a cached one may already have been paid.
         displayAddress.value = rotatesAddress
           ? ''
@@ -1249,6 +1280,31 @@ export default defineComponent({
               }
               reloadHistory = read
               read()
+            } else if (current && wallet.getNativeTransfers) {
+              nativePresentation.value = utxoChain
+              const chainIdentifier = capability.entry.id
+              let loads = 0
+              // Sends from the wallet's own records, receipts from its indexer: read again each
+              // time History is, the last rows kept while a read is under way or failed.
+              const read = () => {
+                if (!current) return
+                const load = ++loads
+                const previous = nativeTransfers.value?.load.rows ?? []
+                nativeTransfers.value = {
+                  chainIdentifier,
+                  load: { status: 'loading', rows: previous },
+                }
+                void loadNativeTransfers(
+                  wallet,
+                  chainIdentifier,
+                  previous,
+                ).then(result => {
+                  if (current && load === loads)
+                    nativeTransfers.value = { chainIdentifier, load: result }
+                })
+              }
+              reloadHistory = read
+              read()
             }
             // The lead address is derived here. Show it before the indexer confirms it is unused.
             const local = wallet.localReceiveAddress?.()
@@ -1283,6 +1339,9 @@ export default defineComponent({
       nativeOperations,
       ecashSends,
       retryEcashSend,
+      nativeTransfers,
+      nativeBaseAmount: (value: bigint) =>
+        nativePresentation.value.toDisplayAmount(value),
       historyGroups,
       historyChainIdentifier,
       networkName,

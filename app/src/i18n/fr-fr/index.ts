@@ -1763,6 +1763,17 @@ export const rawFrFR = {
       retryFailed: "L'envoi n'a pas pu être réessayé pour le moment.",
     },
     transfers: 'Transferts',
+    nativeTransfer: {
+      loading: 'Lecture des transferts de ce portefeuille.',
+      unavailable:
+        'Les transferts n’ont pas pu être lus pour le moment. Ils s’afficheront de nouveau quand le réseau répondra.',
+      received: 'Reçu',
+      inBlock: 'Dans le bloc {height}.',
+      status: {
+        pending: 'En attente',
+        confirmed: 'Confirmé',
+      },
+    },
     to: 'À',
     contract: 'Contrat',
     details: 'Détails',
@@ -2028,6 +2039,8 @@ export const rawFrFR = {
     gateways: 'Passerelles',
     networkModeTitle: 'Environnement réseau & Chaînes',
     testnetMode: 'Mode Testnet',
+    mainBalanceNetwork: 'Solde principal',
+    messagingNetwork: 'messages et timbres sur {network}',
     testnetActiveBanner:
       'Le réseau de test est actif sur Monad et tous les réseaux de règlement secondaires.',
     mainnetActiveBanner:

@@ -1104,6 +1104,7 @@ export const rawEnUS = {
     insufficientFunds: 'Not enough {unit} — failed to send',
     stampBelowFee: 'Stamp below minimum fee',
     paymentOlderVersion: 'Not sent: carries an older version’s payment',
+    sendBlocked: 'Not sent: waits for an earlier message',
     notInContacts: 'Not in your contacts',
     openSender: "Open {name}'s profile",
     noPayloadFound: 'Unable to find message payload',

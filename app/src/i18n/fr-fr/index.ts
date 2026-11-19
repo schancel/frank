@@ -1131,6 +1131,7 @@ export const rawFrFR = {
     stampBelowFee: 'Timbre inférieur aux frais minimaux',
     paymentOlderVersion:
       'Non envoyé : porte un paiement d’une ancienne version',
+    sendBlocked: 'Non envoyé : attend un message précédent',
     notInContacts: 'Pas dans vos contacts',
     openSender: 'Ouvrir le profil de {name}',
     noPayloadFound: 'Impossible de trouver les données pour ce message',

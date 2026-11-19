@@ -2201,6 +2201,9 @@ export default defineComponent({
           return failed(this.$t('chatMessage.stampBelowFee'))
         if (card.failureReason === 'payment-older-version')
           return failed(this.$t('chatMessage.paymentOlderVersion'))
+        // An earlier stuck message holds the funds; nothing was paid for this one.
+        if (card.failureReason === 'blocked')
+          return failed(this.$t('chatMessage.sendBlocked'))
         return failed(this.$t('chatMessage.failedToSend', 'Failed to send'))
       }
       if (card.payloadDigest && sendsWaitingForChain.has(card.payloadDigest)) {

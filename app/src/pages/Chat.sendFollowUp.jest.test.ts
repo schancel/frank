@@ -265,6 +265,40 @@ describe('Chat.vue priced action availability and custody affinity', () => {
     expect(self.sendingMessage).toBe(false)
   })
 
+  // A send held by an earlier stuck message says so, in the words a chat bubble shows, not
+  // a generic "Failed to send email".
+  it('says a blocked email send waits for an earlier message', async () => {
+    const original = mockWallet
+    mockWallet = { id: 'blocked' }
+    jest
+      .mocked(useActiveWallet)
+      .mockImplementation(async () => mockWallet as never)
+    const conversation = { id: 'email-1', name: 'alice@example.com' }
+    const self = fakeThis({
+      stampAmount: '0.01',
+      stampUnavailable: '',
+      conversation,
+      chatStore: { conversations: { 'email-1': conversation } },
+      sendDirectMessage: jest.fn().mockResolvedValue({
+        state: 'failed',
+        reason: 'blocked',
+        payloadDigest: 'd',
+      }),
+    })
+    try {
+      await methods.sendEmailReply.call(self, {
+        conversationId: conversation.id,
+        items: [],
+      })
+      expect(errorNotify).toHaveBeenCalledWith(
+        new Error('outgoing.reasonBlocked'),
+        { safeMessage: 'outgoing.reasonBlocked' },
+      )
+    } finally {
+      mockWallet = original
+    }
+  })
+
   it('keeps an explicit zero stamp available for email', async () => {
     const original = mockWallet
     mockWallet = { id: 'explicit-free' }

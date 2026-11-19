@@ -564,7 +564,11 @@ export class PokerBot implements FrankBotDefinition {
       return joined.success ? { ok: true } : { ok: false, error: joined.error ?? "the table refused the player" };
     });
     if (!seat.seated) {
-      await msgCtx.reply([{ type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` }]);
+      await msgCtx.reply([
+        { type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` },
+        // A text join gets the table's card: the app joins from it, locking the buy-in first.
+        ...(seat.reason === "no-buy-in-lock" ? [this.buildPokerItem(table, sender)] : []),
+      ]);
       return;
     }
     this.conversationTables.set(sender, table.tableId);

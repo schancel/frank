@@ -556,13 +556,18 @@ export class LiarsDiceBot implements FrankBotDefinition {
     }
 
     if (cmd === "/status") {
-      const tableId = this.conversationTables.get(conversationId);
+      // A player not yet seated gets the newest table: its card is how the app joins it.
+      const tableId = this.conversationTables.get(conversationId) ?? this.latestTableId;
       if (!tableId || !this.tables.has(tableId)) {
-        await msgCtx.reply([{ type: "text", text: "No active table in this conversation." }]);
+        await msgCtx.reply([{ type: "text", text: "No active table. Create one with `/table create`." }]);
         return;
       }
       const game = this.tables.get(tableId)!;
-      const item = this.buildLiarsDiceItem(game, "bid", sender);
+      const item = this.buildLiarsDiceItem(
+        game,
+        game.status === "waiting_for_players" ? "create" : "bid",
+        sender
+      );
       await msgCtx.reply([
         {
           type: "text",
@@ -597,7 +602,11 @@ export class LiarsDiceBot implements FrankBotDefinition {
       return joined.success ? { ok: true } : { ok: false, error: joined.error ?? "the table refused the player" };
     });
     if (!seat.seated) {
-      await msgCtx.reply([{ type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` }]);
+      await msgCtx.reply([
+        { type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` },
+        // A text join gets the table's card: the app joins from it, locking the buy-in first.
+        ...(seat.reason === "no-buy-in-lock" ? [this.buildLiarsDiceItem(game, "create", sender)] : []),
+      ]);
       return;
     }
     this.conversationTables.set(sender, game.tableId);

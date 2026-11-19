@@ -1753,6 +1753,8 @@ export const rawFrFR = {
       retry: 'Réessayer',
       retryNote:
         "Le renvoie à la même adresse, pour le même montant, depuis d'autres pièces.",
+      retryUnconfirmed:
+        "Renvoyé, mais le réseau ne l'a pas encore accepté. Il peut encore aboutir : ne le renvoyez pas.",
       retryFailed: "L'envoi n'a pas pu être réessayé pour le moment.",
     },
     transfers: 'Transferts',

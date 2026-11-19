@@ -539,3 +539,63 @@ it(
 `),
   35_000
 );
+
+it(
+  "backs off reconciling a stuck send on the balance refresh and keeps a failed read observable",
+  () =>
+    run(`
+  let lookups = 0;
+  let fail = false;
+  const spender = async () => { lookups++; if (fail) throw new Error('indexer down'); return undefined; };
+  const device = await make({ spender, transport: async () => { throw new Error('missing inputs'); } });
+  await assert.rejects(device.wallet.sendNative({ recipient, value: 1000n, maxFee: 1000n }), /submission/i);
+  const [op] = device.wallet.getEcashOperations();
+  assert.equal(op.inputs.length, 1);
+  lookups = 0;
+  const checked = [];
+  for (let refresh = 1; refresh <= 8; refresh++) {
+    const before = lookups;
+    await device.wallet.getBalance();
+    if (lookups > before) checked.push(refresh);
+  }
+  // Nothing new each time: checked on refreshes 1, 2, 4 and 8, not on every poll.
+  assert.deepEqual(checked, [1, 2, 4, 8]);
+  assert.deepEqual(device.wallet.getReconcileFailures(), []);
+  // A failed read is logged once and readable until the operation reconciles again.
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    fail = true;
+    for (let refresh = 0; refresh < 40; refresh++) await device.wallet.getBalance();
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(device.wallet.getReconcileFailures(), [{ operationId: op.operationId, message: 'indexer down' }]);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][0], 'ecash-reconcile-failed');
+  assert.ok(lookups < 10, 'failed reads back off too');
+  fail = false;
+  for (let refresh = 0; refresh < 20; refresh++) await device.wallet.getBalance();
+  assert.deepEqual(device.wallet.getReconcileFailures(), []);
+  // A send the chain knows (in the mempool) is read on every refresh, never backed off, and
+  // shows confirmed on the first refresh after its block.
+  let mined = false;
+  let statusReads = 0;
+  const known = await make({ spender, status: async () => { statusReads++; return mined ? 'confirmed' : 'pending'; } });
+  await known.wallet.sendNative({ recipient, value: 1000n, maxFee: 1000n });
+  const [pending] = known.wallet.getEcashOperations();
+  assert.equal(pending.state, 'submitted');
+  lookups = 0;
+  for (let refresh = 1; refresh <= 6; refresh++) {
+    const before = statusReads;
+    await known.wallet.getBalance();
+    assert.ok(statusReads > before, 'read on refresh ' + refresh);
+  }
+  assert.equal(lookups, 0, 'a known send never scans its inputs');
+  mined = true;
+  await known.wallet.getBalance();
+  assert.equal(known.wallet.getEcashOperations()[0].state, 'confirmed');
+`),
+  35_000
+);

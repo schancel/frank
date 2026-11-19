@@ -1708,6 +1708,8 @@ export const rawEnUS = {
       retry: 'Retry',
       retryNote:
         'Sends it again to the same address, for the same amount, from other coins.',
+      retryUnconfirmed:
+        "Sent again, but the network hasn't accepted it yet. It may still go through, so don't send it again.",
       retryFailed: 'The send could not be retried just now.',
     },
     transfers: 'Transfers',

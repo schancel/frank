@@ -762,6 +762,7 @@ import {
   activeChain,
   onActiveChainChange,
   getChainRegistryEntry,
+  NativeTransactionSubmissionError,
 } from '@frank/wallet/chain'
 import {
   resolveChainAdapter,
@@ -1116,7 +1117,13 @@ export default defineComponent({
       try {
         await held.capability.retry(operationId)
       } catch (err) {
-        errorNotify(err, { fallbackKey: 'walletHistory.ecashSend.retryFailed' })
+        // Signed again, and only handing it to the network failed: it may still land.
+        errorNotify(err, {
+          fallbackKey:
+            err instanceof NativeTransactionSubmissionError
+              ? 'walletHistory.ecashSend.retryUnconfirmed'
+              : 'walletHistory.ecashSend.retryFailed',
+        })
       }
       reloadHistory?.()
     }

@@ -877,6 +877,55 @@ describe('Wallet detail page (#570)', () => {
     }
   })
 
+  it('says a retried eCash send may still land when only handing it to the network failed', async () => {
+    const { NativeTransactionSubmissionError } = jest.requireActual(
+      '@frank/wallet/chain',
+    )
+    const conflicted = {
+      operationId: 'op-1',
+      recipient: 'ectest:qrecipient',
+      valueSats: '15000',
+      feeSats: '226',
+      txid: 'aa'.repeat(32),
+      state: 'conflicted',
+      conflictedTxids: [],
+    }
+    const retry = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new NativeTransactionSubmissionError({
+          transaction: { txHash: 'bb'.repeat(32) },
+          reason: new Error('refused'),
+        }),
+      )
+      .mockRejectedValueOnce(new Error('fee rose'))
+    mockEcashSendsOf.mockImplementation(() => ({
+      chainIdentifier: 'xec-testnet',
+      sends: () => [conflicted],
+      retry,
+    }))
+    try {
+      mockRoute.value = { query: { chain: 'ecash' }, path: '/wallet' }
+      const wrapper = mountWallet()
+      await flush()
+      const run = wrapper
+        .getComponent({ name: 'EcashSendHistory' })
+        .props('retry') as (id: string) => Promise<void>
+      await run('op-1')
+      expect(jest.mocked(errorNotify).mock.calls.at(-1)?.[1]).toEqual({
+        fallbackKey: 'walletHistory.ecashSend.retryUnconfirmed',
+      })
+      await run('op-1')
+      expect(jest.mocked(errorNotify).mock.calls.at(-1)?.[1]).toEqual({
+        fallbackKey: 'walletHistory.ecashSend.retryFailed',
+      })
+      wrapper.unmount()
+    } finally {
+      mockEcashSendsOf.mockReset()
+      mockEcashSendsOf.mockImplementation(() => undefined)
+    }
+  })
+
   it('renders eCash wallet details and address when selected', async () => {
     mockRoute.value = { query: { chain: 'ecash' }, path: '/wallet' }
     const wrapper = mountWallet()

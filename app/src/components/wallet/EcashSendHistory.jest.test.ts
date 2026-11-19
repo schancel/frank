@@ -133,6 +133,7 @@ describe('EcashSendHistory', () => {
       'retry',
       'retryNote',
       'retryFailed',
+      'retryUnconfirmed',
     ])
       expect(typeof lookup(frFR, `walletHistory.ecashSend.${key}`)).toBe(
         'string',

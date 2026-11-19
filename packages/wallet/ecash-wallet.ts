@@ -385,6 +385,15 @@ export class EcashWallet implements NativeWalletHandle {
   private balanceRefresh: Promise<bigint> | undefined;
   /** Where the next balance refresh resumes reconciling open operations. */
   private reconcileCursor = 0;
+  /** Balance refreshes so far: the clock the reconcile back-off counts in. */
+  private refreshCount = 0;
+  /** Open operations the chain told nothing new last time, skipped until `skipUntil`. */
+  private readonly reconcileBackoff = new Map<
+    string,
+    { misses: number; skipUntil: number }
+  >();
+  /** The last reconcile failure of each open operation, until it reconciles again. */
+  private readonly reconcileFailures = new Map<string, string>();
   /** Derived in-memory display projection; never used by selection or signing. */
   private balanceObservation: EcashBalanceObservation | undefined;
 
@@ -1206,6 +1215,14 @@ export class EcashWallet implements NativeWalletHandle {
   async reconcileNativeOperation(
     operationId: string
   ): Promise<EcashNativeOperation> {
+    return (await this.reconcileOperation(operationId)).operation;
+  }
+
+  /** `reconcileNativeOperation`, also saying whether the chain knew its transaction (in a
+   * block or the mempool), as opposed to scanning its inputs for a conflict. */
+  private async reconcileOperation(
+    operationId: string
+  ): Promise<{ operation: EcashNativeOperation; known: boolean }> {
     const operation = this.loadLedger().operations.find(
       (item) => item.operationId === operationId
     );
@@ -1216,50 +1233,102 @@ export class EcashWallet implements NativeWalletHandle {
       operation.state === "confirmed" ||
       operation.state === "conflicted"
     )
-      return operation;
+      return { operation, known: false };
     const status = await this.getTransactionStatus(this.transaction(operation));
     if (status === "confirmed" || status === "pending")
-      return this.updateOperation(operationId, (current) =>
-        current.state === "confirmed" || current.state === "conflicted"
-          ? current
-          : {
-              ...current,
-              state: status === "confirmed" ? "confirmed" : "submitted",
-            }
-      );
+      return {
+        known: true,
+        operation: await this.updateOperation(operationId, (current) =>
+          current.state === "confirmed" || current.state === "conflicted"
+            ? current
+            : {
+                ...current,
+                state: status === "confirmed" ? "confirmed" : "submitted",
+              }
+        ),
+      };
     // The indexer does not know this transaction. A refused broadcast or an unknown status proves
     // nothing; only a final spend of one of its inputs by another transaction does: then these
     // signed bytes can never land. A conflicting spend still in the mempool is waited on.
     const conflict = await this.finalConflict(operation);
-    if (conflict === undefined) return operation;
-    return this.updateOperation(operationId, (current) =>
-      (current.state === "exposed" || current.state === "submitted") &&
-      current.transactions[0].txid === operation.transactions[0].txid
-        ? { ...current, state: "conflicted", conflict }
-        : current
-    );
+    if (conflict === undefined) return { operation, known: false };
+    return {
+      known: false,
+      operation: await this.updateOperation(operationId, (current) =>
+        (current.state === "exposed" || current.state === "submitted") &&
+        current.transactions[0].txid === operation.transactions[0].txid
+          ? { ...current, state: "conflicted", conflict }
+          : current
+      ),
+    };
   }
 
   /**
    * Part of the ordinary balance refresh: reads what the chain says of up to
    * ECASH_RECONCILE_PER_REFRESH exposed or submitted operations (the next ones each time), so a
    * send that landed is confirmed, and one another device's final spend made impossible is
-   * marked conflicted, without a restart. Chain reads only: nothing is signed or broadcast. A
-   * failed read leaves that operation as it was, for the next refresh.
+   * marked conflicted, without a restart. Chain reads only: nothing is signed or broadcast.
+   *
+   * A send the chain knows (in the mempool) is checked on every refresh: one cheap status read,
+   * and it shows confirmed on the first refresh after its block. One whose transaction the chain
+   * does not know and that has no final conflict (its inputs were scanned), or whose read
+   * failed, is skipped for 1, 2, 4 … up to
+   * ECASH_RECONCILE_MAX_BACKOFF refreshes, so a long-stuck send does not rescan its inputs on
+   * every poll. A failed read is logged once and readable from `getReconcileFailures` until the
+   * operation reconciles again.
    */
   private async reconcileOpenOperations(): Promise<void> {
-    const open = this.loadLedger().operations.filter(
+    const now = ++this.refreshCount;
+    const all = this.loadLedger().operations.filter(
       (operation) =>
         operation.state === "exposed" || operation.state === "submitted"
+    );
+    const openIds = new Set(all.map((operation) => operation.operationId));
+    for (const id of [...this.reconcileBackoff.keys()])
+      if (!openIds.has(id)) this.reconcileBackoff.delete(id);
+    for (const id of [...this.reconcileFailures.keys()])
+      if (!openIds.has(id)) this.reconcileFailures.delete(id);
+    const open = all.filter(
+      (operation) =>
+        (this.reconcileBackoff.get(operation.operationId)?.skipUntil ?? 0) <=
+        now
     );
     if (open.length === 0) return;
     const count = Math.min(open.length, ECASH_RECONCILE_PER_REFRESH);
     const start = this.reconcileCursor % open.length;
     this.reconcileCursor = start + count;
-    for (let i = 0; i < count; i++)
-      await this.reconcileNativeOperation(
-        open[(start + i) % open.length].operationId
-      ).catch(() => undefined);
+    const backOff = (operationId: string) => {
+      const misses = (this.reconcileBackoff.get(operationId)?.misses ?? 0) + 1;
+      this.reconcileBackoff.set(operationId, {
+        misses,
+        skipUntil:
+          now + Math.min(2 ** (misses - 1), ECASH_RECONCILE_MAX_BACKOFF),
+      });
+    };
+    for (let i = 0; i < count; i++) {
+      const before = open[(start + i) % open.length];
+      const id = before.operationId;
+      try {
+        const after = await this.reconcileOperation(id);
+        this.reconcileFailures.delete(id);
+        if (!after.known && after.operation.state === before.state) backOff(id);
+        else this.reconcileBackoff.delete(id);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!this.reconcileFailures.has(id))
+          console.warn("ecash-reconcile-failed", { operationId: id, message });
+        this.reconcileFailures.set(id, message);
+        backOff(id);
+      }
+    }
+  }
+
+  /** Open operations whose last reconcile failed, with why; empty once each reconciles. */
+  getReconcileFailures(): ReadonlyArray<{ operationId: string; message: string }> {
+    return [...this.reconcileFailures].map(([operationId, message]) => ({
+      operationId,
+      message,
+    }));
   }
 
   /**
@@ -1558,6 +1627,8 @@ export class EcashWallet implements NativeWalletHandle {
 
 /** At most this many open eCash operations are reconciled per balance refresh. */
 const ECASH_RECONCILE_PER_REFRESH = 8;
+/** The most balance refreshes an open operation with nothing new is skipped for. */
+const ECASH_RECONCILE_MAX_BACKOFF = 16;
 
 /**
  * One plain eCash send of this device, as its operation journal records it. `pending`: signed,

@@ -438,6 +438,7 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
       txHash: swap.handle.txHash,
       account: main,
       cancelTxHash: cancellation.transactionHash,
+      nonce: swap.nonce,
     })
     // Device A's own swap list reads the same from its journal, before the note goes round.
     expect(swapRecordItemOf(rowOf(swap.handle.operationId))).toMatchObject({
@@ -448,22 +449,46 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
     // Device B, which never saw the swap, reads what the chain says of the record's
     // cancellation: a transfer of nothing from the account to itself, in a block, and its fee.
     const cancelTxHash = (record as { cancelTxHash: string }).cancelTxHash
+    const nonce = (record as { nonce: number }).nonce
     await expect(
-      observeSwapCancellation(chain, { cancelTxHash, account: main }),
+      observeSwapCancellation(chain, { cancelTxHash, account: main, nonce }),
     ).resolves.toEqual({ status: 'cancelled', feeWei: fee })
     // Asked again, the same answer.
     await expect(
-      observeSwapCancellation(chain, { cancelTxHash, account: main }),
+      observeSwapCancellation(chain, { cancelTxHash, account: main, nonce }),
     ).resolves.toEqual({ status: 'cancelled', feeWei: fee })
+    // The cancellation is this swap's only at the swap's nonce.
+    await expect(
+      observeSwapCancellation(chain, { cancelTxHash, account: main, nonce: nonce + 1 }),
+    ).rejects.toThrow('not a swap by this account')
+    // Another transfer of nothing from an account to itself, at a different nonce than the
+    // record's, is not the record's cancellation either.
+    const devAccount = (await dev.getAddress()).toLowerCase()
+    const selfTransfer = await dev.sendTransaction({ to: devAccount, value: 0n })
+    await selfTransfer.wait()
+    await expect(
+      observeSwapCancellation(chain, {
+        cancelTxHash: selfTransfer.hash,
+        account: devAccount,
+        nonce: selfTransfer.nonce + 1,
+      }),
+    ).rejects.toThrow('not a swap by this account')
+    await expect(
+      observeSwapCancellation(chain, {
+        cancelTxHash: selfTransfer.hash,
+        account: devAccount,
+        nonce: selfTransfer.nonce,
+      }),
+    ).resolves.toMatchObject({ status: 'cancelled' })
     // The chain is believed over a record: the swap's own transaction is in no block, and a
     // transaction that is not the account's transfer to itself is refused.
     await expect(
-      observeSwapCancellation(chain, { cancelTxHash: swap.handle.txHash, account: main }),
+      observeSwapCancellation(chain, { cancelTxHash: swap.handle.txHash, account: main, nonce }),
     ).resolves.toEqual({ status: 'pending' })
     const funding = await dev.sendTransaction({ to: main, value: 1n })
     await funding.wait()
     await expect(
-      observeSwapCancellation(chain, { cancelTxHash: funding.hash, account: main }),
+      observeSwapCancellation(chain, { cancelTxHash: funding.hash, account: main, nonce }),
     ).rejects.toThrow('not a swap by this account')
 
     // After a restart the journal still names the cancellation, and nothing is sent again.

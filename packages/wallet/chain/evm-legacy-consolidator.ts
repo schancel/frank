@@ -289,6 +289,7 @@ export function swapRecordItemOf(
     networkFee: record.networkFeeWei,
     ...(route !== undefined && route.length <= 1024 ? { route } : {}),
     ...(cancelTxHash === undefined ? {} : { cancelTxHash }),
+    nonce: Transaction.from(member.unsignedTransaction).nonce,
     timestamp: Date.now(),
   }
 }

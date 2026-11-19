@@ -348,7 +348,9 @@ describe('buildWalletHistoryGroups', () => {
     expect(row.kind === 'noted' && row.state).toBe('included')
 
     // With the swap's record (which rides in the cancellation's note and names it), every
-    // device shows the one swap row, "Cancelled": the cancellation is no second row of its own.
+    // device shows the one swap row, "Cancelled", with the cancellation's fee: the cancellation
+    // is no second row of its own. Before the chain has been read for the swap row, the fee is
+    // the one the cancellation's note recorded.
     const swap: SwapActivityRow = {
       id: 'swap-id',
       timestamp: 11000,
@@ -363,13 +365,16 @@ describe('buildWalletHistoryGroups', () => {
       status: 'cancelled',
     }
     for (const rows of [
-      load([given], [note], [swap]),
-      load([given], [], [swap]),
+      load([given], [note], [{ ...swap, feeWei: fee }]),
+      load([given], [], [{ ...swap, feeWei: fee }]),
+      load([], [note], [{ ...swap, feeWei: fee }]),
+      // Device B, its outcome not read yet: the note's fee.
       load([], [note], [swap]),
     ]) {
       expect(rows).toHaveLength(1)
       expect(rows[0]!.kind).toBe('swap')
       expect(rows[0]!.kind === 'swap' && rows[0]!.swap.status).toBe('cancelled')
+      expect(rows[0]!.kind === 'swap' && rows[0]!.swap.feeWei).toBe(fee)
     }
   })
 

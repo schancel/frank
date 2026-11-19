@@ -49,4 +49,6 @@ export const swapRecordCodec = cborItemCodec<SwapRecordItem>('swap-record', {
   timestamp: req(13, timestampMs),
   // The cancellation that took the swap's nonce: the swap never landed.
   cancelTxHash: opt(14, transactionId),
+  // The nonce the swap was signed at: a cancellation counts only at it.
+  nonce: opt(15, int(0, Number.MAX_SAFE_INTEGER)),
 })

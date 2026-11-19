@@ -760,6 +760,8 @@ test('a swap is recorded by the wallet: journaled with the call before signing, 
         interfaceFee: '0',
         networkFee: '250000',
         route: '{"zeroForOne":true}',
+        // The nonce the swap was signed at, which binds any cancellation to it.
+        nonce: 0,
         timestamp: expect.any(Number),
       },
     ])

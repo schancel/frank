@@ -20,6 +20,9 @@ export interface SwapActivityRow {
   txHash: string
   /** The cancellation that gave the swap up past its deadline, when its record names one. */
   cancelTxHash?: string
+  /** What a cancelled swap cost: its cancellation's network fee, in the native coin's smallest
+   * unit, once the chain has shown it. */
+  feeWei?: string
   fromAmount: string
   fromAsset: string
   /** What arrived when the chain has been read; until then the least that may arrive. */
@@ -80,6 +83,9 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
       chainIdentifier: record.chainIdentifier,
       txHash: record.txHash,
       ...(record.cancelTxHash ? { cancelTxHash: record.cancelTxHash } : {}),
+      ...(outcome?.status === 'cancelled' && outcome.feeWei !== undefined
+        ? { feeWei: outcome.feeWei }
+        : {}),
       fromAmount: exactTokenAmount(
         BigInt(record.amountIn),
         record.assetIn.decimals,
@@ -187,10 +193,13 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
             (result === undefined || result.status === 'pending')
           ) {
             // Given up past its deadline by a cancellation of the account's: the chain must show
-            // it, a transfer of nothing from the account to itself, in a block.
+            // it, a transfer of nothing from the account to itself at the swap's nonce, in a
+            // block. A record that names no nonce cannot be bound to its cancellation.
+            if (record.nonce === undefined) throw new SwapRecordMismatchError()
             const cancelled = await observeSwapCancellation(session.reader, {
               cancelTxHash: record.cancelTxHash,
               account: record.account,
+              nonce: record.nonce,
             })
             if (!alive) return
             if (cancelled.status === 'cancelled')

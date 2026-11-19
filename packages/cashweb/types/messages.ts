@@ -296,9 +296,15 @@ export interface SwapRecordItem {
    * block, and the wallet gave it up with its cancellation, a transfer of nothing from `account`
    * to itself at the swap's nonce, which the chain included. The record then rides in the note
    * that reports the cancellation, so every device of the account lists the swap as cancelled.
-   * What the cancellation cost is read from the chain by this hash.
+   * What the cancellation cost is read from the chain by this hash; the chain must show it from
+   * `account` to itself, of nothing, at the swap's `nonce`.
    */
   cancelTxHash?: string
+  /**
+   * The nonce the swap's transaction was signed at (EVM). A cancellation is believed only at
+   * this nonce of `account`: it is what binds `cancelTxHash` to this swap.
+   */
+  nonce?: number
   timestamp: number
 }
 

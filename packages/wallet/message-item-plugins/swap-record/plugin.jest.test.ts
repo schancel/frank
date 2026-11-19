@@ -51,6 +51,7 @@ describePluginContract({
         networkFee: '21131544000000000',
         route: '{"zeroForOne":true}',
         cancelTxHash: '0x' + 'cd'.repeat(32),
+        nonce: 4,
         timestamp: 1760000000000,
       },
       preview: 'Swap: MON → USDC on monad-testnet',

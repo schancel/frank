@@ -589,6 +589,35 @@ describe('a landed cancellation of an expired swap', () => {
     ).toContain('0.0000231')
   })
 
+  it('a swap row given up past its deadline reads Cancelled, nothing received, with its cancellation’s fee', () => {
+    const wrapper = mount({
+      id: 'swap:s',
+      kind: 'swap',
+      swap: {
+        id: 's',
+        timestamp: 11000,
+        chainIdentifier: 'monad-testnet',
+        txHash: '0x' + 'c1'.repeat(32),
+        cancelTxHash: cancelHash,
+        feeWei: fee,
+        fromAmount: '0.000000000000001',
+        fromAsset: 'MONT',
+        toAmount: '0',
+        toAsset: 'USDC',
+        route: 'Uniswap v4',
+        status: 'cancelled',
+      },
+      timeMs: 11000,
+    })
+    expect(wrapper.get('[data-testid="wallet-activity-status"]').text()).toBe(
+      'Cancelled',
+    )
+    expect(wrapper.get('.wallet-history-amount').text()).toContain('→ 0 USDC')
+    expect(wrapper.get('[data-testid="wallet-activity-fee"]').text()).toBe(
+      'Network fee 0.0000231 MONT',
+    )
+  })
+
   it('on another device, from the note: the same card; Cancelled only once the chain shows it', () => {
     const send = (state: 'included' | 'pending') => ({
       txHash: cancelHash,

@@ -165,13 +165,14 @@ export type SwapResult =
  * What the chain says of a recorded swap's cancellation (`SwapRecordItem.cancelTxHash`), for a
  * device of the account that did not make it. Sends nothing. `cancelled` once the chain shows
  * the cancellation in a block as what the wallet sends: a successful transfer of nothing from
- * `account` to itself; its fee is what the cancellation charged. `pending` while the node
+ * `account` to itself at the swap's `nonce` (so it is this swap's, not any other self-transfer);
+ * its fee is what the cancellation charged. `pending` while the node
  * returns no receipt (it is asked again later). Throws `SwapRecordMismatchError` when the chain
  * shows anything else under that hash: the record is not believed over the chain.
  */
 export async function observeSwapCancellation(
   reader: Pick<SwapExecutionReader, 'getTransactionReceipt' | 'getTransaction'>,
-  input: { cancelTxHash: string; account: string },
+  input: { cancelTxHash: string; account: string; nonce: number },
 ): Promise<{ status: 'cancelled'; feeWei: bigint } | { status: 'pending' }> {
   const receipt = await reader.getTransactionReceipt(input.cancelTxHash)
   if (!receipt) return { status: 'pending' }
@@ -179,13 +180,15 @@ export async function observeSwapCancellation(
     typeof a === 'string' && a.toLowerCase() === input.account.toLowerCase()
   const tx = (await reader.getTransaction(input.cancelTxHash)) as {
     value?: bigint
+    nonce?: number
   } | null
   if (
     receipt.status !== 1 ||
     !same(receipt.from) ||
     !same(receipt.to) ||
     !tx ||
-    tx.value !== 0n
+    tx.value !== 0n ||
+    tx.nonce !== input.nonce
   )
     throw new SwapRecordMismatchError()
   return { status: 'cancelled', feeWei: receipt.gasUsed * receipt.gasPrice }

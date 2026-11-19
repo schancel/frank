@@ -549,10 +549,19 @@ export function buildWalletHistoryGroups(input: {
         : []
       const operation = matches.length === 1 ? matches[0] : undefined
       if (operation) attached.add(operation.operationId)
+      // A cancelled swap's fee: what the chain showed of its cancellation, or, until that is
+      // read, the fee its cancellation's note recorded (the note is not a row of its own).
+      const cancel = swap.cancelTxHash?.toLowerCase()
+      const notedFee = cancel
+        ? (load.status === 'available' ? load.noted : []).find(
+            send => send.txHash.toLowerCase() === cancel,
+          )?.inclusion?.feeWei
+        : undefined
+      const feeWei = swap.feeWei ?? notedFee
       return {
         kind: 'swap',
         id: `swap:${swap.id}`,
-        swap,
+        swap: feeWei === undefined ? swap : { ...swap, feeWei },
         operation,
         timeMs: swap.timestamp,
       }

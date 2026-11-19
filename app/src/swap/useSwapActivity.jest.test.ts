@@ -214,7 +214,7 @@ describe('Recent Activity', () => {
           : null,
       )
       mockTransaction.mockImplementation(async (hash: string) =>
-        hash === cancelTxHash ? { value: 0n } : null,
+        hash === cancelTxHash ? { value: 0n, nonce: 4 } : null,
       )
     }
 
@@ -222,7 +222,7 @@ describe('Recent Activity', () => {
       cancellationOnChain()
       const api = await mountActivity()
       // The cancellation's note, with the swap's record riding in it.
-      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      useSwapStore().handleSwapItem(note({ cancelTxHash, nonce: 4 }))
       await flushPromises()
       expect(mockReceipt).toHaveBeenCalledWith(cancelTxHash)
       expect(api.rows.value).toEqual([
@@ -230,6 +230,7 @@ describe('Recent Activity', () => {
           id: 'a'.repeat(64),
           txHash: note().txHash,
           cancelTxHash,
+          feeWei: (21_000n * 10n ** 9n).toString(),
           toAmount: '0',
           status: 'cancelled',
         }),
@@ -241,7 +242,7 @@ describe('Recent Activity', () => {
       })
       // The note delivered again: the same one row, and the chain is not asked again.
       mockReceipt.mockClear()
-      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      useSwapStore().handleSwapItem(note({ cancelTxHash, nonce: 4 }))
       await api.readOutcomes()
       expect(mockReceipt).not.toHaveBeenCalled()
       expect(api.rows.value).toHaveLength(1)
@@ -266,7 +267,7 @@ describe('Recent Activity', () => {
         // Its wait is now 40 s; the cancellation's note arrives meanwhile.
         cancellationOnChain()
         now += 1_000
-        useSwapStore().handleSwapItem(note({ cancelTxHash }))
+        useSwapStore().handleSwapItem(note({ cancelTxHash, nonce: 4 }))
         await flushPromises()
         expect(api.rows.value[0]!.status).toBe('cancelled')
       } finally {
@@ -277,7 +278,18 @@ describe('Recent Activity', () => {
     it('is not believed over the chain: a cancellation hash that is not the account’s transfer to itself hides the record', async () => {
       cancellationOnChain('0xsomeoneelse')
       const api = await mountActivity()
-      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      useSwapStore().handleSwapItem(note({ cancelTxHash, nonce: 4 }))
+      await flushPromises()
+      expect(api.rows.value).toEqual([])
+    })
+
+    it('is not believed at another nonce than the swap’s, nor for a record that names none', async () => {
+      cancellationOnChain()
+      const api = await mountActivity()
+      useSwapStore().handleSwapItem(note({ cancelTxHash, nonce: 5 }))
+      useSwapStore().handleSwapItem(
+        note({ swapId: 'b'.repeat(64), cancelTxHash }),
+      )
       await flushPromises()
       expect(api.rows.value).toEqual([])
     })
@@ -286,7 +298,7 @@ describe('Recent Activity', () => {
       cancellationOnChain()
       mockReceipt.mockResolvedValue(null)
       const api = await mountActivity()
-      useSwapStore().handleSwapItem(note({ cancelTxHash }))
+      useSwapStore().handleSwapItem(note({ cancelTxHash, nonce: 4 }))
       await flushPromises()
       expect(api.rows.value[0]!.status).toBe('pending')
       expect(useSwapStore().outcomes).toEqual({})

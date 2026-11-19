@@ -1182,8 +1182,9 @@ export default defineComponent({
             }
           : result.status === 'cancelled'
           ? {
+              // The cancellation's own fee, as every other device reads it from the chain.
               status: 'cancelled',
-              feeWei: result.totalFeeWei.toString(),
+              feeWei: result.feeWei.toString(),
               reason: 'cancelled',
             }
           : {

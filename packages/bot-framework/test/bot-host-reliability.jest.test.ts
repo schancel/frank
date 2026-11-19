@@ -1507,6 +1507,41 @@ describe("FrankBotHost Reliability Features", () => {
       }
     });
 
+    it("a pass that keeps failing does not hold coin merging; only one still running does", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        // An operation that never builds (its value spread over too many coins, say): the
+        // merge is what may let it build, so its failure must not stop the merge.
+        const failing = jest.fn(async () => {
+          throw new Error("fixture: too many coins for one post");
+        });
+        const { host, instance } = await registered("maintain-failed", failing);
+        instance.wallet.maintainCoins = jest.fn(async () => undefined);
+        for (let poll = 0; poll < 2; poll++) await (host as any).pollAllBots();
+        expect(failing).toHaveBeenCalledTimes(2);
+        expect(instance.wallet.maintainCoins).toHaveBeenCalledTimes(2);
+        await host.stop();
+
+        let answer!: () => void;
+        // The first pass runs past its bound; the next one answers.
+        const hung = jest
+          .fn(async () => undefined)
+          .mockImplementationOnce(() => new Promise<void>((resolve) => (answer = resolve)));
+        const running = await registered("maintain-running", hung, { callTimeoutMs: 20 });
+        running.instance.wallet.maintainCoins = jest.fn(async () => undefined);
+        for (let poll = 0; poll < 2; poll++) await (running.host as any).pollAllBots();
+        expect(running.instance.wallet.maintainCoins).not.toHaveBeenCalled();
+        answer();
+        await running.instance.topicReconcile;
+        await (running.host as any).pollAllBots();
+        expect(hung).toHaveBeenCalledTimes(2);
+        expect(running.instance.wallet.maintainCoins).toHaveBeenCalledTimes(1);
+        await running.host.stop();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
     it("stop waits for a pass still running before closing the wallet", async () => {
       const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
       try {

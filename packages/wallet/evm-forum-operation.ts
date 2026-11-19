@@ -507,6 +507,11 @@ function forumRelayError(cause: unknown): unknown {
   }
 }
 
+/** How long one Forum request to the relay may take before it is abandoned, as the mailbox
+ * client's relay requests are. An abandoned request leaves the operation kept: the next
+ * reconciliation pass sends the same signed set again, never a new payment. */
+export const FORUM_RELAY_TIMEOUT_MS = 60_000
+
 async function exchange(
   wallet: EvmWalletHandle,
   operation: OutgoingTopicOperation | RetainedTopicOperation,
@@ -518,6 +523,8 @@ async function exchange(
       : await bindForumAuthority(wallet, operation)
   if ((await wallet.provider.getNetwork()).chainId !== wallet.forumChainId)
     throw new Error('Forum provider chain mismatch')
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), FORUM_RELAY_TIMEOUT_MS)
   const response = await axios({
     method,
     url: `${wallet.relayBaseUrl.replace(/\/+$/, '')}/message/monad/topics${
@@ -531,9 +538,13 @@ async function exchange(
     responseType: 'arraybuffer',
     maxContentLength: 4 * 1024 * 1024,
     maxBodyLength: 4 * 1024 * 1024,
-  }).catch((cause: unknown) => {
-    throw forumRelayError(cause)
+    timeout: FORUM_RELAY_TIMEOUT_MS,
+    signal: controller.signal,
   })
+    .catch((cause: unknown) => {
+      throw forumRelayError(cause)
+    })
+    .finally(() => clearTimeout(timer))
   const bytes = new Uint8Array(response.data)
   if (
     bytes.length > 4 * 1024 * 1024 ||

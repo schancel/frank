@@ -1583,8 +1583,10 @@ export class FrankBotHost {
     // The bot's paid forum posts and votes the wallet kept unresolved (a crash or a timeout
     // left their outcome unknown): the wallet sends the same signed set again and settles it
     // from the chain, never a new payment. Single flight across polls: a pass still running
-    // from an earlier poll goes on, and none is started beside it.
-    if (!(await this.reconcileTopicOperations(id, instance))) held = true;
+    // from an earlier poll goes on, and none is started beside it. Only a pass still running
+    // holds coin merging: one that ended in an error does not, since an operation that keeps
+    // failing (one whose value is spread over too many coins, say) may need the merge itself.
+    if ((await this.reconcileTopicOperations(id, instance)) === "running") held = true;
     if (this.closing) return;
     // Idle (no reply being handled or asked about): the wallet may merge the small coins
     // stamps and payouts left (owner, 2026-10-26). Not awaited; its failure is not this
@@ -1605,16 +1607,17 @@ export class FrankBotHost {
   }
 
   /** One pass of the wallet's public reconciliation of this bot's kept forum operations
-   * (`topics.reconcileOperations`), bounded like every wallet question. Resolves whether it
-   * succeeded; never rejects. A failure is warned once until a pass succeeds again, and the next
-   * poll's wallet questions try again: the operation stays kept by the wallet, unpaid again. */
+   * (`topics.reconcileOperations`), bounded like every wallet question. Resolves how it ended
+   * ("running": still running past its bound, or one from an earlier poll is); never rejects.
+   * A failure is warned once until a pass succeeds again, and the next poll's wallet questions
+   * try again: the operation stays kept by the wallet, unpaid again. */
   private async reconcileTopicOperations(
     id: string,
     instance: ActiveBotInstance
-  ): Promise<boolean> {
-    if (this.closing) return true;
+  ): Promise<"done" | "failed" | "running"> {
+    if (this.closing) return "done";
     // A pass that outlived an earlier poll's bound goes on; this poll does not start another.
-    if (instance.topicReconcile) return false;
+    if (instance.topicReconcile) return "running";
     let ended = false;
     const pass = Promise.resolve()
       .then(() =>
@@ -1651,16 +1654,16 @@ export class FrankBotHost {
         "Reconciling the wallet's forum operations",
         this.options.callTimeoutMs
       );
-      return true;
+      return "done";
     } catch (error) {
       // A failed pass was warned above; one still running past the bound is said here.
-      if (!ended)
-        console.warn(
-          `[bot-host] [${id}] ${
-            error instanceof Error ? error.message : error
-          }; it goes on beside later polls`
-        );
-      return false;
+      if (ended) return "failed";
+      console.warn(
+        `[bot-host] [${id}] ${
+          error instanceof Error ? error.message : error
+        }; it goes on beside later polls`
+      );
+      return "running";
     }
   }
 

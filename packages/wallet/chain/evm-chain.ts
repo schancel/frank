@@ -317,6 +317,7 @@ import { defaultNativeEvmTransactionBuilder } from "./evm-transaction-builder";
 import { readEvmBlockTimes } from "./evm-block-times";
 import {
   fundsSettleBlocks,
+  nextCoinWaits,
   registrySpendRule,
   requireRegistrySpendRule,
 } from "./evm-spend-rule";
@@ -1168,8 +1169,12 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
       let held = others();
       // Synchronous from the look to the claim: nobody else can take one in between.
       if (held.length === 0 && own().length === 0) {
-        for (const address of addresses)
+        for (const address of addresses) {
           pool.restoreAccountClaim(holder, address);
+          // What this operation spends may be outside the coin list (an unjournalled
+          // transfer): the end of this claim is read again, whatever the list settled before.
+          internals.coinListSync?.forgetOwnSpendListed(address);
+        }
         // From this moment an operation is running under the holder: counted in the same
         // synchronous step as the claim, so a message that is waiting for the account cannot
         // take the claim for a settled leftover and let it go while this operation is still
@@ -3123,7 +3128,10 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               return owner.listOperations()
                 .filter((row) => !row.cancelled && row.members.some(
                   (member) => (member.signed &&
-                    member.observation.state === "included-success" &&
+                    (member.observation.state === "included-success" ||
+                      // A reverted contract call's fee is told too (`applySync`).
+                      (row.kind === "contract" &&
+                        member.observation.state === "included-revert")) &&
                     !member.syncApplied) ||
                     // A given-up call's included cancellation is told to the other devices too,
                     // on the same condition `applySync` sends it.
@@ -3628,6 +3636,38 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
               // reports, so a repeat is the same message; applying it twice changes nothing.
               // Best effort: a failure leaves the member not sync-applied and a later flush
               // sends it again. The other devices apply it in `consumeSelfNotes`.
+              // A contract call's (or its cancellation's) receipt: the coin list settles the
+              // spend as it settles a native payment's (`EvmCoinList.recordMined`). The coin at the
+              // call's nonce is spent, and the account's next nonce holds what that coin held less
+              // what the receipt shows the account paid; money that arrived meanwhile is listed by
+              // the account's next read. Nothing is read from the chain here.
+              onOwnSpendIncluded: async ({ account, nonce, block, debitWei }) => {
+                const coin = coinList.get(account, nonce);
+                // Nothing listed at the nonce (a read already listed past it), or it is settled.
+                if (coin === undefined || coin.state === "spent") return;
+                // Another operation's coin: its own settlement decides it.
+                if (coin.holder !== undefined) return;
+                const sync = transactionSetRuntime.coinListSync;
+                if (coin.valueWei < debitWei) {
+                  // What it held was listed before money that paid for this arrived: no
+                  // successor from a guess; the account is read again.
+                  await coinList.recordMined(coin, { block });
+                  sync.markDirty(account);
+                  return;
+                }
+                await coinList.recordMined(coin, {
+                  block,
+                  successor: {
+                    valueWei: coin.valueWei - debitWei,
+                    ...nextCoinWaits(block, config.spendSpacingBlocks ?? 0, false),
+                  },
+                });
+                sync.noteOwnSpendListed(account);
+                // What the receipt showed may free the account: the claim that held it for this
+                // call ends now, not at whatever next looks (a cancellation's receipt is read by a
+                // look at the account's funds, which frees nothing itself).
+                await releaseSettledMainAccounts(wallet, false);
+              },
               onSyncCheckpoint: archiveCompletedFinancialOperations,
               onSyncTransaction: async (item, swapRecord) => {
                 const messageId = getBytes(

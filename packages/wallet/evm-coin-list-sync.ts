@@ -157,7 +157,40 @@ export class EvmCoinListSync {
    * dropped from selection until the chain has been read again. */
   markDirty(account: string): void {
     this.supersedeReads(account)
+    this.ownSpendListed.delete(account.toLowerCase())
     this.dirty.add(account.toLowerCase())
+  }
+
+  /** Accounts whose latest spend is the wallet's own, already settled in the list from its
+   * receipt (`noteOwnSpendListed`): the claim that held them for it ends with nothing to read. */
+  private readonly ownSpendListed = new Set<string>()
+
+  /**
+   * The list has just settled a spend of the wallet's own from `account` from that spend's
+   * receipt: `[account, nonce]` retired and the next nonce listed with what remains
+   * (`EvmCoinList.recordMined`). That is what a read of the account would have found, so the
+   * account is no longer due a read for what was pending meanwhile (its own transaction in the
+   * mempool), and the end of the claim that held it for that spend
+   * (`takeOwnSpendListed`) announces nothing. Any later mark (`markDirty`) undoes it.
+   */
+  noteOwnSpendListed(account: string): void {
+    const key = account.toLowerCase()
+    this.supersedeReads(key)
+    this.dirty.delete(key)
+    this.ownSpendListed.add(key)
+  }
+
+  /** Whether `account`'s latest spend was the wallet's own, settled in the list
+   * (`noteOwnSpendListed`) with no mark since; true once. A claim on the account that ends
+   * then spent nothing the list does not know. */
+  takeOwnSpendListed(account: string): boolean {
+    return this.ownSpendListed.delete(account.toLowerCase())
+  }
+
+  /** Something may now spend from `account` that the list will not settle: a later end of its
+   * claim is read again (`takeOwnSpendListed` answers false). */
+  forgetOwnSpendListed(account: string): void {
+    this.ownSpendListed.delete(account.toLowerCase())
   }
 
   /** A move of the wallet's own landed at `account` (a merge into a fresh change account):

@@ -317,7 +317,10 @@ export function installEvmWalletCoinList(params: {
         .some(
           coin =>
             coin.account === change.address && coin.holder === change.holder,
-        )
+        ) &&
+      // The claim ends after a spend of the wallet's own the list settled from its receipt (a
+      // contract call): the list holds what the account does.
+      !sync.takeOwnSpendListed(change.address)
     )
       sync.markDirty(change.address)
   })

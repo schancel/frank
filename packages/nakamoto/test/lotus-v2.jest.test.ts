@@ -815,6 +815,23 @@ describe('Lotus v2 strict parse rejections', () => {
     expect(() => decodeLotusV2Transaction(chain, tx)).toThrow(
       new LotusV2FormatError('native output value'),
     )
+    // Burn outputs are native too (lotusd consensus/tx_check.cpp:52).
+    const burn = (value: bigint): LotusV2Output => ({
+      value,
+      burn: true,
+      branches: [root],
+      paths: [],
+    })
+    const burnWire = encodeLotusV2Output(burn(LOTUS_V2_MAX_MONEY))
+    expect(decodeLotusV2Output(burnWire).value).toBe(LOTUS_V2_MAX_MONEY)
+    expect(() => encodeLotusV2Output(burn(LOTUS_V2_MAX_MONEY + 1n))).toThrow(
+      new LotusV2FormatError('native output value'),
+    )
+    const burnOver = Uint8Array.from(burnWire)
+    burnOver[1] = 1
+    expect(() => decodeLotusV2Output(burnOver)).toThrow(
+      new LotusV2FormatError('native output value'),
+    )
     // Token amounts are not native: above 2^63 is valid.
     const token: LotusV2Output = {
       ...native(2n ** 64n - 1n),

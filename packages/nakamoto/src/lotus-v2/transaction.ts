@@ -29,7 +29,7 @@ export const LOTUS_V2_MAX_OUTPUT_PATHS = 16
 export const LOTUS_V2_MAX_COINBASE_DATA = 8192
 /**
  * C16a `MAX_MONEY` in atoms: `MoneyRange(v)` is `0 <= v <= MAX_MONEY`. It bounds
- * every spendable native output and every legacy coin value; token amounts
+ * every native output (spendable or burn) and every legacy coin value; token amounts
  * keep the full u64 range. The value is "recommended, awaiting owner
  * sign-off" (Lotus consensus.md C16a) and may change; this is its one
  * definition in Frank.
@@ -152,9 +152,9 @@ export function validateLotusV2Output(output: LotusV2Output): void {
       output.value < 1n << 64n,
     'output value',
   )
-  // C16a: a spendable native output outside MoneyRange is invalid on sight.
-  // Token amounts are not native; a burn output is not spendable.
-  if (output.tokenId === undefined && !output.burn)
+  // C16a: a native output (spendable or burn) outside MoneyRange is invalid
+  // on sight. Token amounts are not native.
+  if (output.tokenId === undefined)
     check(output.value <= LOTUS_V2_MAX_MONEY, 'native output value')
   if (output.tokenId !== undefined)
     check(!isZero(hash32(output.tokenId, 'token id')), 'zero token')

@@ -169,10 +169,12 @@ Second batch of rulings (lotus-86 spec update, relayed by the coordinator, 2026-
     native output values now. The number is "recommended, awaiting owner sign-off" and may
     change; the structure will not, and the node enforces a native money range. Nakamoto defines
     it once, `LOTUS_V2_MAX_MONEY` in `src/lotus-v2/transaction.ts`, and the output codec rejects a
-    spendable native output above it (`native output value`) on encode and parse; the legacy
-    coin codec uses the same constant. Token amounts keep the full u64 range. Burn outputs are
-    not bounded: C16a names spendable native outputs, and a burn output is unspendable (to
-    confirm with lotus-86 if the node bounds them too). lotusd is adding `MoneyRange` to
+    native output above it, spendable or `IS_BURN` (`native output value`), on encode and
+    parse; the legacy coin codec uses the same constant. Token amounts keep the full u64 range.
+    Burn outputs are bounded too (lotus-86 follow-up, same day: lotusd
+    `consensus/tx_check.cpp:52` checks every output's native value including `IS_BURN`, and
+    C16a now reads "A native output (spendable or IS_BURN) with value outside MoneyRange is
+    invalid"). lotusd is adding `MoneyRange` to
     `DecodeCoinOutput`/`ValidLegacyCoin`, so the node will match P01 and nakamoto on legacy coin
     values.
 

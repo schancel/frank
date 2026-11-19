@@ -15,7 +15,13 @@
  *   through the wallet's contract-call path (`ctx.contractCalls`, a `table-htlc` record, the locks'
  *   deadline as the call's). The call's id is written down when it is signed, before it is handed
  *   out. Each payout goes to the account the player locked from. A send that fails is retried in
- *   the background, as written, with backoff.
+ *   the background, as written, with backoff. A send waits at most
+ *   `TABLE_MAIN_ACCOUNT_WAIT_MS` for a busy main account; giving up is such a failure.
+ * - Watching: after a send the same background step looks at the chain again, with the same
+ *   backoff, until the locks are withdrawn: a call not yet in a block is handed out again, a
+ *   reverted one (receipt status 0) re-sent with the same payouts. Once every lock is withdrawn
+ *   the record is dropped (`get` then returns nothing; a bot keeps its own record that the table
+ *   is closed).
  * - After a restart (`recover`), a table whose game is gone is settled the way it was written
  *   down (a recorded settlement is resumed or re-sent as it was, never recomputed), or, with
  *   nothing written, by returning each buy-in. The preimage is derived again; it is never stored.
@@ -48,6 +54,10 @@ export const TABLE_SEATING_MARGIN_SECONDS = 60 * 60;
 /** Background retries of a settlement or a recovery: from this, doubling, up to the cap. */
 export const TABLE_RETRY_BASE_MS = 5_000;
 export const TABLE_RETRY_MAX_MS = 10 * 60_000;
+/** How long a settlement's send waits for the main account's earlier payment to be seen on
+ * chain before it gives up (and is retried in the background), so a player's message handler
+ * does not wait on a busy account. */
+export const TABLE_MAIN_ACCOUNT_WAIT_MS = 10_000;
 
 export interface TableEscrowSeat {
   /** The player's identity address (the one it messages from). */
@@ -135,7 +145,7 @@ export interface TableEscrowBook {
   /** After a restart: settles every kept table that `live` does not know, each on its own.
    * Never rejects; a table that fails is retried in the background. */
   recover(ctx: BotContext, live: (tableId: string) => boolean): Promise<TableSettlementResult[]>;
-  /** Stops background retries (the bot is stopping). */
+  /** Stops background retries and watching (the bot is stopping). */
   stop(): void;
 }
 
@@ -245,13 +255,15 @@ export class TableEscrows implements TableEscrowBook {
   private stopped = false;
   private readonly retryBaseMs: number;
   private readonly retryMaxMs: number;
+  private readonly mainAccountWaitMs: number;
 
   constructor(
     readonly game: TableGame,
-    options: { retryBaseMs?: number; retryMaxMs?: number } = {}
+    options: { retryBaseMs?: number; retryMaxMs?: number; mainAccountWaitMs?: number } = {}
   ) {
     this.retryBaseMs = options.retryBaseMs ?? TABLE_RETRY_BASE_MS;
     this.retryMaxMs = options.retryMaxMs ?? TABLE_RETRY_MAX_MS;
+    this.mainAccountWaitMs = options.mainAccountWaitMs ?? TABLE_MAIN_ACCOUNT_WAIT_MS;
   }
 
   get(tableId: string): Readonly<TableEscrowRecord> | undefined {
@@ -476,9 +488,15 @@ export class TableEscrows implements TableEscrowBook {
         // The call's id is kept once signed, before anyone has the bytes: no window in which a
         // handed-out call is not written down.
         onSigned: keep,
+        // A busy main account does not hold the ending player's message: the send gives up,
+        // having signed nothing, and is retried in the background.
+        mainAccountWaitMs: this.mainAccountWaitMs,
       });
       await keep(sent);
-      this.retries.delete(tableId);
+      // Handed out: watched from now on, from a fresh backoff, until the chain shows the locks
+      // withdrawn (not in a block: handed out again; reverted: re-sent as written).
+      this.clearRetry(tableId);
+      this.scheduleRetry(ctx, tableId, gameGone);
       return { status: "sent", tableId, txHash: sent.txHash, payouts };
     } catch (error) {
       const reason = reasonOf(error);
@@ -501,6 +519,12 @@ export class TableEscrows implements TableEscrowBook {
     }, delay);
     entry.timer.unref?.();
     this.retries.set(tableId, entry);
+  }
+
+  private clearRetry(tableId: string): void {
+    const entry = this.retries.get(tableId);
+    if (entry?.timer) clearTimeout(entry.timer);
+    this.retries.delete(tableId);
   }
 
   stop(): void {
@@ -544,9 +568,10 @@ export class TableEscrows implements TableEscrowBook {
   ): Promise<TableSettlementResult> {
     try {
       const result = await this.reconcile(ctx, tableId, gameGone);
-      // A call handed out again is looked at again later, until the chain shows it.
+      // A call handed out again is looked at again later, until the chain shows it. A call sent
+      // (or a send that failed) has already scheduled its next look.
       if (result.status === "resumed") this.scheduleRetry(ctx, tableId, gameGone);
-      else if (result.status !== "retrying") this.retries.delete(tableId);
+      else if (result.status !== "retrying" && result.status !== "sent") this.clearRetry(tableId);
       return result;
     } catch (error) {
       const reason = reasonOf(error);
@@ -603,12 +628,19 @@ export class TableEscrows implements TableEscrowBook {
       }
       // In a block with the locks still open, it can only have reverted: the same payouts, sent
       // again. A successful call that left them open is not GenericHTLC v2; nothing is sent.
-      if (receipt.status !== 0)
-        return {
-          status: "not-settleable",
-          tableId,
-          reason: "the settlement landed and the buy-in locks are still open",
-        };
+      if (receipt.status !== 0) {
+        // The locks were read before the receipt: the settlement may have landed in between.
+        const again = await Promise.all(
+          record.seats.map(s => readHtlcLock(ctx.provider, contract, s.lockId))
+        );
+        if (again.every(l => l?.state === "withdrawn")) {
+          await this.forget(ctx, tableId);
+          return { status: "settled", tableId };
+        }
+        // Still open after a successful settlement: looked at again later (a node behind the
+        // receipt), never cleared and never sent twice.
+        throw new Error("the settlement landed and the buy-in locks still read open");
+      }
     }
     if (settlement) return this.sendSettlement(ctx, tableId, gameGone);
     // Nothing was written down: the game is gone, so each player gets its buy-in back.

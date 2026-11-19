@@ -217,7 +217,9 @@ const PROMPTS: Record<string, MessageItem[]> = {
   raffle: [{ type: 'text', text: 'hello' }],
   blackjack: [{ type: 'text', text: 'deal me in' }],
   // No bet is placed here (`real-games.livecheck.ts` plays for money): each game bot is asked
-  // what it offers, which it answers with its next commitment.
+  // what it offers, which it answers with its next commitment. The lobby, poker and liar's dice
+  // are not smoke-checked: a table's join locks a buy-in on chain (`table-htlc.anvil.jest.test.ts`
+  // exercises it on a real node).
   dice: [{ type: 'text', text: 'help' }],
   rps: [{ type: 'text', text: 'help' }],
 }

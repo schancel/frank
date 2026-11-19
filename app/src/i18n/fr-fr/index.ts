@@ -310,6 +310,44 @@ export const rawFrFR = {
     leftStatus:
       'Tombola quittée : {count}/{max} inscrits. Votre participation a été remboursée.',
   },
+  tableBuyIn: {
+    join: 'S’asseoir à la table (bloque {amount})',
+    sendJoin: 'Renvoyer la demande de place',
+    checkAgain: 'Vérifier à nouveau le blocage de la mise',
+    refund: 'Me rembourser la mise',
+    startGame: 'Commencer la partie',
+    viewTransaction: 'Voir la transaction',
+    lockOpen:
+      'Votre mise de {amount} est bloquée sur la chaîne. Si la table ne paie pas, remboursez-la à partir du {deadline}.',
+    lockRefunded: 'Votre mise à cette table a été remboursée.',
+    lockPaidOut: 'Votre mise à cette table a été versée par la table.',
+    checking: 'Vérification de votre mise…',
+    funding:
+      'Transfert de {amount} vers votre compte principal pour la mise et ses frais…',
+    fundingEarlier:
+      'En attente de l’inclusion du transfert précédent vers votre compte principal…',
+    locking: 'Blocage de votre mise sur la chaîne…',
+    lockSent: 'Blocage de la mise envoyé. En attente de son inclusion…',
+    joining: 'Mise bloquée. Envoi de votre demande de place…',
+    refundSent: 'Remboursement envoyé. En attente de son inclusion…',
+    pending:
+      'Votre transaction n’est pas encore dans un bloc. Elle peut encore aboutir ; vérifier à nouveau ne bloque jamais deux fois.',
+    joinFailed:
+      'Votre mise est bloquée, mais la demande de place n’a pas été envoyée. Renvoyez-la, ou remboursez la mise après son échéance.',
+    joinSent:
+      'Demande de place envoyée. La réponse de la table dit si vous êtes assis.',
+    errors: {
+      'insufficient-funds':
+        'Pas assez dans votre portefeuille pour la mise et ses frais de réseau.',
+      'lock-reverted':
+        'Le blocage de la mise n’a pas abouti sur la chaîne. Rien n’a été bloqué ; vous pouvez réessayer.',
+      'lock-closed': 'Votre mise à cette table est déjà clôturée.',
+      'refund-reverted': 'Le remboursement a échoué sur la chaîne. Réessayez.',
+      'unavailable':
+        'Les mises de table ne sont pas disponibles sur ce réseau.',
+      'other': 'Cela n’a pas fonctionné. Réessayez.',
+    },
+  },
   gameFairness: {
     diceRejected: 'Aucun lancer n’a été effectué.',
     diceRejectionReasons: {

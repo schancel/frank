@@ -114,6 +114,10 @@ export const NOT_CARRIED_ITEM_TYPES: ReadonlySet<string> = new Set([
  *   for a swap, which rides in the same note as the call's `wallet-sync` item. It names the swap
  *   and the lock; what the lock holds is read from the chain. Because it is carried only here,
  *   another person cannot make an account believe it locked, claimed or refunded anything.
+ * - `table-htlc-record`: the record of one GenericHTLC call this account made for a game table
+ *   (a buy-in lock, its refund, an arbiter's distribute), beside the call's `wallet-sync` item. It
+ *   names the table and its locks, so the account's other devices can show and refund a lock;
+ *   what each lock holds is read from the chain. Carried only here, for the same reason.
  *
  * - `received-coin`: how the key of one coin this account received is derived (the chain, the
  *   one-time account, and the stealth ephemeral key or the stamp's shared point and child index).
@@ -148,6 +152,7 @@ export const SELF_ONLY_ITEM_TYPES: ReadonlySet<string> = new Set([
   'wallet-sync',
   'swap-record',
   'htlc-record',
+  'table-htlc-record',
   'received-coin',
   'conversation-state',
   'contact-state',

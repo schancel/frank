@@ -23,6 +23,7 @@ import { EVM_CANCELLATION_STAGE } from './evm-native-operation-status'
 import { EVM_FAILURE_CONFIRMATIONS } from './evm-settlement'
 import type {
   HtlcRecordItem,
+  TableHtlcRecordItem,
   SwapRecordItem,
   WalletSyncItem,
   WalletSyncOperation,
@@ -168,11 +169,14 @@ export interface EvmLegacyConsolidatorConfig {
   spendRuleHead?: 'latest' | 'finalized'
 }
 /** The note-to-self item a contract call's record becomes. */
-export type ContractCallRecordItem = SwapRecordItem | HtlcRecordItem
+export type ContractCallRecordItem =
+  | SwapRecordItem
+  | HtlcRecordItem
+  | TableHtlcRecordItem
 
 /** The note-to-self item of an included contract call that carried a record, else undefined:
- * a `swap-record` for a swap, an `htlc-record` for an HTLC step. A game table's call
- * (`table-htlc`) has none yet. */
+ * a `swap-record` for a swap, an `htlc-record` for a swap's HTLC step, a `table-htlc-record`
+ * for a game table's buy-in lock, refund or distribute. */
 export function contractCallRecordItemOf(
   row: EvmNativeOperation,
 ): ContractCallRecordItem | undefined {
@@ -181,8 +185,30 @@ export function contractCallRecordItemOf(
       return htlcRecordItemOf(row)
     case 'swap':
       return swapRecordItemOf(row)
+    case 'table-htlc':
+      return tableHtlcRecordItemOf(row)
     default:
       return undefined
+  }
+}
+
+/** The table-htlc-record item of an included game table call, else undefined. */
+export function tableHtlcRecordItemOf(
+  row: EvmNativeOperation,
+): TableHtlcRecordItem | undefined {
+  const signed = row.members[0]?.signed
+  const { record } = row
+  if (row.kind !== 'contract' || record?.kind !== 'table-htlc' || !signed)
+    return undefined
+  return {
+    type: 'table-htlc-record',
+    chainIdentifier: row.binding.chainIdentifier,
+    action: record.action,
+    game: record.game,
+    tableId: record.tableId,
+    lockIds: [...record.lockIds],
+    txHash: signed.transactionHash,
+    timestamp: Date.now(),
   }
 }
 

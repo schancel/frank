@@ -131,16 +131,17 @@
 
     <!-- Action Buttons -->
     <div class="q-mt-sm">
-      <!-- Join Table Button -->
-      <q-btn
-        v-if="item.action === 'create' || streetIs(item.street, 'waiting')"
-        dense
-        no-caps
-        color="positive"
-        class="full-width q-mb-xs"
-        label="♠️ Sit at Table (1000 chips)"
-        data-testid="poker-join-btn"
-        @click="sendJoin"
+      <!-- Buy-in: lock, join, refund after the deadline (newest card of the table only) -->
+      <table-buy-in-panel
+        v-if="isNewest && (item.escrow || hasOwnLock)"
+        game="poker"
+        :table-id="item.tableId"
+        :buy-in-wei="item.buyInWei"
+        :escrow="item.escrow"
+        :joinable="joinable"
+        :seated="!!localPlayer"
+        :join-item="joinItem"
+        @sendFollowUp="$emit('sendFollowUp', $event)"
       />
 
       <!-- Start Hand Button -->
@@ -254,11 +255,21 @@
 
 <script lang="ts">
 import { defineComponent, type PropType, ref, computed } from 'vue'
-import type { PokerItem, PokerStreet } from '@frank/cashweb/types/messages'
+import type {
+  PokerItem,
+  PokerStreet,
+  TableBuyInLockItem,
+} from '@frank/cashweb/types/messages'
 import { formatCard, isRedSuit } from '@frank/wallet/message-item-plugins/poker'
+import { chatGameItems } from '../../../utils/chat-game-items'
+import { useReactiveOwnCanonicalAddress } from '../../../utils/own-address'
+import TableBuyInPanel from './TableBuyInPanel.vue'
+import { activeChain } from '@frank/wallet/chain'
+import { useTableLockStore } from '../../../stores/table-locks'
 
 export default defineComponent({
   name: 'ChatMessagePoker',
+  components: { TableBuyInPanel },
   props: {
     item: {
       type: Object as PropType<PokerItem>,
@@ -271,6 +282,10 @@ export default defineComponent({
   },
   emits: ['sendFollowUp'],
   setup(props, { emit }) {
+    // `address` is the conversation's peer (the bot); the seats name identities.
+    const ownAddress = useReactiveOwnCanonicalAddress()
+    const sameAddress = (a?: string | null, b?: string | null) =>
+      !!a && !!b && a.toLowerCase() === b.toLowerCase()
     const currentBet = computed(() => props.item.currentBet ?? 0)
     const bigBlind = computed(() => props.item.bigBlind ?? 20)
     const minRaise = computed(() => props.item.minRaise ?? bigBlind.value)
@@ -306,9 +321,9 @@ export default defineComponent({
       return props.item.activePlayer?.toLowerCase() === playerAddr.toLowerCase()
     }
 
-    const isMyTurn = computed(() => {
-      return isTurn(props.address)
-    })
+    const isMyTurn = computed(() =>
+      sameAddress(props.item.activePlayer, ownAddress.value),
+    )
 
     // 'waiting' is not a street the hand type names. A table that has not dealt
     // still arrives with that value, so the comparison stays on the string.
@@ -327,10 +342,46 @@ export default defineComponent({
       return (props.item.players?.length ?? 0) >= 2
     })
 
-    const localPlayer = computed(() => {
-      return props.item.players?.find(
-        p => p.address.toLowerCase() === props.address.toLowerCase(),
+    const localPlayer = computed(() =>
+      props.item.players?.find(p => sameAddress(p.address, ownAddress.value)),
+    )
+
+    /** This card is the newest the bot sent for its table: only it offers the buy-in. */
+    /** This account noted a buy-in lock of its own at this table (`table-htlc-record`): its
+     * refund stays on the table's newest card even once the bot's card no longer states terms. */
+    const tableLocks = useTableLockStore()
+    const hasOwnLock = computed(
+      () =>
+        tableLocks.locksAt(
+          activeChain.chainIdentifier,
+          'poker',
+          props.item.tableId,
+        ).length > 0,
+    )
+
+    const isNewest = computed(() => {
+      const ofTable = chatGameItems('poker', props.address).filter(
+        entry => !entry.outbound && entry.item.tableId === props.item.tableId,
       )
+      const newest = ofTable[ofTable.length - 1]
+      return !newest || newest.item === props.item
+    })
+
+    /** The table takes players: no hand dealt yet. */
+    const joinable = computed(
+      () =>
+        (props.item.action === 'create' || props.item.action === 'join') &&
+        !props.item.street,
+    )
+
+    const joinItem = (buyInLock: TableBuyInLockItem): PokerItem => ({
+      type: 'poker',
+      tableId: props.item.tableId,
+      action: 'join',
+      smallBlind: props.item.smallBlind,
+      bigBlind: props.item.bigBlind,
+      pot: 0,
+      buyInLock,
     })
 
     const callNeeded = computed(() => {
@@ -338,60 +389,40 @@ export default defineComponent({
       return Math.max(0, currentBet.value - localPlayer.value.currentStreetBet)
     })
 
-    const sendJoin = () => {
+    /** A command to the bot: a text item, paying nothing. */
+    const sendText = (text: string) => {
       emit('sendFollowUp', {
-        type: 'text',
-        text: '/poker join',
+        items: [{ type: 'text', text }],
+        stampValueWei: 0n,
       })
     }
 
     const sendStart = () => {
-      emit('sendFollowUp', {
-        type: 'text',
-        text: '/poker start',
-      })
+      sendText('/poker start')
     }
 
     const sendFold = () => {
-      emit('sendFollowUp', {
-        type: 'text',
-        text: '/fold',
-      })
+      sendText('/fold')
     }
 
     const sendCheckCall = () => {
       if (callNeeded.value === 0) {
-        emit('sendFollowUp', {
-          type: 'text',
-          text: '/check',
-        })
+        sendText('/check')
       } else {
-        emit('sendFollowUp', {
-          type: 'text',
-          text: '/call',
-        })
+        sendText('/call')
       }
     }
 
     const sendRaise = () => {
       if (currentBet.value === 0) {
-        emit('sendFollowUp', {
-          type: 'text',
-          text: `/bet ${raiseAmount.value}`,
-        })
+        sendText(`/bet ${raiseAmount.value}`)
       } else {
-        emit('sendFollowUp', {
-          type: 'text',
-          text: `/raise ${raiseAmount.value}`,
-        })
+        sendText(`/raise ${raiseAmount.value}`)
       }
     }
 
     const sendAllIn = () => {
-      emit('sendFollowUp', {
-        type: 'text',
-        text: '/allin',
-      })
+      sendText('/allin')
     }
 
     return {
@@ -408,7 +439,11 @@ export default defineComponent({
       streetIs,
       canStart,
       callNeeded,
-      sendJoin,
+      localPlayer,
+      isNewest,
+      hasOwnLock,
+      joinable,
+      joinItem,
       sendStart,
       sendFold,
       sendCheckCall,

@@ -311,6 +311,28 @@ export interface HtlcRecordItem {
   timestamp: number
 }
 
+/**
+ * The record of one GenericHTLC call this account made for a game table (a poker or liar's dice
+ * buy-in `lock`, its `refund` after the deadline, or an arbiter's `distribute`), carried in the
+ * note the account sends itself when the call's transaction is included, beside its
+ * `wallet-sync` item. It names the table and its locks, so the account's other devices know the
+ * lock and can show or refund it; what each lock holds is read from the chain by its id.
+ */
+export interface TableHtlcRecordItem {
+  type: 'table-htlc-record'
+  chainIdentifier: string
+  action: 'lock' | 'refund' | 'distribute'
+  /** The table's plugin item type: `poker` or `liars-dice`. */
+  game: string
+  /** The table: 16 bytes as 32 lowercase hex digits without `0x`. */
+  tableId: string
+  /** The locks the call acts on, each `0x` and 64 lowercase hex digits; one for a lock or a
+   * refund. */
+  lockIds: string[]
+  txHash: string
+  timestamp: number
+}
+
 export interface SwapRecordAsset {
   symbol: string
   /** Absent for the chain's native coin. */
@@ -946,6 +968,7 @@ export type MessageItem = (
   | SwapOfferItem
   | SwapRecordItem
   | HtlcRecordItem
+  | TableHtlcRecordItem
   | ReceivedCoinItem
   | ConversationStateItem
   | ContactStateItem

@@ -269,4 +269,30 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(folded).toBeDefined()
     expect(folded!.verified).toBe(true)
   })
+  it('a settled table deals no other hand and seats nobody, also once its escrow record is dropped', async () => {
+    escrow = seatingEscrowBook('poker', { forgetOnSettle: true })
+    bot = new PokerBot({ escrows: escrow.book })
+    const say = async (from: string, items: unknown[]) => {
+      const reply = jest.fn()
+      await bot.onMessage({ senderAddress: from, items, reply } as unknown as BotMessageContext, mockBotCtx)
+      return reply.mock.calls.flatMap(c => c[0]).filter((i: any) => i.type === 'text').map((i: any) => i.text).join('\n')
+    }
+    await say('0xAlice', [{ type: 'text', text: '/poker create' }])
+    await say('0xAlice', [{ type: 'text', text: '/poker join' }])
+    await say('0xBob', [{ type: 'text', text: '/poker join' }])
+    const tableId = (bot as any).latestTableId as string
+    const table = (bot as any).tables.get(tableId)
+    expect(await say('0xAlice', [{ type: 'text', text: '/poker start' }])).toContain('Hand #1 dealt')
+    const first = table.players[table.activePlayerIndex].address
+    expect(await say(first, [{ type: 'text', text: '/fold' }])).toContain('HAND SETTLED')
+    expect(bot.getTableEscrow(tableId)).toBeUndefined()
+    expect(await say('0xAlice', [{ type: 'text', text: '/poker start' }])).toContain('has settled')
+    expect(table.handNumber).toBe(1)
+    expect(await say('0xCarol', [{ type: 'text', text: '/poker join' }])).toContain('has settled')
+    expect(
+      await say('0xCarol', [{ type: 'poker', tableId, action: 'join', smallBlind: 10, bigBlind: 20, pot: 0 }])
+    ).toContain('has settled')
+    expect(table.players).toHaveLength(2)
+    expect(escrow.settlements).toHaveLength(1)
+  })
 })

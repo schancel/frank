@@ -1,19 +1,20 @@
 /**
- * PARKED: not registered. Nothing imports this file: it is not in the bot set (`./index.ts`,
- * `targets/`), the launcher or the demo, and the app's card for it is not mounted. It is kept
- * for the rebuild, ticket #1377.
+ * Registered: in the bot set (`./index.ts`), `targets/all-bots.ts` (`poker`), `targets/poker.ts`
+ * and the demo. The game itself is still to be rebuilt, ticket #1377.
  *
  * Known wrong, as it stands:
  * - the deck is shuffled from a seed only the bot knows, with no commitment and nothing from
- *   the players, so the dealer can choose the cards and nobody can check a deal;
- * - the app's card emitted a malformed message (`{type:'text', text}` with no `items`), and the
- *   app has no join that locks the buy-in yet.
+ *   the players, so the dealer can choose the cards and nobody can check a deal.
  * Its profile makes no fairness claim.
  *
  * Buy-ins are held in a GenericHTLC v2 table escrow (`./table-htlc`): a player is seated only by a
  * join naming an open buy-in lock with the table's terms; when a hand settles, the pot of locked
  * buy-ins is paid out by chip stack with `batchDistribute`, and the table closes. One escrowed
- * hand per table.
+ * hand per table: a closed table deals no other hand and seats nobody, also once its escrow
+ * record is dropped (`closedTables`; the escrow drops it when every lock is withdrawn).
+ *
+ * Replies go to the player whose message they answer (and a turn timeout's to the player who
+ * started the timer); the other seated players are not messaged.
  */
 import type {
   FrankBotDefinition,
@@ -38,7 +39,7 @@ import {
   type PokerGameState,
   type PokerPlayer,
 } from "@frank/wallet/message-item-plugins/poker";
-import { generateAvatarPng } from "../../bot-directory";
+import { botProfileSpec, generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
   TableEscrows,
@@ -61,6 +62,7 @@ import {
 export const POKER_DEFAULT_BUY_IN_WEI = 100_000_000_000_000_000n; // 0.1 MON
 export const POKER_TURN_TIMEOUT_SECONDS = 45;
 export type { TableEscrowRecord };
+const POKER_PROFILE = botProfileSpec("poker");
 
 export class PokerBot implements FrankBotDefinition {
   readonly id = "poker";
@@ -75,6 +77,11 @@ export class PokerBot implements FrankBotDefinition {
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
   private readonly escrows: TableEscrowBook;
+  /** Tables whose escrowed hand has ended: no other hand, no join, whatever the escrow keeps. */
+  private readonly closedTables = new Set<string>();
+  /** Every table's escrow terms as opened, kept after the escrow forgets a settled table: a
+   * player whose lock was never seated still needs them on the table's card to refund it. */
+  private readonly openedEscrows = new Map<string, Readonly<TableEscrowRecord>>();
 
   constructor(options: { escrows?: TableEscrowBook } = {}) {
     this.escrows = options.escrows ?? new TableEscrows("poker");
@@ -117,6 +124,8 @@ export class PokerBot implements FrankBotDefinition {
     this.clearTableTimer(table.tableId);
     const verification = verifyPokerShowdown(table);
     if (!this.escrows.get(table.tableId)) return { verified: verification.verified, reason: verification.reason };
+    // Closed before the settlement's wait: nothing deals or seats at this table again.
+    this.closedTables.add(table.tableId);
     const settlement = await this.escrows.settle(
       ctx,
       table.tableId,
@@ -133,9 +142,9 @@ export class PokerBot implements FrankBotDefinition {
 
   getProfile(): BotProfile {
     return {
-      name: "Texas Hold'em Poker",
-      bio: "No-Limit Texas Hold'em table for 2 to 6 players with multi-party committed seeds.",
-      avatarPng: generateAvatarPng("poker", [30, 160, 80]),
+      name: POKER_PROFILE.name,
+      bio: POKER_PROFILE.bio,
+      avatarPng: generateAvatarPng("poker", POKER_PROFILE.accent),
       bot: true,
       accountType: ACCOUNT_TYPE_BOT,
       botRole: BOT_ROLE_GAME,
@@ -231,7 +240,7 @@ export class PokerBot implements FrankBotDefinition {
       : undefined;
 
     const totalPot = table.pot + table.players.reduce((sum, p) => sum + p.currentStreetBet, 0);
-    const escrow = this.escrows.get(table.tableId);
+    const escrow = this.escrows.get(table.tableId) ?? this.openedEscrows.get(table.tableId);
     const isRevealed = table.street === "settled" || table.street === "showdown";
 
     const playerViews: PokerPlayerView[] = table.players.map((p, idx) => ({
@@ -344,6 +353,7 @@ export class PokerBot implements FrankBotDefinition {
           return;
         }
         const tableId = escrow.tableId;
+        this.openedEscrows.set(tableId, escrow);
         const table = createPokerTable({ tableId, buyInChips: 1000, smallBlind: 10, bigBlind: 20 });
 
         this.tables.set(tableId, table);
@@ -394,7 +404,7 @@ export class PokerBot implements FrankBotDefinition {
 
         const table = this.tables.get(tableId)!;
         // One escrowed hand per table: once it is dealt, the table settles when it ends.
-        if (this.escrows.get(tableId) && table.handNumber > 0) {
+        if (this.closedTables.has(tableId) || (this.escrows.get(tableId) && table.handNumber > 0)) {
           await msgCtx.reply([{ type: "text", text: "❌ This table has settled: open a new one with `/poker create`." }]);
           return;
         }
@@ -545,16 +555,24 @@ export class PokerBot implements FrankBotDefinition {
     msgCtx: BotMessageContext,
     ctx: BotContext,
   ): Promise<void> {
+    if (this.closedTables.has(table.tableId)) {
+      await msgCtx.reply([{ type: "text", text: "❌ Not seated: this table has settled. Open a new one with `/poker create`." }]);
+      return;
+    }
     // The game's join runs inside the escrow's seating step: a seat is recorded only when the
     // game took the player, and the player is told when it did not.
     const seat = await this.escrows.seat(ctx, table.tableId, sender, lock, () => {
-      if (this.escrows.get(table.tableId) && table.handNumber > 0)
+      if (this.closedTables.has(table.tableId) || (this.escrows.get(table.tableId) && table.handNumber > 0))
         return { ok: false, error: "this table's escrowed hand has been dealt" };
       const joined = joinPokerTable(table, sender);
       return joined.success ? { ok: true } : { ok: false, error: joined.error ?? "the table refused the player" };
     });
     if (!seat.seated) {
-      await msgCtx.reply([{ type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` }]);
+      await msgCtx.reply([
+        { type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` },
+        // A text join gets the table's card: the app joins from it, locking the buy-in first.
+        ...(seat.reason === "no-buy-in-lock" ? [this.buildPokerItem(table, sender)] : []),
+      ]);
       return;
     }
     this.conversationTables.set(sender, table.tableId);

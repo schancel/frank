@@ -25,6 +25,7 @@ import type {
   MessageItem,
   OutgoingFailureReason,
   SwapRecordItem,
+  TableHtlcRecordItem,
   ConversationStateItem,
   ContactStateItem,
   DeviceClaimItem,
@@ -54,6 +55,28 @@ export function ownSwapRecords(
     return []
   return wrapper.message.items.filter(
     (item): item is SwapRecordItem => !!item && item.type === 'swap-record',
+  )
+}
+
+/**
+ * The game-table records of a row the account sent to itself: a buy-in lock or refund one of
+ * its devices made. Anyone else's row carries none (the wallet's receive rule already refuses
+ * those; this does not rely on it).
+ */
+export function ownTableHtlcRecords(
+  wrapper: ReceivedMessageWrapper,
+  ownAddress: string | null,
+): TableHtlcRecordItem[] {
+  if (
+    !ownAddress ||
+    !sameCanonicalAddress(wrapper.senderAddress, ownAddress) ||
+    !sameCanonicalAddress(wrapper.copartyAddress, ownAddress) ||
+    !Array.isArray(wrapper.message.items)
+  )
+    return []
+  return wrapper.message.items.filter(
+    (item): item is TableHtlcRecordItem =>
+      !!item && item.type === 'table-htlc-record',
   )
 }
 

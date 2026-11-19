@@ -340,6 +340,16 @@ export const NEVER_FROM_A_PEER_SAMPLES: MessageItem[] = [
     timestamp: 1760000000000,
   },
   {
+    type: 'table-htlc-record',
+    chainIdentifier: 'monad-testnet',
+    action: 'lock',
+    game: 'poker',
+    tableId: '0f'.repeat(16),
+    lockIds: ['0x' + 'cd'.repeat(32)],
+    txHash: '0x' + 'ab'.repeat(32),
+    timestamp: 1760000000000,
+  },
+  {
     type: 'received-coin',
     chainIdentifier: 'monad-testnet',
     address: '0x' + 'cc'.repeat(20),

@@ -478,6 +478,28 @@ const SUITES: Array<{ item: MessageItem; cases: Case[] }> = [
   },
   {
     item: {
+      type: "table-htlc-record",
+      chainIdentifier: "monad-testnet",
+      action: "lock",
+      game: "poker",
+      tableId: "0f".repeat(16),
+      lockIds: [TX],
+      txHash: TX,
+      timestamp: 1760000000000,
+    },
+    cases: [
+      ...each("chainIdentifier", [0], BAD_CHAINS),
+      ...each("action", [1], ["", "Lock", "withdraw", "claim", 1]),
+      ...each("game", [2], ["", "Poker", "poker game", "-poker", "a".repeat(65), 1]),
+      ...each("tableId", [3], ["", H, "0F".repeat(16), "0x" + "0f".repeat(16), "0f".repeat(15), 1]),
+      ...each("lockIds", [4], [[], [H], ["0x" + "AB".repeat(32)], [TX, "0x" + "ce".repeat(32)], [TX, TX], TX]),
+      ...each("lockIds[0]", [4, 0], [...BAD_HASHES, H]),
+      ...each("txHash", [5], BAD_TX_IDS),
+      ...each("timestamp", [6], BAD_TIMESTAMPS),
+    ],
+  },
+  {
+    item: {
       type: "received-coin",
       chainIdentifier: "monad-testnet",
       address: A,
@@ -951,6 +973,7 @@ describe("the CBOR item decoders refuse out-of-range, misformatted and oversize 
         "rps",
         "swap-offer",
         "swap-record",
+        "table-htlc-record",
         "wallet-sync",
       ].sort()
     );

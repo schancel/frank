@@ -70,7 +70,7 @@ import {
 import GenericHTLCArtifact from "../../../contracts/artifacts/GenericHTLC.json";
 import { PokerBot } from "./poker-bot";
 import { LiarsDiceBot } from "./liars-dice-bot";
-import { TableEscrows } from "./table-htlc";
+import { TABLE_MAIN_ACCOUNT_WAIT_MS, TableEscrows, type TableEscrowRecord } from "./table-htlc";
 import { amountsOf } from "./chain-amounts.testutil";
 
 const mockNode = { url: "" };
@@ -528,7 +528,9 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     expect((await balance(alice.main)) - before.alice).toBe(BUY_IN);
     expect((await balance(bob.main)) - before.bob).toBe(BUY_IN);
 
-    // Started again: the table is settled on chain, so it is dropped and nothing is sent.
+    // Started again: the table is settled on chain, so it is dropped and nothing is sent. The
+    // bot that settled it stops first (its watcher with it), as a process that dies does.
+    await revived.onStop();
     const restarted = await restartBot();
     const sends = jest.fn(restarted.contractCalls!.send);
     const ctx2 = { ...restarted, contractCalls: { ...restarted.contractCalls!, send: sends } } as BotContext;
@@ -689,17 +691,30 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     await say(dice, flaky, alice, [{ type: "text", text: "/bid 1 2" }]);
     expect(text(await say(dice, flaky, bob, [{ type: "text", text: "/liar" }]))).toContain("not sent yet");
     const written = dice.getTableEscrow(created.tableId)!.settlement!;
-    await until(() => !!dice.getTableEscrow(created.tableId)!.settlement!.txHash, "the retried settlement is signed");
-    const record = dice.getTableEscrow(created.tableId)!;
-    expect(record.settlement!.payouts).toEqual(written.payouts);
+    // Read when it is signed: once the locks are withdrawn the watcher drops the record.
+    let record: TableEscrowRecord | undefined;
+    await until(() => {
+      const now = dice.getTableEscrow(created.tableId);
+      if (now?.settlement?.txHash) record = structuredClone(now) as TableEscrowRecord;
+      return !!record;
+    }, "the retried settlement is signed");
+    expect(record!.settlement!.payouts).toEqual(written.payouts);
     expect(sends).toHaveLength(3);
-    // Every attempt is the same call, bounded by the locks' deadline.
+    // Every attempt is the same call, bounded by the locks' deadline, waiting a bounded time
+    // for the main account.
     for (const s of sends) {
       expect(s.data).toBe(sends[0]!.data);
       expect(s.deadline).toBe(created.escrow!.expiresAt);
+      expect(s.mainAccountWaitMs).toBe(TABLE_MAIN_ACCOUNT_WAIT_MS);
     }
-    expect((await included(record.settlement!.txHash!)).status).toBe(1);
+    expect((await included(record!.settlement!.txHash!)).status).toBe(1);
     for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
+    // Watched after the send: the chain shows every lock withdrawn, so the record is dropped and
+    // nothing more is sent; the table stays ended.
+    await until(() => dice.getTableEscrow(created.tableId) === undefined, "the settled table is dropped");
+    expect(await state.get(`table-escrow:${created.tableId}`)).toBeUndefined();
+    expect(sends).toHaveLength(3);
+    expect(text(await say(dice, ctx, alice, [{ type: "text", text: "/start" }]))).toContain("has ended");
   });
 
   it("after a restart, one table's failed recovery neither blocks startup nor the other tables, and is retried", async () => {
@@ -726,14 +741,96 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     await revived.onStart(slow);
     release();
     await revived.recovered();
-    expect(revived.getTableEscrow(second.created.tableId)!.settlement!.txHash).toBeDefined();
+    const secondTx = revived.getTableEscrow(second.created.tableId)!.settlement!.txHash;
+    expect(secondTx).toBeDefined();
     expect(revived.getTableEscrow(first.created.tableId)!.settlement!.txHash).toBeUndefined();
     failing = false;
-    await until(() => !!revived.getTableEscrow(first.created.tableId)!.settlement!.txHash, "the failed table is retried");
-    for (const { locks, created } of [first, second]) {
-      const record = revived.getTableEscrow(created.tableId)!;
-      expect((await included(record.settlement!.txHash!)).status).toBe(1);
+    let firstTx: string | undefined;
+    await until(() => {
+      firstTx = revived.getTableEscrow(first.created.tableId)?.settlement?.txHash;
+      return !!firstTx;
+    }, "the failed table is retried");
+    for (const [{ locks }, txHash] of [[first, firstTx], [second, secondTx]] as const) {
+      expect((await included(txHash!)).status).toBe(1);
       for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
     }
+  });
+
+  /** Ends a seated liars-dice table of `dice` (one die each): Alice bids, Bob calls Liar. */
+  async function endDiceTable(dice: LiarsDiceBot, ctx: BotContext, tableId: string): Promise<string> {
+    const game = (dice as unknown as { tables: Map<string, { players: Array<{ diceCount: number }> }> }).tables.get(tableId)!;
+    for (const p of game.players) p.diceCount = 1;
+    (dice as unknown as { conversationTables: Map<string, string> }).conversationTables.set(alice.identity, tableId);
+    (dice as unknown as { conversationTables: Map<string, string> }).conversationTables.set(bob.identity, tableId);
+    await say(dice, ctx, alice, [{ type: "text", text: "/start" }]);
+    await say(dice, ctx, alice, [{ type: "text", text: "/bid 1 2" }]);
+    return text(await say(dice, ctx, bob, [{ type: "text", text: "/liar" }]));
+  }
+
+  it("a live distribute that reverts on chain is re-sent by the watcher with the same payouts, and lands", async () => {
+    const dice = started(new LiarsDiceBot({ escrows: new TableEscrows("liars-dice", { retryBaseMs: 100 }) }));
+    const ctx = botCtx();
+    const { created, locks } = await seatedTable(dice, ctx);
+    const real = ctx.contractCalls!;
+    const sends: Array<Parameters<typeof real.send>[0]> = [];
+    const hashes: string[] = [];
+    const watched = {
+      ...ctx,
+      contractCalls: {
+        ...real,
+        send: async (params: Parameters<typeof real.send>[0]) => {
+          sends.push(params);
+          // The first distribute is given too little gas: it is mined and runs out of gas on
+          // chain (receipt status 0), leaving every lock open. Later sends estimate their gas.
+          const sent = await real.send(sends.length === 1 ? { ...params, gasLimit: 40_000n } : params);
+          hashes.push(sent.txHash);
+          return sent;
+        },
+      },
+    } as BotContext;
+    const said = await endDiceTable(dice, watched, created.tableId);
+    expect(said).toContain("Paid out on chain");
+    const written = structuredClone(dice.getTableEscrow(created.tableId)!.settlement!);
+    expect(written.payouts).toHaveLength(1);
+    const winner = written.payouts[0]!.recipient.toLowerCase() === alice.main.toLowerCase() ? alice : bob;
+    expect((await included(hashes[0]!)).status).toBe(0);
+    for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("open");
+    const before = await balance(winner.main);
+
+    // Nobody restarts the bot: its watcher sees the revert and sends the same payouts again.
+    await until(() => hashes.length >= 2, "the reverted distribute is re-sent");
+    expect(sends[1]!.data).toBe(sends[0]!.data);
+    expect(sends[1]!.gasLimit).toBeUndefined();
+    expect((await included(hashes[1]!)).status).toBe(1);
+    for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
+    expect((await balance(winner.main)) - before).toBe(2n * BUY_IN);
+    await until(() => dice.getTableEscrow(created.tableId) === undefined, "the settled table is dropped");
+    expect(sends).toHaveLength(2);
+    expect(text(await say(dice, ctx, bob, [{ type: "text", text: "/start" }]))).toContain("has ended");
+  });
+
+  it("a main account still holding an unmined distribute does not hold the next ending player's message: that settlement is sent once it is free", async () => {
+    const dice = started(new LiarsDiceBot({ escrows: new TableEscrows("liars-dice", { retryBaseMs: 100 }) }));
+    const ctx = botCtx();
+    const first = await seatedTable(dice, ctx);
+    const second = await seatedTable(dice, ctx);
+    // Blocks stop: the first table's distribute is handed out and stays unmined, so the main
+    // account it was sent from has no spendable state until the chain shows it.
+    await chain.send("evm_setAutomine", [false]);
+    expect(await endDiceTable(dice, ctx, first.created.tableId)).toContain("Paid out on chain");
+    const started_ = Date.now();
+    expect(await endDiceTable(dice, ctx, second.created.tableId)).toContain("not sent yet");
+    // The handler returned without waiting for the account to be free.
+    expect(Date.now() - started_).toBeLessThan(TABLE_MAIN_ACCOUNT_WAIT_MS);
+    for (const id of [...first.locks, ...second.locks]) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("open");
+    await chain.send("evm_setAutomine", [true]);
+    await chain.send("evm_mine", []);
+    for (const { locks } of [first, second])
+      for (const id of locks) await until(async () => (await readHtlcLock(chain, htlc, id))!.state === "withdrawn", "every lock is withdrawn");
+    await until(
+      () => !dice.getTableEscrow(first.created.tableId) && !dice.getTableEscrow(second.created.tableId),
+      "both settled tables are dropped"
+    );
+    expect(await balance(htlc)).toBe(0n);
   });
 });

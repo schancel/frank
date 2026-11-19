@@ -15,6 +15,8 @@
     "target:lobby": "tsx targets/lobby.ts",
     "target:rps": "tsx targets/rps.ts",
     "target:dice": "tsx targets/dice.ts",
+    "target:poker": "tsx targets/poker.ts",
+    "target:liars-dice": "tsx targets/liars-dice.ts",
     "target:all": "tsx targets/all-bots.ts",
     "raffle": "tsx raffle-bot.livecheck.ts",
     "vendor": "tsx vendor-bot.livecheck.ts",

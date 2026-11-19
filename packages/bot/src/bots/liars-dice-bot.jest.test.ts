@@ -308,4 +308,75 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(folded!.verified).toBe(true)
     expect(folded!.status).toBe('resolved')
   })
+  /** One message from `from`; the texts the bot replied with. */
+  async function say(b: LiarsDiceBot, from: string, items: unknown[], ctx = mockBotCtx): Promise<string> {
+    const reply = jest.fn()
+    await b.onMessage({ senderAddress: from, items, reply } as unknown as BotMessageContext, ctx)
+    return reply.mock.calls.flatMap(c => c[0]).filter((i: any) => i.type === 'text').map((i: any) => i.text).join('\n')
+  }
+
+  /** A table with Alice and Bob seated and its first round started. */
+  async function startedTable(b: LiarsDiceBot) {
+    await say(b, '0xAlice', [{ type: 'text', text: '/create' }])
+    await say(b, '0xAlice', [{ type: 'text', text: '/join' }])
+    await say(b, '0xBob', [{ type: 'text', text: '/join' }])
+    const tableId = (b as any).latestTableId as string
+    const game = (b as any).tables.get(tableId)
+    return { tableId, game }
+  }
+
+  it('a reveal that fails verification returns every buy-in and ends the table: nothing more is played', async () => {
+    const { tableId, game } = await startedTable(bot)
+    expect(await say(bot, '0xAlice', [{ type: 'text', text: '/start' }])).toContain('Round 1 started')
+    // The revealed server seed no longer opens its commitment.
+    game.serverSeed = 'not-the-committed-seed'
+    await say(bot, '0xAlice', [{ type: 'text', text: '/bid 2 3' }])
+    const liar = await say(bot, '0xBob', [{ type: 'text', text: '/liar' }])
+    expect(liar).toContain('verification failed')
+    expect(liar).toContain('Every buy-in is returned')
+    expect(game.status).not.toBe('resolved')
+    expect(escrow.settlements).toEqual([
+      {
+        tableId,
+        shares: [
+          { player: '0xAlice', amountWei: BigInt(game.buyInWei) },
+          { player: '0xBob', amountWei: BigInt(game.buyInWei) },
+        ],
+      },
+    ])
+    const round = game.roundNumber
+    expect(await say(bot, '0xAlice', [{ type: 'text', text: '/start' }])).toContain('has ended')
+    expect(await say(bot, '0xAlice', [{ type: 'text', text: '/bid 3 3' }])).toContain('has ended')
+    expect(await say(bot, '0xBob', [{ type: 'text', text: '/liar' }])).toContain('has ended')
+    expect(await say(bot, '0xCarol', [{ type: 'text', text: '/join' }])).toContain('has ended')
+    expect(
+      await say(bot, '0xCarol', [{ type: 'liars-dice', tableId, action: 'join' }])
+    ).toContain('has ended')
+    expect(
+      await say(bot, '0xAlice', [{ type: 'liars-dice', tableId, action: 'bid', currentBid: { quantity: 4, face: 3 } }])
+    ).toContain('has ended')
+    expect(game.roundNumber).toBe(round)
+    expect(game.players).toHaveLength(2)
+    expect(escrow.settlements).toHaveLength(1)
+  })
+
+  it('a won table stays ended after its escrow record is dropped', async () => {
+    escrow = seatingEscrowBook('liars-dice', { forgetOnSettle: true })
+    bot = new LiarsDiceBot({ escrows: escrow.book })
+    const { tableId, game } = await startedTable(bot)
+    for (const p of game.players) p.diceCount = 1
+    await say(bot, '0xAlice', [{ type: 'text', text: '/start' }])
+    await say(bot, '0xAlice', [{ type: 'text', text: '/bid 1 2' }])
+    expect(await say(bot, '0xBob', [{ type: 'text', text: '/liar' }])).toContain('GAME OVER')
+    expect(bot.getTableEscrow(tableId)).toBeUndefined()
+    expect(await say(bot, '0xAlice', [{ type: 'text', text: '/start' }])).toContain('has ended')
+    expect(await say(bot, '0xCarol', [{ type: 'text', text: '/join' }])).toContain('has ended')
+    expect(escrow.settlements).toHaveLength(1)
+  })
+
+  it('a table whose escrow has a settlement starts no round', async () => {
+    const { tableId } = await startedTable(bot)
+    ;(escrow.book.get(tableId) as any).settlement = { payouts: [] }
+    expect(await say(bot, '0xAlice', [{ type: 'text', text: '/start' }])).toContain('has ended')
+  })
 })

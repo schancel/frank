@@ -1,14 +1,26 @@
 /** @jest-environment jsdom */
-// PARKED (#1377): the liar's dice card code is kept for the rebuild and is not registered anywhere. These
-// tests describe its pre-rebuild behaviour (no commitment, no buy-in, a malformed emit from the
-// card); they keep it compiling and are not a statement that it is fair or playable.
+// The liar's dice card's table view and its text commands. Joining (the buy-in lock and the structured
+// join) and the refund are covered in TableBuyInPanel.jest.test.ts.
 
 import { mount } from '@vue/test-utils'
 import * as quasar from 'quasar'
-import { defineComponent, h } from 'vue'
+import { defineComponent, h, reactive, ref } from 'vue'
 
 import type { LiarsDiceItem } from '@frank/cashweb/types/messages'
 import ChatMessageLiarsDice from './ChatMessageLiarsDice.vue'
+
+const own = ref<string | null>('0xAlice')
+jest.mock('../../../utils/own-address', () => ({
+  useReactiveOwnCanonicalAddress: () => own,
+}))
+const chatStore = reactive({ activeConversation: { messages: [] as any[] } })
+jest.mock('../../../stores/chats', () => ({ useChatStore: () => chatStore }))
+jest.mock('../../../stores/table-locks', () => ({
+  useTableLockStore: () => ({ locksAt: () => [] }),
+}))
+jest.mock('../../../games/table-buy-in-session', () => ({
+  openTableBuyInSession: () => new Promise(() => undefined),
+}))
 
 const quasarStubs: Record<string, any> = Object.fromEntries(
   Object.keys(quasar)
@@ -71,6 +83,7 @@ describe('ChatMessageLiarsDice.vue', () => {
       },
       global: {
         stubs: quasarStubs,
+        mocks: { $t: (key: string) => key },
       },
     })
 
@@ -79,15 +92,9 @@ describe('ChatMessageLiarsDice.vue', () => {
     expect(wrapper.text()).toContain('0xAlic')
     expect(wrapper.text()).toContain('0xBob')
 
-    const joinBtn = wrapper.find('[data-testid="join-table-btn"]')
-    expect(joinBtn.exists()).toBe(true)
-    await joinBtn.trigger('click')
-
-    expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
-    expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
-      type: 'text',
-      text: '/table join',
-    })
+    // A table without an escrow offers no join: the bot seats only a locked buy-in.
+    expect(wrapper.find('[data-testid="table-join-btn"]').exists()).toBe(false)
+    expect(wrapper.emitted('sendFollowUp')).toBeUndefined()
   })
 
   it('renders current bid banner, secret cup, and emits raise / call liar actions', async () => {
@@ -114,6 +121,7 @@ describe('ChatMessageLiarsDice.vue', () => {
       },
       global: {
         stubs: quasarStubs,
+        mocks: { $t: (key: string) => key },
       },
     })
 
@@ -134,8 +142,8 @@ describe('ChatMessageLiarsDice.vue', () => {
 
     expect(wrapper.emitted('sendFollowUp')).toHaveLength(1)
     expect(wrapper.emitted('sendFollowUp')![0][0]).toEqual({
-      type: 'text',
-      text: '/liar',
+      items: [{ type: 'text', text: '/liar' }],
+      stampValueWei: 0n,
     })
 
     // Submit bid button
@@ -144,9 +152,9 @@ describe('ChatMessageLiarsDice.vue', () => {
     await submitBidBtn.trigger('click')
 
     expect(wrapper.emitted('sendFollowUp')).toHaveLength(2)
-    expect((wrapper.emitted('sendFollowUp')![1][0] as any).text).toContain(
-      '/bid',
-    )
+    expect(
+      (wrapper.emitted('sendFollowUp')![1][0] as any).items[0].text,
+    ).toContain('/bid')
   })
 
   it('renders showdown result with matching dice and eliminated players', async () => {
@@ -181,6 +189,7 @@ describe('ChatMessageLiarsDice.vue', () => {
       },
       global: {
         stubs: quasarStubs,
+        mocks: { $t: (key: string) => key },
       },
     })
 

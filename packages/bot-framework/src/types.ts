@@ -152,6 +152,9 @@ export interface BotContractCalls {
     deadline?: number;
     /** Called once the call is journaled and signed, before it is handed to anyone. */
     onSigned?: (signed: { operationId: string; txHash: string }) => Promise<void>;
+    /** While an earlier payment from the main account is not yet seen on chain, the send waits
+     * its turn; with this it gives up (throws, having signed nothing) after so many ms. */
+    mainAccountWaitMs?: number;
   }): Promise<{ operationId: string; txHash: string }>;
   /** Re-sends a call this wallet journaled (by its `operationId`), exactly as signed. */
   resume(operationId: string): Promise<void>;

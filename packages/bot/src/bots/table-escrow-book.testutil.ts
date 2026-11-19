@@ -36,9 +36,11 @@ export function seatingEscrowBook(game: TableGame) {
       return record;
     },
     get: tableId => records.get(tableId),
-    async seat(_ctx, tableId, player, lock?: TableBuyInLockItem): Promise<TableSeatResult> {
+    async seat(_ctx, tableId, player, lock: TableBuyInLockItem | undefined, admit): Promise<TableSeatResult> {
       const record = records.get(tableId);
       if (!record) return { seated: false, reason: "no-table" };
+      const admitted = admit();
+      if (!admitted.ok) return { seated: false, reason: "game-refused", error: admitted.error };
       record.seats.push({
         player,
         lockId: lock?.lockId ?? "0x" + hex(`seat-${tableId}-${player}`),
@@ -46,8 +48,12 @@ export function seatingEscrowBook(game: TableGame) {
       });
       return { seated: true };
     },
-    async settle(_ctx, tableId, shares): Promise<TableSettlementResult> {
+    async settle(_ctx, tableId, sharesOf): Promise<TableSettlementResult> {
       const record = records.get(tableId)!;
+      if (record.settlement)
+        return { status: "not-settleable", tableId, reason: "the table is already being settled" };
+      if (record.seats.length === 0) return { status: "nothing-locked", tableId };
+      const shares = sharesOf(record);
       const pool = BigInt(record.buyInWei) * BigInt(record.seats.length);
       const total = shares.reduce((sum, s) => sum + s.amountWei, 0n);
       if (total !== pool) return { status: "not-settleable", tableId, reason: "not the pot" };
@@ -60,6 +66,7 @@ export function seatingEscrowBook(game: TableGame) {
     async recover() {
       return [];
     },
+    stop() {},
   };
   return { book, settlements };
 }

@@ -6,17 +6,22 @@
  * (`sendContractCall`, the native operation journal, a `table-htlc` record).
  *
  * - A player locks its buy-in (`lockTableBuyIn`) with the terms the bot's table item states and
- *   joins naming that lock; the bot reads the lock on chain and seats it. A text join, a lock that
- *   is not on chain, a lock with other terms, or a join naming a lock id the terms do not give
- *   are refused, and nobody is seated by them.
+ *   joins naming that lock, signed by the locking account for its identity; the bot checks the
+ *   signature, reads the lock on chain and seats it. A text join, a lock that is not on chain, a
+ *   lock with other terms, a join naming a lock id the terms do not give, or another identity
+ *   naming someone else's lock are refused, and nobody is seated by them.
+ * - Joins arriving together are seated one at a time; a join the game refuses records no seat.
+ * - Every end of a game settles, a turn timeout included; a poker table deals one escrowed hand.
  * - Settling pays the pot out with `batchDistribute` from the bot's main account, using the
  *   table preimage the bot derives from its own account; the payouts land on the accounts the
  *   players locked from.
  * - A bot that never settles leaves each player its refund from the deadline on
  *   (`refundTableBuyIn`), and not before.
+ * - A settlement whose send fails is retried in the background as written.
  * - A bot restarted from the same account and state store derives the same preimage and still
- *   settles: a table whose game is gone gets its buy-ins back; a settlement written down but never
- *   sent is sent as written (the winner is paid), not recomputed.
+ *   settles, without startup waiting for it: a table whose game is gone gets its buy-ins back; a
+ *   settlement written down but never sent is sent as written (the winner is paid), not
+ *   recomputed.
  *
  * Real: the node, the contract, signing, the wallets, their journals and Level stores, the bot's
  * Level state store. No relay: the bots' replies are captured, and players' join items are handed
@@ -49,6 +54,7 @@ import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
 import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
 import {
   createEvmChain,
+  tableJoinSignerOf,
   tableSecretCapabilityOf,
   type EvmChainConfig,
 } from "@frank/wallet/chain/evm-chain";
@@ -64,6 +70,7 @@ import {
 import GenericHTLCArtifact from "../../../contracts/artifacts/GenericHTLC.json";
 import { PokerBot } from "./poker-bot";
 import { LiarsDiceBot } from "./liars-dice-bot";
+import { TableEscrows } from "./table-htlc";
 import { amountsOf } from "./chain-amounts.testutil";
 
 const mockNode = { url: "" };
@@ -146,6 +153,12 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
   let bob: Party;
   let state: LevelBotStateStore;
   const opened: EvmChainWalletHandle[] = [];
+  const bots: Array<{ onStop(): Promise<void> }> = [];
+  /** A bot stopped after the test, so no background retry outlives it. */
+  const started = <B extends { onStop(): Promise<void> }>(b: B): B => {
+    bots.push(b);
+    return b;
+  };
 
   async function party(name: string): Promise<Party> {
     const config: EvmChainConfig = {
@@ -205,6 +218,7 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     state = new LevelBotStateStore(join(directory, "bot-state"));
   });
   afterEach(async () => {
+    for (const b of bots.splice(0)) await b.onStop();
     await state?.close().catch(() => undefined);
     for (const wallet of opened.splice(0)) await wallet.close().catch(() => undefined);
     chain?.destroy();
@@ -262,9 +276,11 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     player: Party,
     type: "poker" | "liars-dice",
     table: PokerItem | LiarsDiceItem
-  ): Promise<{ item: MessageItem; lockId: string }> {
+  ): Promise<{ item: MessageItem; lockId: string; signature: string }> {
     const locked = await lockTableBuyIn({
       wallet: player.wallet,
+      signer: tableJoinSignerOf(player.wallet)!,
+      joiner: player.identity,
       contract: htlc,
       game: type,
       tableId: table.tableId,
@@ -272,13 +288,17 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     });
     expect((await included(locked.call.txHash)).status).toBe(1);
     expect(locked.account.toLowerCase()).toBe(player.main.toLowerCase());
-    const buyInLock = { lockId: locked.lockId, account: locked.account };
+    const buyInLock = { lockId: locked.lockId, account: locked.account, signature: locked.signature };
     const item =
       type === "poker"
         ? ({ type, tableId: table.tableId, action: "join", smallBlind: 10, bigBlind: 20, pot: 0, buyInLock } as PokerItem)
         : ({ type, tableId: table.tableId, action: "join", buyInLock } as LiarsDiceItem);
-    return { item, lockId: locked.lockId };
+    return { item, lockId: locked.lockId, signature: locked.signature };
   }
+
+  /** `player`'s signed authorization for `joiner` to sit with `lockId` at `table`. */
+  const authorize = (player: Party, type: "poker" | "liars-dice", tableId: string, lockId: string, joiner = player.identity) =>
+    tableJoinSignerOf(player.wallet)!.signTableJoin({ contract: htlc, game: type, tableId, lockId, joiner });
 
   it("poker: two players lock and are seated; the settled hand pays the pot out by chip stack", async () => {
     const poker = new PokerBot();
@@ -335,7 +355,7 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     const ctx = botCtx();
     const created = tableItem<LiarsDiceItem>(await say(dice, ctx, alice, [{ type: "text", text: "/table create 0.1" }]), "liars-dice");
     const terms = termsOf(created.escrow!, created.buyInWei!);
-    const join = (buyInLock?: { lockId: string; account: string }) =>
+    const join = (buyInLock?: { lockId: string; account: string; signature: string }) =>
       say(dice, ctx, alice, [
         { type: "liars-dice", tableId: created.tableId, action: "join", ...(buyInLock ? { buyInLock } : {}) } as LiarsDiceItem,
       ]);
@@ -345,7 +365,8 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     expect(text(await join())).toContain("join from the app");
     // The id the terms give, but nothing locked there.
     const expectedId = tableBuyInLockId(terms, alice.main);
-    expect(text(await join({ lockId: expectedId, account: alice.main }))).toContain("not on chain");
+    const signed = (lockId: string) => authorize(alice, "liars-dice", created.tableId, lockId);
+    expect(text(await join({ lockId: expectedId, account: alice.main, signature: signed(expectedId) }))).toContain("not on chain");
     // A lock with another amount (one wei more), through the same wallet path.
     const other = encodeHtlcLock(htlc, {
       recipient: terms.arbiter,
@@ -365,9 +386,13 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     });
     expect((await included(sent.txHash)).status).toBe(1);
     expect((await readHtlcLock(chain, htlc, otherId))!.state).toBe("open");
-    expect(text(await join({ lockId: otherId, account: alice.main }))).toContain("does not have this table's terms");
-    // The right id claimed for another account.
-    expect(text(await join({ lockId: expectedId, account: bob.main }))).toContain("does not have this table's terms");
+    expect(text(await join({ lockId: otherId, account: alice.main, signature: signed(otherId) }))).toContain("does not have this table's terms");
+    // The right id claimed for another account: Alice's signature is not that account's.
+    expect(text(await join({ lockId: expectedId, account: bob.main, signature: signed(expectedId) }))).toContain("not yours");
+    // Bob signing for himself an id the terms give Alice's account.
+    expect(
+      text(await join({ lockId: expectedId, account: bob.main, signature: authorize(bob, "liars-dice", created.tableId, expectedId, alice.identity) }))
+    ).toContain("does not have this table's terms");
     expect(seats()).toBe(0);
     // A record that is not its call is refused before anything is signed.
     await expect(
@@ -379,8 +404,30 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
       })
     ).rejects.toMatchObject({ code: "invalid", validation: "record" });
 
-    const { item, lockId } = await lockAndJoinItem(alice, "liars-dice", created);
+    const { item, lockId, signature } = await lockAndJoinItem(alice, "liars-dice", created);
     expect(lockId).toBe(expectedId);
+    // Front-running: Bob reads Alice's lock off the chain and names it, with her signature (for
+    // her identity) or with his own over it. Neither seats him.
+    expect(text(await say(dice, ctx, bob, [{ ...item }]))).toContain("not yours");
+    const bobSigned = authorize(bob, "liars-dice", created.tableId, lockId);
+    expect(
+      text(
+        await say(dice, ctx, bob, [
+          { type: "liars-dice", tableId: created.tableId, action: "join", buyInLock: { lockId, account: alice.main, signature: bobSigned } } as LiarsDiceItem,
+        ])
+      )
+    ).toContain("not yours");
+    // Alice's signature letting Bob sit with her lock is hers to give, for another table it is not.
+    const elsewhere = authorize(alice, "liars-dice", "ab".repeat(16), lockId, bob.identity);
+    expect(
+      text(
+        await say(dice, ctx, bob, [
+          { type: "liars-dice", tableId: created.tableId, action: "join", buyInLock: { lockId, account: alice.main, signature: elsewhere } } as LiarsDiceItem,
+        ])
+      )
+    ).toContain("not yours");
+    expect(seats()).toBe(0);
+    expect(signature).toMatch(/^0x[0-9a-f]{130}$/);
     expect(text(await say(dice, ctx, alice, [item]))).toContain("joined table");
     expect(seats()).toBe(1);
     // The same lock does not seat a second player.
@@ -425,6 +472,15 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
       tableId: created.tableId,
       lockIds: [lockId],
     });
+    // Restarted, the bot finds every lock of the table refunded: it sends nothing and forgets it.
+    const restarted = await restartBot();
+    const sends = jest.fn(restarted.contractCalls!.send);
+    const revived = started(new LiarsDiceBot());
+    await revived.onStart({ ...restarted, contractCalls: { ...restarted.contractCalls!, send: sends } } as BotContext);
+    await revived.recovered();
+    expect(sends).not.toHaveBeenCalled();
+    expect(revived.getTableEscrow(created.tableId)).toBeUndefined();
+    expect(await state.get("table-escrow:index")).toBe("[]");
   });
 
   /** Two players seated at a fresh liars-dice table of `dice`. */
@@ -453,8 +509,9 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     const before = { alice: await balance(alice.main), bob: await balance(bob.main) };
 
     const ctx = await restartBot();
-    const revived = new LiarsDiceBot();
+    const revived = started(new LiarsDiceBot());
     await revived.onStart(ctx);
+    await revived.recovered();
     const record = revived.getTableEscrow(created.tableId)!;
     expect(record.settlement!.payouts).toHaveLength(2);
     expect((await included(record.settlement!.txHash!)).status).toBe(1);
@@ -475,14 +532,15 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     const restarted = await restartBot();
     const sends = jest.fn(restarted.contractCalls!.send);
     const ctx2 = { ...restarted, contractCalls: { ...restarted.contractCalls!, send: sends } } as BotContext;
-    const third = new LiarsDiceBot();
+    const third = started(new LiarsDiceBot());
     await third.onStart(ctx2);
+    await third.recovered();
     expect(sends).not.toHaveBeenCalled();
     expect(third.getTableEscrow(created.tableId)).toBeUndefined();
   });
 
   it("a settlement written down but never sent is sent as written after a restart: the winner gets the pot", async () => {
-    const dice = new LiarsDiceBot();
+    const dice = started(new LiarsDiceBot());
     const dying = botCtx();
     const { created, locks } = await seatedTable(dice, dying);
     // The process dies after the payouts are written down and before the call is handed out.
@@ -494,7 +552,9 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     for (const p of game.players) p.diceCount = 1;
     await say(dice, crashing, alice, [{ type: "text", text: "/start" }]);
     await say(dice, crashing, alice, [{ type: "text", text: "/bid 1 2" }]);
-    await expect(say(dice, crashing, bob, [{ type: "text", text: "/liar" }])).rejects.toThrow("process died");
+    expect(text(await say(dice, crashing, bob, [{ type: "text", text: "/liar" }]))).toContain("not sent yet");
+    // The process dies before its background retry.
+    await dice.onStop();
     const written = dice.getTableEscrow(created.tableId)!.settlement!;
     expect(written.operationId).toBeUndefined();
     expect(written.payouts).toHaveLength(1);
@@ -504,12 +564,176 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     const before = await balance(winner.main);
 
     const ctx = await restartBot();
-    const revived = new LiarsDiceBot();
+    const revived = started(new LiarsDiceBot());
     await revived.onStart(ctx);
+    await revived.recovered();
     const record = revived.getTableEscrow(created.tableId)!;
     expect(record.settlement!.payouts).toEqual(written.payouts);
     expect((await included(record.settlement!.txHash!)).status).toBe(1);
     for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
     expect((await balance(winner.main)) - before).toBe(2n * BUY_IN);
+  });
+
+  /** Waits for `check` to hold, polling. */
+  async function until(check: () => Promise<boolean> | boolean, what: string) {
+    for (let i = 0; i < 400; i++) {
+      if (await check()) return;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    throw new Error(`never: ${what}`);
+  }
+
+  it("joins arriving together are seated one at a time; a join the game refuses records no seat", async () => {
+    const poker = started(new PokerBot());
+    const ctx = botCtx();
+    const created = tableItem<PokerItem>(await say(poker, ctx, alice, [{ type: "text", text: "/poker create" }]), "poker");
+    const a = await lockAndJoinItem(alice, "poker", created);
+    const b = await lockAndJoinItem(bob, "poker", created);
+    // Both players, and Alice's join twice, all at once.
+    const replies = await Promise.all([
+      say(poker, ctx, alice, [a.item]),
+      say(poker, ctx, bob, [b.item]),
+      say(poker, ctx, alice, [a.item]),
+    ]);
+    expect(replies.map(text).filter(t => t.includes("joined table"))).toHaveLength(3);
+    const seats = () => poker.getTableEscrow(created.tableId)!.seats;
+    expect(seats().map(s => s.lockId)).toEqual([a.lockId, b.lockId]);
+    const players = () =>
+      (poker as unknown as { tables: Map<string, { players: Array<{ address: string }> }> }).tables.get(created.tableId)!.players;
+    expect(players().map(p => p.address)).toEqual([alice.identity, bob.identity]);
+
+    // The hand is dealt: a third player's lock is valid, but the game does not take it.
+    await say(poker, ctx, alice, [{ type: "text", text: "/poker start" }]);
+    const carol = await party("carol");
+    const c = await lockAndJoinItem(carol, "poker", created);
+    const refused = text(await say(poker, ctx, carol, [c.item]));
+    expect(refused).toContain("Not seated");
+    expect(refused).toContain("holds no seat");
+    expect(seats()).toHaveLength(2);
+    expect(players()).toHaveLength(2);
+    expect((await readHtlcLock(chain, htlc, c.lockId))!.state).toBe("open");
+  });
+
+  it("poker: a turn timeout that ends the hand settles the table, and no second hand is dealt", async () => {
+    const poker = started(new PokerBot());
+    const ctx = botCtx();
+    const created = tableItem<PokerItem>(await say(poker, ctx, alice, [{ type: "text", text: "/poker create" }]), "poker");
+    for (const player of [alice, bob]) {
+      const { item } = await lockAndJoinItem(player, "poker", created);
+      expect(text(await say(poker, ctx, player, [item]))).toContain("joined table");
+    }
+    const dealt = tableItem<PokerItem>(await say(poker, ctx, alice, [{ type: "text", text: "/poker start" }]), "poker");
+    const folder = dealt.activePlayer!.toLowerCase() === alice.identity.toLowerCase() ? alice : bob;
+    const winner = folder === alice ? bob : alice;
+    // The small blind's turn runs out facing the big blind: it folds, and the hand ends.
+    await (poker as unknown as { onTurnTimeout(t: string, c: BotContext, p: string): Promise<void> }).onTurnTimeout(
+      created.tableId,
+      ctx,
+      folder.identity
+    );
+    const sent = text((ctx.sendMessage as jest.Mock).mock.calls.at(-1)![1] as MessageItem[]);
+    expect(sent).toContain("automatically folded");
+    expect(sent).toContain("Paid out on chain");
+    const record = poker.getTableEscrow(created.tableId)!;
+    expect((await included(record.settlement!.txHash!)).status).toBe(1);
+    const paid = new Map(record.settlement!.payouts.map(p => [p.recipient.toLowerCase(), BigInt(p.amountWei)]));
+    expect(paid.get(winner.main.toLowerCase())).toBe((2n * BUY_IN * 1010n) / 2000n);
+    expect(await balance(htlc)).toBe(0n);
+    expect(text(await say(poker, ctx, alice, [{ type: "text", text: "/poker start" }]))).toContain("has settled");
+  });
+
+  it("liars-dice: a turn timeout's challenge that ends the game pays the winner", async () => {
+    const dice = started(new LiarsDiceBot());
+    const ctx = botCtx();
+    const { created, locks } = await seatedTable(dice, ctx);
+    const game = (dice as unknown as { tables: Map<string, { players: Array<{ diceCount: number }> }> }).tables.get(created.tableId)!;
+    for (const p of game.players) p.diceCount = 1;
+    await say(dice, ctx, alice, [{ type: "text", text: "/start" }]);
+    await say(dice, ctx, alice, [{ type: "text", text: "/bid 1 2" }]);
+    await (dice as unknown as { onTurnTimeout(t: string, c: BotContext, p: string): Promise<void> }).onTurnTimeout(
+      created.tableId,
+      ctx,
+      bob.identity
+    );
+    const sent = text((ctx.sendMessage as jest.Mock).mock.calls.at(-1)![1] as MessageItem[]);
+    expect(sent).toContain("automatically called Liar");
+    expect(sent).toContain("Paid out on chain");
+    const record = dice.getTableEscrow(created.tableId)!;
+    expect(record.settlement!.payouts).toHaveLength(1);
+    expect(record.settlement!.payouts[0]!.amountWei).toBe((2n * BUY_IN).toString());
+    expect((await included(record.settlement!.txHash!)).status).toBe(1);
+    for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
+  });
+
+  it("a settlement whose send fails is retried in the background, as written, until it lands", async () => {
+    const dice = started(new LiarsDiceBot({ escrows: new TableEscrows("liars-dice", { retryBaseMs: 100 }) }));
+    const ctx = botCtx();
+    const { created, locks } = await seatedTable(dice, ctx);
+    const real = ctx.contractCalls!;
+    let failures = 2;
+    const sends: Array<Parameters<typeof real.send>[0]> = [];
+    const flaky = {
+      ...ctx,
+      contractCalls: {
+        ...real,
+        send: async (params: Parameters<typeof real.send>[0]) => {
+          sends.push(params);
+          if (failures-- > 0) throw new Error("node unreachable");
+          return real.send(params);
+        },
+      },
+    } as BotContext;
+    const game = (dice as unknown as { tables: Map<string, { players: Array<{ diceCount: number }> }> }).tables.get(created.tableId)!;
+    for (const p of game.players) p.diceCount = 1;
+    await say(dice, flaky, alice, [{ type: "text", text: "/start" }]);
+    await say(dice, flaky, alice, [{ type: "text", text: "/bid 1 2" }]);
+    expect(text(await say(dice, flaky, bob, [{ type: "text", text: "/liar" }]))).toContain("not sent yet");
+    const written = dice.getTableEscrow(created.tableId)!.settlement!;
+    await until(() => !!dice.getTableEscrow(created.tableId)!.settlement!.txHash, "the retried settlement is signed");
+    const record = dice.getTableEscrow(created.tableId)!;
+    expect(record.settlement!.payouts).toEqual(written.payouts);
+    expect(sends).toHaveLength(3);
+    // Every attempt is the same call, bounded by the locks' deadline.
+    for (const s of sends) {
+      expect(s.data).toBe(sends[0]!.data);
+      expect(s.deadline).toBe(created.escrow!.expiresAt);
+    }
+    expect((await included(record.settlement!.txHash!)).status).toBe(1);
+    for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
+  });
+
+  it("after a restart, one table's failed recovery neither blocks startup nor the other tables, and is retried", async () => {
+    const first = await seatedTable(new LiarsDiceBot(), botCtx());
+    const second = await seatedTable(new LiarsDiceBot(), botCtx());
+    const ctx = await restartBot();
+    const real = ctx.contractCalls!;
+    let failing = true;
+    const flaky = {
+      ...ctx,
+      contractCalls: {
+        ...real,
+        send: async (params: Parameters<typeof real.send>[0]) => {
+          if (failing && params.record.tableId === first.created.tableId) throw new Error("node unreachable");
+          return real.send(params);
+        },
+      },
+    } as BotContext;
+    const revived = started(new LiarsDiceBot({ escrows: new TableEscrows("liars-dice", { retryBaseMs: 100 }) }));
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => (release = resolve));
+    // Startup returns while the chain is still being read.
+    const slow = { ...flaky, provider: new Proxy(chain, { get: (t, k) => (k === "call" ? async (...a: unknown[]) => { await gate; return (t.call as (...x: unknown[]) => unknown).apply(t, a); } : Reflect.get(t, k)) }) } as BotContext;
+    await revived.onStart(slow);
+    release();
+    await revived.recovered();
+    expect(revived.getTableEscrow(second.created.tableId)!.settlement!.txHash).toBeDefined();
+    expect(revived.getTableEscrow(first.created.tableId)!.settlement!.txHash).toBeUndefined();
+    failing = false;
+    await until(() => !!revived.getTableEscrow(first.created.tableId)!.settlement!.txHash, "the failed table is retried");
+    for (const { locks, created } of [first, second]) {
+      const record = revived.getTableEscrow(created.tableId)!;
+      expect((await included(record.settlement!.txHash!)).status).toBe(1);
+      for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
+    }
   });
 });

@@ -763,13 +763,13 @@ export function tableSecretCapabilityOf(
  * The live wallet's table-join signer: its main account (the account `sendContractCall` sends
  * a buy-in lock from) signs a `frank/table-join/v1` authorization on the wallet's own network
  * (`../table-join`) and nothing else. It never hands out the key; it refuses once the wallet is
- * closed. `undefined` for a wallet with no main account.
+ * closed. `undefined` for a wallet with no typed main account.
  */
 export function tableJoinSignerOf(
   wallet: EvmChainWalletHandle
 ): TableJoinSigner | undefined {
   const internals = evmWalletInternals(wallet);
-  if (!internals.material?.mainAccount || internals.closed) return undefined;
+  if (!internals.material?.mainAccount || !internals.typed || internals.closed) return undefined;
   const chainIdentifier = wallet.chainIdentifier;
   const live = () => {
     const now = evmWalletInternals(wallet);

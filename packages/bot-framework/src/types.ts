@@ -134,6 +134,8 @@ export interface BotSubscriptionManager {
  * restart is re-sent byte for byte by `resume`. A game table's escrow settles through it.
  */
 export interface BotContractCalls {
+  /** The canonical identifier of the network the calls go to (the wallet's). */
+  readonly chainIdentifier: string;
   /** The account every call is sent from: the wallet's main account. A table arbiter is the
    * recipient of every buy-in lock as this account, since only the recipient may distribute. */
   account(): Promise<string>;
@@ -146,6 +148,10 @@ export interface BotContractCalls {
     value: bigint;
     gasLimit?: bigint;
     record: EvmContractCallRecord;
+    /** Block-time seconds after which the wallet gives the call up instead of re-sending it. */
+    deadline?: number;
+    /** Called once the call is journaled and signed, before it is handed to anyone. */
+    onSigned?: (signed: { operationId: string; txHash: string }) => Promise<void>;
   }): Promise<{ operationId: string; txHash: string }>;
   /** Re-sends a call this wallet journaled (by its `operationId`), exactly as signed. */
   resume(operationId: string): Promise<void>;

@@ -42,6 +42,8 @@ import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
   TableEscrows,
+  returnBuyIns,
+  tablePool,
   seatRefusalText,
   settlementText,
   tableEscrowItemTerms,
@@ -80,27 +82,49 @@ export class LiarsDiceBot implements FrankBotDefinition {
     return this.escrows.get(tableId);
   }
 
+  private recovery: Promise<void> = Promise.resolve();
+
   /** After a restart: every kept table's game is gone, so each is settled as it was written
-   * down, or its buy-ins are returned (`TableEscrows.recover`). */
+   * down, or its buy-ins are returned (`TableEscrows.recover`). Startup does not wait for it. */
   async onStart(ctx: BotContext): Promise<void> {
-    const results = await this.escrows.recover(ctx, tableId => this.tables.has(tableId));
-    for (const result of results)
-      console.log(`[liars-dice] table ${result.tableId} after restart: ${settlementText(result, ctx)}`);
+    this.recovery = this.escrows.recover(ctx, tableId => this.tables.has(tableId)).then(results => {
+      for (const result of results)
+        console.log(`[liars-dice] table ${result.tableId} after restart: ${settlementText(result, ctx)}`);
+    });
   }
 
-  /** The game is won: the winner is paid every locked buy-in. */
-  private async settleGameEscrow(
+  /** The recovery `onStart` began, done. */
+  recovered(): Promise<void> {
+    return this.recovery;
+  }
+
+  async onStop(): Promise<void> {
+    for (const tableId of [...this.timers.keys()]) this.clearTableTimer(tableId);
+    this.escrows.stop();
+  }
+
+  /**
+   * After every challenge, by any path (a player's `/liar`, a challenge item, a turn timeout):
+   * the reveal is verified. A won game pays the winner every locked buy-in; a reveal that fails
+   * verification ends the table and returns every buy-in.
+   */
+  private async afterChallenge(
     game: LiarsDiceGameState,
     ctx: BotContext
-  ): Promise<TableSettlementResult | undefined> {
+  ): Promise<{ verified: boolean; reason?: string; settlement?: TableSettlementResult }> {
+    this.clearTableTimer(game.tableId);
+    const verification = verifyLiarsDiceReveal(game);
     const escrow = this.escrows.get(game.tableId);
-    if (!game.winnerAddress || !escrow) return undefined;
-    const pool = BigInt(escrow.buyInWei) * BigInt(escrow.seats.length);
-    return this.escrows.settle(
-      ctx,
-      game.tableId,
-      pool === 0n ? [] : [{ player: game.winnerAddress, amountWei: pool }]
-    );
+    let settlement: TableSettlementResult | undefined;
+    if (escrow && !verification.verified)
+      settlement = await this.escrows.settle(ctx, game.tableId, returnBuyIns);
+    else if (escrow && game.status === "resolved" && game.winnerAddress) {
+      const winner = game.winnerAddress;
+      settlement = await this.escrows.settle(ctx, game.tableId, record => [
+        { player: winner, amountWei: tablePool(record) },
+      ]);
+    }
+    return { verified: verification.verified, reason: verification.reason, settlement };
   }
 
   getProfile(): BotProfile {
@@ -145,31 +169,38 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
   private resetTurnTimer(tableId: string, ctx: BotContext, peerAddress: string) {
     this.clearTableTimer(tableId);
-    const timer = setTimeout(async () => {
-      const game = this.tables.get(tableId);
-      if (!game || game.status !== "round_active") return;
-      const active = getActivePlayer(game);
-      if (!active) return;
-
-      console.log(`[liars-dice] Turn timer expired for ${active.address} on table ${tableId}`);
-      if (game.currentBid) {
-        // Auto-challenge on timeout if there is an existing bid
-        const res = applyChallenge(game, active.address);
-        if (res.success) {
-          const item = this.buildLiarsDiceItem(game, "showdown", active.address);
-          await ctx.sendMessage(peerAddress, [
-            {
-              type: "text",
-              text: `⏰ Turn timeout! ${active.address.slice(0, 8)} automatically called Liar!`,
-            },
-            item,
-          ]);
-        }
-      }
+    const timer = setTimeout(() => {
+      void this.onTurnTimeout(tableId, ctx, peerAddress).catch(error =>
+        console.warn(`[liars-dice] turn timeout on table ${tableId} failed:`, error)
+      );
     }, TURN_TIMEOUT_SECONDS * 1000);
 
     timer.unref?.();
     this.timers.set(tableId, timer);
+  }
+
+  /** The active player's turn ran out with a bid standing: it calls Liar. A challenge that ends
+   * the game settles the table, as any other does. */
+  private async onTurnTimeout(tableId: string, ctx: BotContext, peerAddress: string): Promise<void> {
+    const game = this.tables.get(tableId);
+    if (!game || game.status !== "round_active") return;
+    const active = getActivePlayer(game);
+    if (!active || !game.currentBid) return;
+
+    console.log(`[liars-dice] Turn timer expired for ${active.address} on table ${tableId}`);
+    const res = applyChallenge(game, active.address);
+    if (!res.success) return;
+    const { settlement } = await this.afterChallenge(game, ctx);
+    const item = this.buildLiarsDiceItem(game, "showdown", active.address);
+    await ctx.sendMessage(peerAddress, [
+      {
+        type: "text",
+        text: `⏰ Turn timeout! ${active.address.slice(0, 8)} automatically called Liar!${
+          settlement ? `\n${settlementText(settlement, ctx)}` : ""
+        }`,
+      },
+      item,
+    ]);
   }
 
   private buildLiarsDiceItem(
@@ -471,13 +502,14 @@ export class LiarsDiceBot implements FrankBotDefinition {
         return;
       }
 
-      this.clearTableTimer(tableId);
-      const verification = verifyLiarsDiceReveal(game);
-      if (!verification.verified) {
+      const ended = await this.afterChallenge(game, ctx);
+      if (!ended.verified) {
         await msgCtx.reply([
           {
             type: "text",
-            text: `❌ Showdown verification failed: ${verification.reason}`,
+            text: `❌ Showdown verification failed: ${ended.reason}${
+              ended.settlement ? `\nEvery buy-in is returned. ${settlementText(ended.settlement, ctx)}` : ""
+            }`,
           },
         ]);
         return;
@@ -495,9 +527,8 @@ export class LiarsDiceBot implements FrankBotDefinition {
 
       if (game.status === "resolved") {
         msg += `\n\n🏆 **GAME OVER!** Winner: ${game.winnerAddress?.slice(0, 8)}! Pot: ${ctx.formatAmount(game.potWei)}.`;
-        const settlement = await this.settleGameEscrow(game, ctx);
-        if (settlement) {
-          msg += `\n${settlementText(settlement, ctx)}`;
+        if (ended.settlement) {
+          msg += `\n${settlementText(ended.settlement, ctx)}`;
         }
       }
 
@@ -532,18 +563,16 @@ export class LiarsDiceBot implements FrankBotDefinition {
     msgCtx: BotMessageContext,
     ctx: BotContext,
   ): Promise<void> {
-    // The game must take the player before the escrow seats its lock.
-    const fits = joinGame(structuredClone(game), sender);
-    if (!fits.success) {
-      await msgCtx.reply([{ type: "text", text: `❌ Could not join table: ${fits.error}` }]);
-      return;
-    }
-    const seat = await this.escrows.seat(ctx, game.tableId, sender, lock);
+    // The game's join runs inside the escrow's seating step: a seat is recorded only when the
+    // game took the player, and the player is told when it did not.
+    const seat = await this.escrows.seat(ctx, game.tableId, sender, lock, () => {
+      const joined = joinGame(game, sender);
+      return joined.success ? { ok: true } : { ok: false, error: joined.error ?? "the table refused the player" };
+    });
     if (!seat.seated) {
       await msgCtx.reply([{ type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` }]);
       return;
     }
-    joinGame(game, sender);
     this.conversationTables.set(sender, game.tableId);
     const item = this.buildLiarsDiceItem(game, "join", sender);
     await msgCtx.reply([
@@ -585,9 +614,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
     if (item.action === "challenge") {
       const res = applyChallenge(game, sender);
       if (res.success) {
-        this.clearTableTimer(game.tableId);
-        const settlement =
-          game.status === "resolved" ? await this.settleGameEscrow(game, ctx) : undefined;
+        const { settlement } = await this.afterChallenge(game, ctx);
         const out = this.buildLiarsDiceItem(game, "showdown", sender);
         await msgCtx.reply(
           settlement ? [{ type: "text", text: settlementText(settlement, ctx) }, out] : [out]

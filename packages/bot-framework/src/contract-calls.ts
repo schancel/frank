@@ -15,7 +15,7 @@ import type { BotContractCalls } from "./types";
 export function botContractCallsOf(
   wallet: Pick<
     EvmChainWalletHandle,
-    "sendContractCall" | "getContractCallFunds" | "resumeNativeOperation"
+    "sendContractCall" | "getContractCallFunds" | "resumeNativeOperation" | "chainIdentifier"
   >,
   htlcContract: () => string
 ): BotContractCalls | undefined {
@@ -23,6 +23,7 @@ export function botContractCallsOf(
   if (!sendContractCall || !getContractCallFunds || !resumeNativeOperation)
     return undefined;
   return Object.freeze({
+    chainIdentifier: wallet.chainIdentifier,
     account: async () =>
       getAddress((await getContractCallFunds.call(wallet)).mainAddress),
     htlcContract: () => getAddress(htlcContract()),
@@ -33,6 +34,13 @@ export function botContractCallsOf(
         value: params.value,
         ...(params.gasLimit === undefined ? {} : { gasLimit: params.gasLimit }),
         record: params.record,
+        ...(params.deadline === undefined ? {} : { deadline: params.deadline }),
+        ...(params.onSigned === undefined
+          ? {}
+          : {
+              onSigned: (signed: { operationId: string; txHash: string }) =>
+                params.onSigned!({ operationId: signed.operationId, txHash: signed.txHash }),
+            }),
       });
       return { operationId: handle.operationId, txHash: handle.txHash };
     },

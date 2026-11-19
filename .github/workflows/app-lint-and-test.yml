@@ -103,8 +103,8 @@ jobs:
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand evm-deposit-scan.anvil.jest.test.ts
 
   # GenericHTLC and StateChannel on a real EVM node (anvil), and the wallet's HTLC encoders,
-  # reader and game escrow against the compiled artifact. The step fails if the binary is
-  # missing, so no anvil suite can be silently skipped here.
+  # reader, game escrow and table buy-in escrow against the compiled artifact. The step fails
+  # if the binary is missing, so no anvil suite can be silently skipped here.
   contracts-and-htlc:
     runs-on: ubuntu-latest
     steps:
@@ -119,7 +119,25 @@ jobs:
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           export ANVIL_BIN="$PWD/$ANVIL_BIN"
           yarn workspace @frank/contracts test --ci --runInBand
-          yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts
+          yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts table-escrow.anvil.jest.test.ts table-join.jest.test.ts table-preimage.jest.test.ts
+
+  # Poker and liar's dice buy-ins held in GenericHTLC on a real EVM node (anvil): real player
+  # wallets and the real table bots lock, join, play, pay out and refund. Its own job, beside
+  # contracts-and-htlc, so its minute of anvil play does not lengthen that one. The step fails
+  # if the binary is missing, so neither suite can be silently skipped here.
+  bot-table-escrow:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install
+      - name: Table buy-in escrow bots on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/bot test --ci --runInBand src/bots/table-htlc.anvil.jest.test.ts src/bots/table-join.anvil.jest.test.ts
 
   # Its own job, so it runs beside wallet-monad-chain instead of lengthening it. Its budgets are
   # counted work and CPU time, not wall-clock latency, so a busy shared runner does not fail it.

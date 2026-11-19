@@ -1047,6 +1047,43 @@ describe('a double-funded XEC script: every exact output is a separate fund', ()
     ).toBe('claimed/none')
   })
 
+  it('an inactive A, withdrawn, after T_A, never re-broadcasts a stored refund of the output kept for B', () => {
+    // The record holds a refund of the first output (signed before the withdraw landed). The
+    // active rule refunds only the extra output; the inactive device follows the same
+    // candidates: it has no stored spend of the second, so it does nothing.
+    const record = { xecSpends: [stored(first, 'refund')] }
+    const active = run('A', {
+      xec: two({}, {}, T_A + 1),
+      evm: both('withdrawn'),
+      record,
+    })
+    expect(active.action).toMatchObject({
+      kind: 'sign-xec-spend',
+      funding: second,
+    })
+    expect(
+      summary(
+        run('A', {
+          active: false,
+          xec: two({}, {}, T_A + 1),
+          evm: both('withdrawn'),
+          record,
+        }),
+      ),
+    ).toBe('claimed/none')
+    // With a stored refund of the extra output too, it re-broadcasts that one only.
+    expect(
+      run('A', {
+        active: false,
+        xec: two({}, {}, T_A + 1),
+        evm: both('withdrawn'),
+        record: {
+          xecSpends: [stored(first, 'refund'), stored(second, 'refund')],
+        },
+      }).action,
+    ).toEqual({ kind: 'broadcast-xec-spend', funding: second })
+  })
+
   it('A, withdrawn, after T_A, B’s claim of one is not final: keeps the other back', () => {
     // A mempool claim can still lose to a refund of its own output; until it is final, the
     // remaining unspent output stays for B.

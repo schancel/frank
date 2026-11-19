@@ -71,6 +71,7 @@ const { activeChain, setActiveChain } = require('@frank/wallet/chain')
 const { MonadIdentity } = require('@frank/wallet/evm-identity')
 const { messagingStateOwner } = require('../utils/messaging-state')
 const {
+  activeForSwaps,
   startAppSwapExecution,
   swapRecordNamespace,
   retiredExecutionDatabase,
@@ -672,6 +673,54 @@ describe('session HTLC swap runner and card', () => {
     firstRead()
     await settle()
     expect(log).toEqual(['fund'])
+  })
+
+  test('after the first read, no claim at all means active; a claim of another device means observing', () => {
+    expect(activeForSwaps({ masterInstanceId: null, myInstanceId: 'me' })).toBe(
+      true,
+    )
+    expect(activeForSwaps({ masterInstanceId: 'me', myInstanceId: 'me' })).toBe(
+      true,
+    )
+    expect(
+      activeForSwaps({ masterInstanceId: 'other', myInstanceId: 'me' }),
+    ).toBe(false)
+  })
+
+  test('the default device check reads the leader store: no claim acts, another device’s claim observes', async () => {
+    const { createPinia, setActivePinia } = require('pinia')
+    const { useLeaderStore } = require('../stores/leader')
+    setActivePinia(createPinia())
+    const leader = useLeaderStore()
+    const { journal } = await acceptedNegotiation('A')
+    const chainOf = () => ({
+      now: E + 60,
+      lockOperation: undefined,
+      xec: { tipMedianTime: E, outputs: [] },
+      evm: {
+        latest: null,
+        final: null,
+        blockTimestamp: E + 60,
+        owedWei: 0n,
+        mainBalanceWei: 10n ** 18n,
+        callCostWei: 1n,
+      },
+    })
+    const withDefaultCheck = (log: string[]) =>
+      load('A', journal, new MemoryHtlcSwapRecordStore(), chainOf(), log, {
+        isActiveDevice: () => activeForSwaps(leader),
+      })
+    leader.masterInstanceId = 'another-device'
+    const observing: string[] = []
+    const first = withDefaultCheck(observing)
+    await settle()
+    expect(observing).toEqual([])
+    await first.execution.stop()
+    leader.masterInstanceId = null
+    const acting: string[] = []
+    withDefaultCheck(acting)
+    await settle()
+    expect(acting).toEqual(['fund'])
   })
 
   test('an inactive device still re-submits its own exposed XEC lock', async () => {

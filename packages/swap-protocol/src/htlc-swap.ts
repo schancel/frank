@@ -699,8 +699,17 @@ function xecSpendAction(
   candidates: readonly XecHtlcOutputObservation[],
   record: HtlcSwapRecord | undefined,
   branch: XecHtlcBranch,
-  preimage?: Uint8Array | null,
+  preimage: Uint8Array | null | undefined,
+  /** False on an inactive device: it signs nothing new and only re-broadcasts a spend it
+   * already stored for one of these same candidates. */
+  maySign: boolean,
 ): HtlcSwapAction {
+  if (!maySign) {
+    const stored = candidates.find(o => storedXecSpendOf(record, o))
+    return stored
+      ? { kind: 'broadcast-xec-spend', funding: outpointOf(stored) }
+      : NONE
+  }
   const unsigned = candidates.find(o => !storedXecSpendOf(record, o))
   if (unsigned)
     return {
@@ -726,18 +735,11 @@ function xecSpendAction(
  */
 export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
   /** What an inactive device still does of `action`: only finishing its own exposed work. */
+  // The eCash spends already follow the same candidate rules on an inactive device
+  // (`xecSpendAction` with `maySign` false: only its own stored spend of a candidate).
   const finishing = (action: HtlcSwapAction): HtlcSwapAction => {
     if (action.kind === 'fund-xec') return action.resume ? action : NONE
     if (action.kind === 'broadcast-xec-spend') return action
-    if (action.kind === 'sign-xec-spend' && input.negotiation === 'accepted') {
-      // A new signature is new work; a spend this device already signed and stored is not.
-      const stored = fundingOf(input.terms, input.observations.xec).find(
-        o => o.spentBy === undefined && storedXecSpendOf(input.record, o),
-      )
-      return stored
-        ? { kind: 'broadcast-xec-spend', funding: outpointOf(stored) }
-        : NONE
-    }
     return NONE
   }
   const decide = (
@@ -797,7 +799,13 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
       return decide(
         'claimed',
         refundable.length > 0
-          ? xecSpendAction(refundable, record, 'refund')
+          ? xecSpendAction(
+              refundable,
+              record,
+              'refund',
+              undefined,
+              input.activeDevice,
+            )
           : owed,
         warnings,
         funding,
@@ -862,7 +870,13 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     if (mtpPassed && unspent.length > 0)
       return decide(
         peerClaimed ? 'claimedByPeer' : 'refunding',
-        xecSpendAction(unspent, record, 'refund'),
+        xecSpendAction(
+          unspent,
+          record,
+          'refund',
+          undefined,
+          input.activeDevice,
+        ),
         warnings,
         funding,
       )
@@ -927,7 +941,13 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
     const signed = unspent.find(o => storedXecSpendOf(record, o))
     return decide(
       'claimingXec',
-      xecSpendAction([signed ?? unspent[0]!], record, 'claim', latest.preimage),
+      xecSpendAction(
+        [signed ?? unspent[0]!],
+        record,
+        'claim',
+        latest.preimage,
+        input.activeDevice,
+      ),
       warnings,
       funding,
     )

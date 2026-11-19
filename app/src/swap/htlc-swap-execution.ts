@@ -151,6 +151,23 @@ export async function openAppSwapCapabilities(
   }
 }
 
+/**
+ * Whether this device acts for the account's swaps, once the session's first mailbox read has
+ * brought the device claims (`activeDeviceKnown`): when the latest claim names it, or when no
+ * device of the account holds a claim at all (nobody else acts, and a background tab nobody
+ * touched must still claim and refund in time). A claim naming another device keeps this one
+ * observing, even if that device is gone, until the user acts here (which claims).
+ */
+export function activeForSwaps(leader: {
+  masterInstanceId: string | null
+  myInstanceId: string
+}): boolean {
+  return (
+    leader.masterInstanceId === null ||
+    leader.masterInstanceId === leader.myInstanceId
+  )
+}
+
 const defaultDeps: AppSwapExecutionDeps = {
   openCapabilities: openAppSwapCapabilities,
   openStore: namespace => {
@@ -164,15 +181,7 @@ const defaultDeps: AppSwapExecutionDeps = {
       db.name ? [db.name] : [],
     )
   },
-  // Only a device that holds the account's latest claim: with no claim known yet
-  // (`masterInstanceId` null, which `isActiveMaster` counts as active), it starts nothing new.
-  isActiveDevice: () => {
-    const leader = useLeaderStore()
-    return (
-      leader.masterInstanceId !== null &&
-      leader.masterInstanceId === leader.myInstanceId
-    )
-  },
+  isActiveDevice: () => activeForSwaps(useLeaderStore()),
   now: () => Math.floor(Date.now() / 1000),
   intervalMs: SWAP_RUNNER_INTERVAL_MS,
   retryMs: SWAP_CAPABILITY_RETRY_MS,

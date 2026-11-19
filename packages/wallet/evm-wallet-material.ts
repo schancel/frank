@@ -75,6 +75,7 @@ import {
   conversationIdSaltFromBip39Seed,
 } from '@frank/cashweb/relay/conversation-id'
 import { deriveSwapPreimage } from './swap-preimage'
+import { deriveTablePreimage } from './table-preimage'
 import {
   openOwnDirectMessage,
   type OpenOwnDirectMessageInput,
@@ -148,6 +149,11 @@ export interface MonadCanonicalRoleOwner {
    * derived from the messaging root (`frank/swap-htlc-preimage/v1`, see `./swap-preimage`), the
    * same on every device of the account, never stored. A fresh copy on every call. */
   swapPreimage(input: { policyName: string; swapId: Uint8Array }): Uint8Array
+  /** The HTLC preimage of game table `tableId` (16 bytes) of `game` this account arbitrates: 32
+   * bytes, derived from the messaging root (`frank/table-htlc-preimage/v1`, see
+   * `./table-preimage`), the same in every process of the account, never stored. A fresh copy on
+   * every call. */
+  tablePreimage(input: { game: string; tableId: Uint8Array }): Uint8Array
   dispose(): void
 }
 
@@ -511,6 +517,12 @@ function roleOwner(
       if (!input || typeof input !== 'object')
         throw new Error('Expected a swap policy name and swap id')
       return deriveSwapPreimage(auxiliarySecret, input.policyName, input.swapId)
+    },
+    tablePreimage(input: { game: string; tableId: Uint8Array }) {
+      if (disposed) throw new Error('canonical-roles:disposed')
+      if (!input || typeof input !== 'object')
+        throw new Error('Expected a table game and table id')
+      return deriveTablePreimage(auxiliarySecret, input.game, input.tableId)
     },
     publicGenerationZeroPoints() {
       if (disposed) throw new Error('canonical-roles:disposed')

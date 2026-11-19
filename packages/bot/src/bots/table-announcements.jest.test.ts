@@ -9,6 +9,7 @@ import {
 } from "./table-announcements";
 import { PokerBot } from "./poker-bot";
 import { LiarsDiceBot } from "./liars-dice-bot";
+import { seatingEscrowBook } from "./table-escrow-book.testutil";
 import { amountsOf } from "./chain-amounts.testutil";
 import type { BotContext, BotMessageContext } from "@frank/bot-framework";
 
@@ -185,10 +186,11 @@ describe("Game Table Announcements for Topic Discovery", () => {
 
   describe("Integration with PokerBot and LiarsDiceBot table creation", () => {
     it("PokerBot publishes an announcement to 'games' topic upon /poker create", async () => {
-      const bot = new PokerBot();
+      const bot = new PokerBot({ escrows: seatingEscrowBook("poker").book });
       const mockPublish = jest.fn(async () => ({ payloadDigest: "0xpokerdigest" }));
       const mockBotCtx: Partial<BotContext> = {
         address: "0xPokerBotAddress",
+        ...amountsOf("monad-testnet"),
         publishTopicMessage: mockPublish,
         state: { get: jest.fn(), put: jest.fn() } as any,
       };
@@ -212,7 +214,7 @@ describe("Game Table Announcements for Topic Discovery", () => {
     });
 
     it("LiarsDiceBot publishes an announcement to 'games' topic upon /table create", async () => {
-      const bot = new LiarsDiceBot();
+      const bot = new LiarsDiceBot({ escrows: seatingEscrowBook("liars-dice").book });
       const mockPublish = jest.fn(async () => ({ payloadDigest: "0xdicedigest" }));
       const mockBotCtx: Partial<BotContext> = {
         address: "0xLiarsDiceBotAddress",

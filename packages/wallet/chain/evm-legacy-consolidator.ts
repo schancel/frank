@@ -27,7 +27,7 @@ import type {
   WalletSyncItem,
   WalletSyncOperation,
 } from '@frank/cashweb/types/messages'
-import { htlcCallOf } from '../swap-escrow'
+import { htlcCallOf, htlcTableCallOf } from '../swap-escrow'
 import {
   EvmNativeJournalError,
   EvmNativeOperationJournal,
@@ -171,11 +171,19 @@ export interface EvmLegacyConsolidatorConfig {
 export type ContractCallRecordItem = SwapRecordItem | HtlcRecordItem
 
 /** The note-to-self item of an included contract call that carried a record, else undefined:
- * a `swap-record` for a swap, an `htlc-record` for an HTLC step. */
+ * a `swap-record` for a swap, an `htlc-record` for an HTLC step. A game table's call
+ * (`table-htlc`) has none yet. */
 export function contractCallRecordItemOf(
   row: EvmNativeOperation,
 ): ContractCallRecordItem | undefined {
-  return row.record?.kind === 'htlc' ? htlcRecordItemOf(row) : swapRecordItemOf(row)
+  switch (row.record?.kind) {
+    case 'htlc':
+      return htlcRecordItemOf(row)
+    case 'swap':
+      return swapRecordItemOf(row)
+    default:
+      return undefined
+  }
 }
 
 /** The htlc-record item of an included HTLC call, else undefined. */
@@ -1897,6 +1905,26 @@ export class EvmLegacyConsolidator {
         contract !== to ||
         call.action !== params.record.action ||
         call.lockId !== params.record.lockId
+      )
+        throw new EvmNativeJournalError('invalid', 'record')
+    }
+    // A game table's record likewise: this network's GenericHTLC, and the step and the locks
+    // (in order) its calldata is.
+    if (params.record?.kind === 'table-htlc') {
+      let call: ReturnType<typeof htlcTableCallOf> | undefined
+      let contract: string | undefined
+      try {
+        call = htlcTableCallOf(main.address, params.data)
+        const configured = this.config.htlcContract?.()
+        contract = configured && getAddress(configured).toLowerCase()
+      } catch {
+        call = undefined
+      }
+      if (
+        !call ||
+        contract !== to ||
+        call.action !== params.record.action ||
+        call.lockIds.join(',') !== params.record.lockIds.join(',')
       )
         throw new EvmNativeJournalError('invalid', 'record')
     }

@@ -542,6 +542,34 @@ export interface SatoshiDiceItem {
   rejectionReason?: DiceRejectionReason
 }
 
+/**
+ * A game table's buy-in escrow on GenericHTLC v2 (`@frank/wallet/table-escrow`), as the arbiter
+ * (the game bot) states it in its table items: every player locks the item's `buyInWei` in the
+ * native coin with these terms, from its own main account, which is also the lock's refund
+ * address.
+ */
+export interface TableEscrowItemTerms {
+  /** The arbiter's main account: every buy-in lock's recipient. */
+  arbiter: string
+  /** sha256 of the table's preimage: `0x` and 64 lowercase hex digits. */
+  hashLock: string
+  /** Every buy-in lock's deadline, block-time seconds: the table's start plus a day. */
+  expiresAt: number
+}
+
+/** The player's buy-in lock, as its join item names it. The arbiter recomputes `lockId` from
+ * the table's terms and `account`, and seats the player only for an open lock with exactly
+ * those terms on chain. */
+export interface TableBuyInLockItem {
+  /** `0x` and 64 lowercase hex digits. */
+  lockId: string
+  /** The account the lock was sent from and refunds to: the player's main account. */
+  account: string
+  /** `account`'s `frank/table-join/v1` signature (65 bytes, `0x` and 130 lowercase hex digits)
+   * letting the identity this join comes from sit with this lock at this table. */
+  signature: string
+}
+
 export interface LiarsDiceItem {
   type: 'liars-dice'
   tableId: string
@@ -605,6 +633,10 @@ export interface LiarsDiceItem {
   potWei?: string
   /** Optional stealth payout address for settlement. */
   stealthAddress?: string
+  /** The arbiter's table items: the buy-in escrow every player locks into. */
+  escrow?: TableEscrowItemTerms
+  /** `join` only, from the player: the buy-in lock it opened. */
+  buyInLock?: TableBuyInLockItem
 }
 
 export type PokerStreet =
@@ -664,6 +696,10 @@ export interface PokerItem {
   }>
   winnerAddress?: string
   stealthAddress?: string
+  /** The arbiter's table items: the buy-in escrow every player locks into. */
+  escrow?: TableEscrowItemTerms
+  /** `join` only, from the player: the buy-in lock it opened. */
+  buyInLock?: TableBuyInLockItem
 }
 
 export type WalletSyncDirection = 'in' | 'out'

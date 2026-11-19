@@ -261,9 +261,13 @@ export interface EvmNativeMember extends EvmNativeMemberPlan {
 /**
  * What a contract call is, kept with its signed transaction. Plain JSON. The chain is the
  * journal's binding. The wallet's sync event turns it into the note the account sends itself:
- * a `swap-record` item for a swap, an `htlc-record` item for an HTLC call.
+ * a `swap-record` item for a swap, an `htlc-record` item for an HTLC call. A game table's
+ * call (`table-htlc`) has no note item yet: its note carries only the wallet-sync item.
  */
-export type EvmContractCallRecord = EvmSwapCallRecord | EvmHtlcCallRecord
+export type EvmContractCallRecord =
+  | EvmSwapCallRecord
+  | EvmHtlcCallRecord
+  | EvmTableHtlcCallRecord
 
 /** A swap's record: amounts as decimal strings in each asset's smallest unit. */
 export interface EvmSwapCallRecord {
@@ -298,7 +302,29 @@ export interface EvmHtlcCallRecord {
   swapId: string
   lockId: string
 }
+export const EVM_TABLE_HTLC_CALL_ACTIONS = ['lock', 'refund', 'distribute'] as const
+export type EvmTableHtlcCallAction = (typeof EVM_TABLE_HTLC_CALL_ACTIONS)[number]
+/** The most locks one table distributes: a table seats at most 16 players. */
+export const MAX_TABLE_HTLC_LOCKS = 16
+
+/**
+ * A GenericHTLC v2 call made for a game table (`@frank/wallet/table-escrow`): a player's buy-in
+ * `lock` or its `refund` after the deadline (one lock), or the arbiter's `distribute`
+ * (`batchDistribute`) of the table's locks, in calldata order. `game` is the table's plugin item
+ * type (`poker`, `liars-dice`); `tableId` is 16 bytes, lowercase hex without `0x`; each lock id
+ * is `0x` and 64 lowercase hex digits. The consolidator checks, before anything is signed, that
+ * the call's calldata is that step on those locks.
+ */
+export interface EvmTableHtlcCallRecord {
+  kind: 'table-htlc'
+  action: EvmTableHtlcCallAction
+  game: string
+  tableId: string
+  lockIds: string[]
+}
 const SWAP_ID = /^[0-9a-f]{64}$/
+const TABLE_ID = /^[0-9a-f]{32}$/
+const GAME = /^[a-z0-9]+(-[a-z0-9]+)*$/
 const MAX_RECORD_BYTES = 8 * 1024
 function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
   if (kind !== 'contract') fail()
@@ -310,6 +336,28 @@ function validateRecord(value: unknown, kind: unknown): EvmContractCallRecord {
     if (typeof row.swapId !== 'string' || !SWAP_ID.test(row.swapId)) fail()
     hash(row.lockId)
     return clone(value) as EvmHtlcCallRecord
+  }
+  if ((value as { kind?: unknown }).kind === 'table-htlc') {
+    const row = object(value, ['kind', 'action', 'game', 'tableId', 'lockIds'])
+    if (!(EVM_TABLE_HTLC_CALL_ACTIONS as readonly unknown[]).includes(row.action))
+      fail()
+    if (
+      typeof row.game !== 'string' ||
+      row.game.length > 64 ||
+      !GAME.test(row.game)
+    )
+      fail()
+    if (typeof row.tableId !== 'string' || !TABLE_ID.test(row.tableId)) fail()
+    if (
+      !Array.isArray(row.lockIds) ||
+      row.lockIds.length === 0 ||
+      row.lockIds.length > MAX_TABLE_HTLC_LOCKS ||
+      (row.action !== 'distribute' && row.lockIds.length !== 1)
+    )
+      fail()
+    for (const lockId of row.lockIds) hash(lockId)
+    if (new Set(row.lockIds).size !== row.lockIds.length) fail()
+    return clone(value) as EvmTableHtlcCallRecord
   }
   const row = object(value, [
     'kind',

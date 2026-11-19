@@ -164,6 +164,8 @@ import {
 } from "@frank/cashweb/types/messages";
 import { applyWalletSyncItem } from "../sync-dispatcher";
 import type { SwapSecretCapability } from "../swap-preimage";
+import type { TableSecretCapability } from "../table-preimage";
+import { signTableJoinWith, type TableJoinSigner } from "../table-join";
 import { ForumMessage, ForumReadPolicy } from "../forum-model";
 import { encodeForumPost } from "@frank/codec";
 import {
@@ -736,6 +738,53 @@ export function htlcMainAccountOf(
     return undefined;
   return internals.material.mainAccount.address.toLowerCase();
 }
+/**
+ * The live typed wallet's table-secret capability: the HTLC preimage of a game table this
+ * account arbitrates (`frank/table-htlc-preimage/v1`, `../table-preimage`), derived on each call
+ * and never stored. It hands out preimages only, never the root; it refuses once the wallet is
+ * closed. `undefined` for a wallet with no typed messaging root.
+ */
+export function tableSecretCapabilityOf(
+  wallet: NativeWalletHandle | WalletHandle
+): TableSecretCapability | undefined {
+  const internals = evmWalletInternals(wallet);
+  if (!internals.material?.canonicalRoles || !internals.typed || internals.closed)
+    return undefined;
+  return Object.freeze({
+    tablePreimage(input: { game: string; tableId: Uint8Array }) {
+      const live = evmWalletInternals(wallet);
+      if (live.closed || !live.material?.canonicalRoles)
+        throw new Error("Table secrets require live typed wallet custody");
+      return live.material.canonicalRoles.tablePreimage(input);
+    },
+  });
+}
+/**
+ * The live wallet's table-join signer: its main account (the account `sendContractCall` sends
+ * a buy-in lock from) signs a `frank/table-join/v1` authorization on the wallet's own network
+ * (`../table-join`) and nothing else. It never hands out the key; it refuses once the wallet is
+ * closed. `undefined` for a wallet with no typed main account.
+ */
+export function tableJoinSignerOf(
+  wallet: EvmChainWalletHandle
+): TableJoinSigner | undefined {
+  const internals = evmWalletInternals(wallet);
+  if (!internals.material?.mainAccount || !internals.typed || internals.closed) return undefined;
+  const chainIdentifier = wallet.chainIdentifier;
+  const live = () => {
+    const now = evmWalletInternals(wallet);
+    if (now.closed || !now.material?.mainAccount)
+      throw new Error("Table joins require live wallet custody");
+    return now.material.mainAccount;
+  };
+  return Object.freeze({
+    chainIdentifier,
+    account: () => getAddress(live().address),
+    signTableJoin: (a: Parameters<TableJoinSigner["signTableJoin"]>[0]) =>
+      signTableJoinWith(live(), { ...a, chainIdentifier }),
+  });
+}
+
 /** Typed wallets use only the canonical path: pending is an error, never a legacy fallback. */
 function canonicalMessagingFor(wallet: EvmChainWalletHandle) {
   requireOpenWallet(wallet);

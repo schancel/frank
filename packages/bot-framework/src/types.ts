@@ -10,6 +10,8 @@ import type {
 } from "@frank/wallet/chain";
 import type { StampPaymentInfo } from "@frank/wallet/chain/active-chain";
 import type { ForumMessageEntry } from "@frank/wallet/forum-model";
+import type { EvmContractCallRecord } from "@frank/wallet/storage/evm-native-operation-journal";
+import type { TableSecretCapability } from "@frank/wallet/table-preimage";
 
 import type { AccountType, BotRole } from "@frank/codec";
 import type { AmountFormat } from "./amounts";
@@ -126,6 +128,35 @@ export interface BotSubscriptionManager {
   ): Promise<MessageItem[] | null>;
 }
 
+/**
+ * Contract calls from the bot wallet's main account, through the wallet's contract-call path:
+ * each call is journaled with its record before it is signed, and a call handed out before a
+ * restart is re-sent byte for byte by `resume`. A game table's escrow settles through it.
+ */
+export interface BotContractCalls {
+  /** The canonical identifier of the network the calls go to (the wallet's). */
+  readonly chainIdentifier: string;
+  /** The account every call is sent from: the wallet's main account. A table arbiter is the
+   * recipient of every buy-in lock as this account, since only the recipient may distribute. */
+  account(): Promise<string>;
+  /** This network's GenericHTLC. Throws where none is deployed. */
+  htlcContract(): string;
+  /** Resolves once the call is handed to the network; the caller watches for inclusion. */
+  send(params: {
+    to: string;
+    data: string;
+    value: bigint;
+    gasLimit?: bigint;
+    record: EvmContractCallRecord;
+    /** Block-time seconds after which the wallet gives the call up instead of re-sending it. */
+    deadline?: number;
+    /** Called once the call is journaled and signed, before it is handed to anyone. */
+    onSigned?: (signed: { operationId: string; txHash: string }) => Promise<void>;
+  }): Promise<{ operationId: string; txHash: string }>;
+  /** Re-sends a call this wallet journaled (by its `operationId`), exactly as signed. */
+  resume(operationId: string): Promise<void>;
+}
+
 export interface BotContext {
   readonly botId: string;
   readonly address: string;
@@ -144,6 +175,12 @@ export interface BotContext {
   readonly provider: JsonRpcProvider;
   readonly state: BotStateStore;
   readonly subscriptions: BotSubscriptionManager;
+  /** The wallet's contract-call path; absent where the wallet makes no contract calls. */
+  readonly contractCalls?: BotContractCalls;
+  /** The preimage of a game table this bot arbitrates (`frank/table-htlc-preimage/v1`), derived
+   * from its account on each call and never stored; absent for a wallet with no typed messaging
+   * root. */
+  readonly tableSecrets?: TableSecretCapability;
   /** Aborted when the host starts stopping. A handler passes it to anything slow it waits on
    * (a model call, an HTTP request) so shutdown does not wait for it. */
   readonly stopping: AbortSignal;

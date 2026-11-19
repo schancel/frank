@@ -62,6 +62,7 @@ import {
   type PreparedReply,
 } from "./types";
 import { chainAmounts } from "./amounts";
+import { botContractCallsOf, botTableSecretsOf } from "./contract-calls";
 import { claimTransfer, checkStampPayments } from "./claims";
 import { EVMNonceSequencer } from "./nonce-sequencer";
 import { LevelBotStateStore } from "./state-store";
@@ -747,6 +748,12 @@ export class FrankBotHost {
         state,
         subscriptions,
         stopping: this.stopController.signal,
+        contractCalls: botContractCallsOf(wallet, () => {
+          const htlc = this.chain.getHtlcAddress?.();
+          if (!htlc) throw new Error("No GenericHTLC on this network");
+          return htlc;
+        }),
+        tableSecrets: botTableSecretsOf(wallet),
 
         lookupPeer: (addr: string) => directory.lookupPeer(addr),
         minimumStampWei: async () =>

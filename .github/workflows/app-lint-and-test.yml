@@ -198,6 +198,30 @@ jobs:
       - name: Wallet CPU and request budgets
         run: yarn workspace @frank/wallet test --ci --runInBand wallet-performance-simulation.integration.jest.test.ts
 
+  # eCash HTLCs, a shared seed on eCash, and the eCash <-> EVM HTLC swap on real nodes: Bitcoin
+  # ABC's bitcoind with Chronik (the release `regtest:fetch` pins by SHA-256, cached between runs)
+  # and anvil. The step fails if either binary is missing, so no suite can be silently skipped.
+  bot-regtest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install
+      - name: Cache the Bitcoin ABC release
+        uses: actions/cache@v4
+        with:
+          path: .regtest-cache
+          key: ${{ runner.os }}-bitcoin-abc-${{ hashFiles('packages/bot/demo/regtest/bitcoin-abc.ts') }}
+      - name: eCash and HTLC swap regtest suites on real nodes (bitcoind with Chronik, anvil)
+        run: |
+          BITCOIND="$(cd packages/bot && node --import tsx demo/regtest/bitcoin-abc.ts)"
+          test -x "$BITCOIND" || { echo "no Chronik bitcoind from regtest:fetch" >&2; exit 1; }
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          FRANK_BITCOIN_ABC_BIN_DIR="$(dirname "$BITCOIND")" ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/bot test --ci --runInBand demo/regtest/ecash-htlc.regtest.jest.test.ts demo/regtest/ecash-shared-seed.regtest.jest.test.ts demo/regtest/htlc-swap.regtest.jest.test.ts
+
   bot-demo-suites:
     runs-on: ubuntu-latest
     steps:
@@ -206,12 +230,13 @@ jobs:
         with:
           node-version: "26"
       - run: yarn install
-      # Unit suites only: the launcher's own suites (demo/) and the bot host's. The demo's real
+      # Unit suites only: the launcher's own suites (demo/, without its regtest suites, which
+      # bot-regtest runs on real nodes) and the bot host's. The demo's real
       # checks (`yarn test:two-wallets`, `yarn demo:smoke`) need the relay binary, a Monad testnet
       # RPC URL and funded testnet wallets, which this job does not have; they are not run here,
       # and nothing here stands in for them.
       - name: Bot launcher and host unit suites
-        run: yarn workspace @frank/bot test --ci --runInBand demo/ qwen-host-safety.jest.test.ts qwen-reply.jest.test.ts bot-state-dir.jest.test.ts src/bots/qwen-bot.jest.test.ts src/bots/blackjack-host.jest.test.ts qwen-bot-common.jest.test.ts bot-entry-import.jest.test.ts src/bots/faucet-bot.jest.test.ts ci-bot-suites.jest.test.ts
+        run: yarn workspace @frank/bot test --ci --runInBand demo/ qwen-host-safety.jest.test.ts qwen-reply.jest.test.ts bot-state-dir.jest.test.ts src/bots/qwen-bot.jest.test.ts src/bots/blackjack-host.jest.test.ts qwen-bot-common.jest.test.ts bot-entry-import.jest.test.ts src/bots/faucet-bot.jest.test.ts ci-bot-suites.jest.test.ts --testPathIgnorePatterns='(/node_modules/|\.regtest\.jest\.test\.ts$)'
 
       - name: Bot host and durable faucet recovery regression
         run: yarn workspace @frank/bot-framework test --ci --runInBand

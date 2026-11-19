@@ -106,8 +106,8 @@ describe("direct protocol registry projection", () => {
     ).toThrow("unsupported client reference");
   });
 
-  it("populates a unique non-empty CAIP-2 identifier for all 37 chains in v1.json", () => {
-    expect(source.chains).toHaveLength(37);
+  it("populates a unique non-empty CAIP-2 identifier for all 38 chains in v1.json", () => {
+    expect(source.chains).toHaveLength(38);
     const seen = new Set<string>();
     for (const chain of source.chains) {
       expect(typeof chain.caip2).toBe("string");

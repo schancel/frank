@@ -2696,7 +2696,7 @@ continuity_file = "/var/lib/frank/continuity"
     fn protocol_registry_is_unique_and_family_validation_fails_closed() {
         let registry = protocol_chain_registry();
         assert_eq!(registry.schema_version, 1);
-        assert_eq!(registry.chains.len(), 37);
+        assert_eq!(registry.chains.len(), 38);
         assert_eq!(
             super::protocol_chain_by_caip2("eip155:10143")
                 .unwrap()

@@ -33,6 +33,15 @@ jest.mock('@frank/wallet/chain', () => ({
     mockOpenRelayUtxoChain(params),
 }))
 
+const mockRequireCheckpoint = jest.fn(async () => ({
+  blockNumber: 1,
+  blockHash: 'cd'.repeat(32),
+}))
+jest.mock('./relay-wallet-route', () => ({
+  requireRelayOperatorCheckpoint: (relay: string, chain: string) =>
+    mockRequireCheckpoint(relay, chain),
+}))
+
 import { openUtxoWallet } from './utxo-wallets'
 
 beforeEach(() => {
@@ -68,6 +77,21 @@ it('opens one wallet per chain for the account, through the relay, through sessi
   expect(mockSessionCreateWallet.mock.calls[0][0]).toBe(
     mockOpenRelayUtxoChain.mock.results[0].value,
   )
+})
+
+it('binds a Lotus v2 regtest wallet to the checkpoint the relay names; other chains take none', async () => {
+  await openUtxoWallet('lotus-v2-regtest')
+  expect(mockRequireCheckpoint).toHaveBeenCalledWith(
+    'https://relay.invalid',
+    'lotus-v2-regtest',
+  )
+  expect(mockOpenRelayUtxoChain).toHaveBeenCalledWith({
+    chainIdentifier: 'lotus-v2-regtest',
+    relayBaseUrl: 'https://relay.invalid',
+    checkpoint: { height: 1, hash: 'cd'.repeat(32) },
+  })
+  await openUtxoWallet('xec-testnet')
+  expect(mockRequireCheckpoint).toHaveBeenCalledTimes(1)
 })
 
 it('does not hand one account the wallet of another', async () => {

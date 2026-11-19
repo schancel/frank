@@ -219,6 +219,18 @@
       ]
     },
     {
+      "id": "lotus-v2-regtest",
+      "family": "bitcoin",
+      "network": "regtest",
+      "caip2": "bip122:lotus-v2-regtest",
+      "native_chain_id": null,
+      "allowed_proxy_capabilities": ["json-rpc", "chronik"],
+      "identity_probes": [
+        { "kind": "operator-block-checkpoint", "capability": "json-rpc" },
+        { "kind": "operator-block-checkpoint", "capability": "chronik" }
+      ]
+    },
+    {
       "id": "solana-mainnet",
       "family": "solana",
       "network": "mainnet",

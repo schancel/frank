@@ -12,6 +12,7 @@ import { mainnetChainIdOfKind } from "../chain/chains-registry";
 export type SupportedAsset =
   | "monad"
   | "ecash"
+  | "lotus"
   | "solana"
   | "tempo"
   | "ethereum"
@@ -28,6 +29,7 @@ export type SupportedAsset =
 export const ASSET_DECIMALS: Record<SupportedAsset, number> = {
   monad: 18,
   ecash: 2,
+  lotus: 6,
   solana: 9,
   tempo: 6,
   ethereum: 18,

@@ -104,12 +104,15 @@ export async function requireRelayOperatorCheckpoint(
     throw new RelayOperatorCheckpointUnavailableError(chainIdentifier)
   const { block_number: blockNumber, block_hash: blockHash } =
     checkpoint as Record<string, unknown>
+  // Each family's own hash spelling: EVM `0x`-prefixed, Bitcoin-family the node's display hex.
+  const hashFormat =
+    entry.family === 'bitcoin' ? /^[0-9a-f]{64}$/ : /^0x[0-9a-fA-F]{64}$/
   if (
     typeof blockNumber !== 'number' ||
     !Number.isSafeInteger(blockNumber) ||
     blockNumber < 1 ||
     typeof blockHash !== 'string' ||
-    !/^0x[0-9a-fA-F]{64}$/.test(blockHash)
+    !hashFormat.test(blockHash)
   )
     throw new RelayOperatorCheckpointUnavailableError(chainIdentifier)
   return { blockNumber, blockHash }

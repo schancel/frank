@@ -11,7 +11,9 @@ import {
   type NativeWalletHandle,
   type RelayUtxoChain,
 } from '@frank/wallet/chain'
+import { getChainRegistryEntry } from '@frank/wallet/chain/chains-registry'
 import { xecHtlcKeysOf, type XecHtlcKeys } from '@frank/wallet/ecash-wallet'
+import { requireRelayOperatorCheckpoint } from './relay-wallet-route'
 import { accountSession } from './session'
 
 export interface OpenUtxoWallet {
@@ -45,16 +47,31 @@ export function openUtxoWallet(
   // A wallet of an earlier account must not outlive it.
   if (existing) void existing.close().catch(() => undefined)
 
-  const relayChain = openRelayUtxoChain({
-    chainIdentifier,
-    relayBaseUrl: loadMonadChainConfigFromEnv().relayBaseUrl,
-  })
+  const relayBaseUrl = loadMonadChainConfigFromEnv().relayBaseUrl
+  let relayChain: RelayUtxoChain | undefined
   const opening = (async () => {
+    // A Lotus v2 (regtest-only) wallet is bound to the block the relay checked its node against.
+    const lotus = getChainRegistryEntry(chainIdentifier)?.kind === 'lotus'
+    const checkpoint = lotus
+      ? await requireRelayOperatorCheckpoint(relayBaseUrl, chainIdentifier)
+      : undefined
+    if (sessionScope() !== scope) throw new Error('Account changed')
+    relayChain = openRelayUtxoChain({
+      chainIdentifier,
+      relayBaseUrl,
+      checkpoint: checkpoint && {
+        height: checkpoint.blockNumber,
+        hash: checkpoint.blockHash,
+      },
+    })
     const wallet = await accountSession.createUtxoWallet(relayChain)
     if (sessionScope() !== scope) throw new Error('Account changed')
     return { chain: relayChain.chain, wallet }
   })()
-  const entry: Opened = { scope, opening, close: () => relayChain.close() }
+  const close = async () => {
+    await relayChain?.close()
+  }
+  const entry: Opened = { scope, opening, close }
   opened.set(chainIdentifier, entry)
   opening.then(
     value => {
@@ -65,7 +82,7 @@ export function openUtxoWallet(
   // A failed open (relay unreachable) is retried by the next caller instead of being cached.
   opening.catch(() => {
     if (opened.get(chainIdentifier) === entry) opened.delete(chainIdentifier)
-    void relayChain.close().catch(() => undefined)
+    void close().catch(() => undefined)
   })
   return opening
 }

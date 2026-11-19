@@ -21,9 +21,15 @@ it('preserves established wallet row order and covers each registry kind once', 
     'arbitrum',
   ])
   expect(new Set(ids).size).toBe(ids.length)
+  // Every kind the testnet/mainnet setting can select; a regtest-only kind (lotus) has no row.
   expect(new Set(ids)).toEqual(
-    new Set(Object.values(PROTOCOL_CHAINS).map(entry => entry.kind)),
+    new Set(
+      Object.values(PROTOCOL_CHAINS)
+        .filter(entry => entry.network !== 'regtest')
+        .map(entry => entry.kind),
+    ),
   )
+  expect(ids).not.toContain('lotus')
   expect(MAIN_WALLET_ID).toBe('monad')
   expect(WALLET_CONFIGS.filter(row => row.isMain).map(row => row.id)).toEqual([
     'monad',

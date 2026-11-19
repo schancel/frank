@@ -1075,8 +1075,16 @@ fn chronik_policy(method: &Method, path: &str) -> Option<(bool, bool)> {
                 "history" | "confirmed-txs" | "unconfirmed-txs" | "utxos"
             ]
         ));
+    // Lotus v2 Chronik's confirmed-only JSON routes (`/v2/*`), which a Lotus v2 wallet reads its
+    // coins and address history from. Other Chronik nodes answer them 404.
+    let public_get = public_get
+        || (method == Method::GET
+            && matches!(parts.as_slice(), ["v2", "status"] | ["v2", "utxos", _, _]));
     let public_post = method == Method::POST
-        && matches!(parts.as_slice(), ["script", "batch", "utxos" | "summary"]);
+        && matches!(
+            parts.as_slice(),
+            ["script", "batch", "utxos" | "summary"] | ["v2", "branches", "utxos" | "outputs"]
+        );
     let broadcast =
         method == Method::POST && matches!(parts.as_slice(), ["broadcast-tx"] | ["broadcast-txs"]);
     let customer = public_get
@@ -1356,7 +1364,14 @@ async fn proxy_chronik_inner(
             runtime
                 .client
                 .post(url)
-                .header(reqwest::header::CONTENT_TYPE, "application/x-protobuf")
+                .header(
+                    reqwest::header::CONTENT_TYPE,
+                    if path.starts_with("v2/") {
+                        "application/json"
+                    } else {
+                        "application/x-protobuf"
+                    },
+                )
                 .body(body.to_vec())
         };
 
@@ -1454,9 +1469,14 @@ async fn proxy_chronik_inner(
         .encode_to_vec()
         .into()
     };
+    let content_type = if path.starts_with("v2/") && upstream.status.is_success() {
+        "application/json"
+    } else {
+        "application/x-protobuf"
+    };
     let response = (
         upstream.status,
-        [(axum::http::header::CONTENT_TYPE, "application/x-protobuf")],
+        [(axum::http::header::CONTENT_TYPE, content_type)],
         body,
     )
         .into_response();
@@ -1624,6 +1644,25 @@ mod tests {
         );
         assert_eq!(chronik_policy(&Method::GET, "pause"), None);
         assert_eq!(chronik_policy(&Method::GET, "ws"), None);
+        // Lotus v2 confirmed-only JSON routes.
+        assert_eq!(
+            chronik_policy(&Method::GET, "v2/status"),
+            Some((true, false))
+        );
+        assert_eq!(
+            chronik_policy(&Method::GET, "v2/utxos/aa/0"),
+            Some((true, false))
+        );
+        assert_eq!(
+            chronik_policy(&Method::POST, "v2/branches/utxos"),
+            Some((true, false))
+        );
+        assert_eq!(
+            chronik_policy(&Method::POST, "v2/branches/outputs"),
+            Some((true, false))
+        );
+        assert_eq!(chronik_policy(&Method::GET, "v2/explorer/v1/blocks"), None);
+        assert_eq!(chronik_policy(&Method::POST, "v2/status"), None);
     }
 
     #[test]

@@ -1,4 +1,6 @@
 import {
+  requireRelayOperatorCheckpoint,
+  RelayOperatorCheckpointUnavailableError,
   requireRelayWalletRoute,
   RelayWalletRouteUnavailableError,
 } from './relay-wallet-route'
@@ -175,4 +177,26 @@ it('bounds a stalled discovery and permits a later retry', async () => {
   } finally {
     jest.useRealTimers()
   }
+})
+
+it("reads each family's operator checkpoint in that family's hash spelling", async () => {
+  const lotusHash = 'cd'.repeat(32)
+  const { relay } = fixture([
+    {
+      ...route('lotus-v2-regtest'),
+      operator_checkpoint: { block_number: 1, block_hash: lotusHash },
+    },
+  ])
+  await expect(
+    requireRelayOperatorCheckpoint(relay, 'lotus-v2-regtest'),
+  ).resolves.toEqual({ blockNumber: 1, blockHash: lotusHash })
+  const prefixed = fixture([
+    {
+      ...route('lotus-v2-regtest'),
+      operator_checkpoint: { block_number: 1, block_hash: '0x' + lotusHash },
+    },
+  ])
+  await expect(
+    requireRelayOperatorCheckpoint(prefixed.relay, 'lotus-v2-regtest'),
+  ).rejects.toBeInstanceOf(RelayOperatorCheckpointUnavailableError)
 })

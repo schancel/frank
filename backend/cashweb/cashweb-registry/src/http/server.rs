@@ -74,6 +74,27 @@ struct AdvertisedCheckpoint {
     block_hash: String,
 }
 
+/// A Bitcoin-family regtest row's operator checkpoint `(height, hash)`, the hash in the node's
+/// display order without a `0x` prefix. Only a row whose registry probes leave the checkpoint to
+/// the operator (a local regtest chain) is named; a protocol-pinned one is never restated.
+fn bitcoin_operator_checkpoint(
+    server: &RegistryServer,
+    row: &cashweb_config::ProtocolChainDescriptor,
+) -> Option<(u64, String)> {
+    let operator = row.identity_probes.iter().any(|probe| {
+        matches!(
+            probe,
+            cashweb_config::ProtocolIdentityProbe::OperatorBlockCheckpoint { .. }
+        )
+    });
+    if !operator || row.network != "regtest" {
+        return None;
+    }
+    let chain = server.chains.bitcoin(&row.id)?;
+    let (height, hash) = chain.checkpoint();
+    Some((height, hash.to_string()))
+}
+
 async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json<ChainDiscovery> {
     let chains = server
         .chains
@@ -90,6 +111,7 @@ async fn handle_get_chains(Extension(server): Extension<RegistryServer>) -> Json
                 .chains
                 .evm(&row.id)
                 .and_then(|chain| chain.operator_checkpoint())
+                .or_else(|| bitcoin_operator_checkpoint(&server, row))
                 .map(|(block_number, block_hash)| AdvertisedCheckpoint {
                     block_number,
                     block_hash,
@@ -1416,6 +1438,73 @@ mod spa_tests {
         // A protocol-pinned checkpoint is protocol data: the relay never restates it.
         let testnet = chains.iter().find(|c| c["id"] == "monad-testnet").unwrap();
         assert!(testnet.get("operator_checkpoint").is_none());
+    }
+
+    #[tokio::test]
+    async fn discovery_names_a_bitcoin_family_regtest_operator_checkpoint_but_not_a_pinned_one() {
+        fn row(id: &str, height: u64, hash: &str) -> cashweb_config::BitcoinProxyChainConf {
+            cashweb_config::BitcoinProxyChainConf {
+                id: id.to_string(),
+                rpc_upstream_env: None,
+                rpc_upstream_envs: vec![],
+                chronik_upstream_env: Some("UPSTREAM".to_string()),
+                chronik_upstream_envs: vec![],
+                electrum_upstream_env: None,
+                electrum_upstream_envs: vec![],
+                checkpoint_height: height,
+                checkpoint_hash: hash.to_string(),
+            }
+        }
+        let lotus_hash = "cd".repeat(32);
+        let xec_regtest_hash = "ef".repeat(32);
+        let bitcoin = cashweb_config::BitcoinProxyConf {
+            enabled: true,
+            chains: vec![
+                // An operator may write the hash in either case; it is advertised lowercase.
+                row("lotus-v2-regtest", 1, &lotus_hash.to_ascii_uppercase()),
+                row("xec-regtest", 101, &xec_regtest_hash),
+                row(
+                    "xec-testnet",
+                    1_421_481,
+                    "00000000062c7f32591d883c99fc89ebe74a83287c0f2b7ffeef72e62217d40b",
+                ),
+            ],
+            ..Default::default()
+        };
+        let (_db_dir, mut server) = test_server(None);
+        server.chains = Arc::new(
+            crate::chains::RelayChains::from_families(
+                "monad-testnet",
+                &Default::default(),
+                &bitcoin,
+                &Default::default(),
+                |_| Some("http://127.0.0.1:1".to_string()),
+            )
+            .unwrap(),
+        );
+        let response = server
+            .into_router()
+            .oneshot(Request::get("/chains").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let document: serde_json::Value =
+            serde_json::from_slice(&response_bytes(response).await).unwrap();
+        let chains = document["chains"].as_array().unwrap();
+        let lotus = chains
+            .iter()
+            .find(|c| c["id"] == "lotus-v2-regtest")
+            .unwrap();
+        assert_eq!(
+            lotus["operator_checkpoint"],
+            serde_json::json!({ "block_number": 1, "block_hash": lotus_hash })
+        );
+        let xec_regtest = chains.iter().find(|c| c["id"] == "xec-regtest").unwrap();
+        assert_eq!(
+            xec_regtest["operator_checkpoint"],
+            serde_json::json!({ "block_number": 101, "block_hash": xec_regtest_hash })
+        );
+        let xec = chains.iter().find(|c| c["id"] == "xec-testnet").unwrap();
+        assert!(xec.get("operator_checkpoint").is_none());
     }
 
     #[tokio::test]

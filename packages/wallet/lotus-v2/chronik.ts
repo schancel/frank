@@ -68,11 +68,20 @@ export function chronikLotusV2Indexer(params: {
   const doFetch = params.fetch ?? fetch;
   const chronik = new ChronikClient([base]);
   const post = async (path: string, body: unknown) => {
-    const response = await doFetch(`${base}${path}`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-    });
+    const request = () =>
+      doFetch(`${base}${path}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    let response = await request();
+    // Lotus v2 Chronik answers 503 `index_unavailable` at once, without waiting, while its writer
+    // holds the confirmed database (connecting a block); a relay passes that on as 502. These reads
+    // are safe to repeat.
+    for (let attempt = 1; [502, 503].includes(response.status) && attempt <= 20; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+      response = await request();
+    }
     if (!response.ok)
       throw new Error(`Lotus Chronik ${path}: HTTP ${response.status}`);
     return (await response.json()) as {

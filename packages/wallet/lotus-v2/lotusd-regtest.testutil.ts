@@ -43,7 +43,7 @@ export const lotusdBinary = (path: string | undefined): NodeBinary => ({
   hint: "set LOTUSD_BIN to a lotusd built from the Lotus repository's v2 series (daemon/.build/v2/src/lotusd), or put it on PATH",
 });
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const server = createServer();
     server.once("error", reject);

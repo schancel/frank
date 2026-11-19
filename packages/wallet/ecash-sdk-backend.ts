@@ -1,7 +1,9 @@
 /**
  * Custody-internal eCash SDK capability predecessor. The SDK remains the only coin inventory,
  * selector and signer; Chronik owns unspent facts. Imported scripts are explicitly refreshed into
- * that inventory because SDK HD discovery scans only HD indices. No ChainUtxoPool is consulted.
+ * that inventory because SDK HD discovery scans only HD indices. Every refresh gap-scans both
+ * HD chains, so change another device of the same seed allocated is found (issue 2084).
+ * No ChainUtxoPool is consulted.
  *
  * This construction view is used by EcashWallet's durable operation owner, which reloads input
  * claims and the HD change floor under a short cross-instance lock and persists intent/signed
@@ -41,6 +43,11 @@ export interface EcashSdkWallet extends EcashWalletBackend {
   utxos: Array<ScriptUtxo & { address: string }>;
   keypairs: Map<string, Keypair>;
   clone(): EcashSdkWallet;
+  /** BIP44 gap-limit scan of the external (0/) and change (1/) chains, then a UTXO sync. */
+  syncAndDiscoverAddresses(options?: {
+    startReceiveIndex?: number;
+    startChangeIndex?: number;
+  }): Promise<void>;
   spendableSatsOnlyUtxos(): Array<ScriptUtxo & { address: string }>;
   updateBalance(): void;
   action(action: {
@@ -370,8 +377,17 @@ export class EcashSdkBackend implements EcashWalletBackend {
     }
     const promise = (async () => {
       this.assertCustodyActive();
+      // Every refresh runs the gap-limit scan. Another device of the same seed (its own
+      // operation store) advances the shared HD chains, so indices known locally are only a
+      // floor: an index-bounded sync would never see change that device created. Ordinary
+      // refreshes resume the scan at the known indices (everything below is already synced);
+      // full discovery rescans each chain from index 0.
       if (discovery) await this.sdk.syncAndDiscoverAddresses();
-      else await this.sdk.sync();
+      else
+        await this.sdk.syncAndDiscoverAddresses({
+          startReceiveIndex: this.sdk.receiveIndex,
+          startChangeIndex: this.sdk.changeIndex,
+        });
       await this.refreshImportedCoins();
       this.assertCustodyActive();
       // SDK HD sync mutates its inventory before its final tip read; imported scripts refresh

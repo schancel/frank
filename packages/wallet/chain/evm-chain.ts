@@ -2776,6 +2776,9 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
           >;
           let balancePartsRefresh: Promise<BalanceParts> | undefined;
           let balanceReadGeneration = 0;
+          // The one native re-observation pass in flight for this wallet (`reobserveNativeOperations`),
+          // if any. Cleared when that pass settles, whether it resolved or threw.
+          let nativeReobservation: Promise<void> | undefined;
           // Existing financial invalidations detach older display reads as well as cached totals.
           const invalidateBalanceRead = (affectedAddress?: string): void => {
             if (affectedAddress !== undefined) transactionSetRuntime.coinListSync.markDirty(affectedAddress);
@@ -3223,15 +3226,21 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
             // Bounded re-observation of broadcast members nothing has seen confirm. Called from
             // the hosts' existing polls, never at open. The network reads run under the wallet
             // lifetime only (inside the consolidator), outside this wallet's queue.
+            //
+            // One pass per wallet at a time: a call while a pass runs (a poll ticking faster than
+            // a slow node answers) joins that pass and starts none of its steps again. No trailing
+            // pass is queued: every host poll calls again, so what arrived mid-pass is the next
+            // tick's, and each step already keeps its own floor and backoff.
             reobserveNativeOperations() {
               const internals = evmWalletInternals(wallet);
               const owner = internals.nativeOperationOwner;
               if (!owner || internals.closed) return Promise.resolve();
+              if (nativeReobservation) return nativeReobservation;
               // A contract call the node was seen not to know is handed to it again (the same
               // signed bytes), so a lost broadcast cannot hold the main account for good.
               // A contract call or cancellation in a recent block is read again until it is deep
               // enough, so a reorganisation that moves it (another fee) is caught and told.
-              return owner
+              const pass: Promise<void> = owner
                 .reobservePending()
                 .then(() => owner.resendMissingContractCalls())
                 .then(() => owner.recheckRecentInclusions())
@@ -3254,7 +3263,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                       : new ChainUnreachableError(error);
                   }
                   throw error;
+                })
+                .finally(() => {
+                  // A pass that threw clears the guard too: the next tick starts a fresh one.
+                  if (nativeReobservation === pass) nativeReobservation = undefined;
                 });
+              nativeReobservation = pass;
+              return pass;
             },
             async watchNativeOperation(operationId) {
               requireOpenWallet(wallet);

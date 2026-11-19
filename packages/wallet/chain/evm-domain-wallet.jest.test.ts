@@ -2266,13 +2266,14 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
           }),
       )
       let returned = false
-      const tick = f.wallet.reobserveNativeOperations!().then(() => {
+      const first = f.wallet.reobserveNativeOperations!()
+      const tick = first.then(() => {
         returned = true
       })
       await settle()
       expect(answer).toBeDefined()
-      // A second tick while the first is in flight starts nothing and returns at once.
-      await f.wallet.reobserveNativeOperations!()
+      // A second tick while the first is in flight starts nothing: it joins the running pass.
+      expect(f.wallet.reobserveNativeOperations!()).toBe(first)
       // A Send of another coin is not held behind the unanswered lookup.
       const sent = await f.wallet.sendLegacy!({
         recipient: { raw: expected[1].main },
@@ -2295,6 +2296,79 @@ describe('bounded re-observation of a broadcast contract call (#1235 Stage 3)', 
     } finally {
       process.off('unhandledRejection', onUnhandled)
     }
+  })
+
+  test('ticks faster than a slow node answers run one pass at a time, each step once per pass (#1835)', async () => {
+    const time = clock()
+    const f = await pendingCall(time)
+    const owner = evmWalletInternals(f.wallet).nativeOperationOwner!
+    let inFlight = 0
+    let mostInFlight = 0
+    const counted = <K extends 'reobservePending' | 'resendMissingContractCalls' | 'recheckRecentInclusions'>(name: K) => {
+      const original = owner[name].bind(owner)
+      return jest.spyOn(owner, name).mockImplementation(async () => {
+        inFlight++
+        mostInFlight = Math.max(mostInFlight, inFlight)
+        try {
+          await original()
+        } finally {
+          inFlight--
+        }
+      })
+    }
+    const pending = counted('reobservePending')
+    const resend = counted('resendMissingContractCalls')
+    const recheck = counted('recheckRecentInclusions')
+    // Past the pass floor and the member's wait: the next pass probes, and the node is slow.
+    time.advance(600_000)
+    let answer!: (receipt: null) => void
+    f.receipt.mockImplementationOnce(
+      () =>
+        new Promise(resolve => {
+          answer = resolve
+        }),
+    )
+    const first = f.wallet.reobserveNativeOperations!()
+    await settle()
+    expect(answer).toBeDefined()
+    // A poll ticking every few milliseconds while the probe is unanswered.
+    const ticks = Array.from({ length: 20 }, () => f.wallet.reobserveNativeOperations!())
+    for (const tick of ticks) expect(tick).toBe(first)
+    await settle()
+    expect(pending).toHaveBeenCalledTimes(1)
+    expect(resend).not.toHaveBeenCalled()
+    expect(recheck).not.toHaveBeenCalled()
+    answer(null)
+    await Promise.all([first, ...ticks])
+    expect(pending).toHaveBeenCalledTimes(1)
+    expect(resend).toHaveBeenCalledTimes(1)
+    expect(recheck).toHaveBeenCalledTimes(1)
+    expect(mostInFlight).toBe(1)
+    // The pass is over: the next tick starts a fresh one.
+    await f.wallet.reobserveNativeOperations!()
+    expect(pending).toHaveBeenCalledTimes(2)
+    expect(resend).toHaveBeenCalledTimes(2)
+    expect(recheck).toHaveBeenCalledTimes(2)
+    expect(mostInFlight).toBe(1)
+  })
+
+  test('a pass that throws clears the guard: the next tick runs a fresh pass (#1835)', async () => {
+    const f = await pendingCall(clock())
+    const owner = evmWalletInternals(f.wallet).nativeOperationOwner!
+    const recheck = jest
+      .spyOn(owner, 'recheckRecentInclusions')
+      .mockRejectedValueOnce(new Error('journal closed mid-pass'))
+    const pending = jest.spyOn(owner, 'reobservePending')
+    const failed = f.wallet.reobserveNativeOperations!()
+    // A tick while the failing pass runs joins it, and sees the same failure.
+    expect(f.wallet.reobserveNativeOperations!()).toBe(failed)
+    await expect(failed).rejects.toThrow('journal closed mid-pass')
+    expect(pending).toHaveBeenCalledTimes(1)
+    const next = f.wallet.reobserveNativeOperations!()
+    expect(next).not.toBe(failed)
+    await expect(next).resolves.toBeUndefined()
+    expect(pending).toHaveBeenCalledTimes(2)
+    expect(recheck).toHaveBeenCalledTimes(2)
   })
 
   test('a lookup deadline ends the tick and leaves the call exactly as it was', async () => {

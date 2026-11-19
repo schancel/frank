@@ -981,7 +981,13 @@ async function validateRow(
       )
     )
       fail()
-    if (member.syncApplied && observation.state !== 'included-success') fail()
+    // Told to the other devices: an included send, or a contract call that reverted (its fee).
+    if (
+      member.syncApplied &&
+      observation.state !== 'included-success' &&
+      !(row.kind === 'contract' && observation.state === 'included-revert')
+    )
+      fail()
     checked('account', () => validateAccount(member.account))
     if (row.cancelled && (member.signed !== null || member.exposed)) fail()
     // Mutable callers retain coordination through validation and the following write.
@@ -2309,7 +2315,13 @@ export class EvmNativeOperationJournal {
   markSyncApplied(id: string, index: number): Promise<EvmNativeOperation> {
     return this.mutate(id, row => {
       const m = row.members[index]
-      if (!m || m.observation.state !== 'included-success') fail('conflict')
+      // An included send; for a contract call, also one that reverted: its fee was paid.
+      if (
+        !m ||
+        (m.observation.state !== 'included-success' &&
+          !(row.kind === 'contract' && m.observation.state === 'included-revert'))
+      )
+        fail('conflict')
       m.syncApplied = true
     })
   }
@@ -2463,9 +2475,17 @@ export class EvmNativeOperationJournal {
           JSON.stringify(m.account) !== JSON.stringify(frozenAccount))
       )
         delete m.transactionSet.inventoryApplied
+      const before = m.observation.state
       m.observation = frozenObservation
       m.account = frozenAccount
-      if (frozenObservation.state !== 'included-success') m.syncApplied = false
+      // A note delivered for this outcome stays delivered; any other outcome is told anew. A
+      // contract call's revert is told too (`markSyncApplied`): the fee it paid.
+      if (
+        before !== frozenObservation.state ||
+        (frozenObservation.state !== 'included-success' &&
+          !(row.kind === 'contract' && frozenObservation.state === 'included-revert'))
+      )
+        m.syncApplied = false
       // The call itself in a block: its cancellation, seen included before, was not after all
       // (a reorganisation). Only one of them can hold the nonce.
       if (

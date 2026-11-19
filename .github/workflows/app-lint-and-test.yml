@@ -148,8 +148,9 @@ jobs:
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/native-stamp-recovery.anvil.jest.test.ts
 
   # GenericHTLC and StateChannel on a real EVM node (anvil), and the wallet's HTLC encoders,
-  # reader, game escrow, table buy-in escrow, and the swap lock resume and expired-swap
-  # cancel paths against the compiled artifact. The step fails
+  # reader, game escrow, table buy-in escrow, the swap lock resume and expired-swap cancel
+  # paths, and what a landed or reverted contract call's receipt does to the coins of every
+  # device of the account, against the compiled artifact. The step fails
   # if the binary is missing, so no anvil suite can be silently skipped here.
   contracts-and-htlc:
     runs-on: ubuntu-latest
@@ -165,7 +166,7 @@ jobs:
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           export ANVIL_BIN="$PWD/$ANVIL_BIN"
           yarn workspace @frank/contracts test --ci --runInBand
-          yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts table-escrow.anvil.jest.test.ts table-join.jest.test.ts table-preimage.jest.test.ts swap/htlc-lock-resume.anvil.jest.test.ts swap/swap-expired-cancel.anvil.jest.test.ts swap/swap-expired-background-cancel.anvil.jest.test.ts
+          yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts table-escrow.anvil.jest.test.ts table-join.jest.test.ts table-preimage.jest.test.ts swap/htlc-lock-resume.anvil.jest.test.ts swap/swap-expired-cancel.anvil.jest.test.ts swap/swap-expired-background-cancel.anvil.jest.test.ts chain/evm-contract-call-receipt.anvil.jest.test.ts
 
   # Poker and liar's dice buy-ins held in GenericHTLC on a real EVM node (anvil): real player
   # wallets and the real table bots lock, join, play, pay out and refund. Its own job, beside

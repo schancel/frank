@@ -1019,19 +1019,22 @@ export class EvmCoinList {
    * The chain shows the coin's nonce consumed by an included transaction (this coin's, or a
    * replacement of it): the coin is spent, and what the account holds now is its successor at
    * the next nonce. No successor when it holds nothing worth a transfer's fee
-   * (`successor.valueWei` 0 or absent). Idempotent.
+   * (`successor.valueWei` 0 or absent). Idempotent. With `unheld`, only a coin no operation
+   * holds is settled, checked in the same step as the write (a spend from outside the list's
+   * operations: a contract call). Resolves true when it recorded the coin spent.
    */
   recordMined(
     coin: { account: string; nonce: number },
     outcome: {
       block: number
+      unheld?: true
       successor?: {
         valueWei: bigint
         spendableFromBlock?: number
         fundsVisibleFromBlock?: number
       }
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const source = { ...coin },
       evidence = {
         ...outcome,
@@ -1046,16 +1049,18 @@ export class EvmCoinList {
     coin: { account: string; nonce: number },
     outcome: {
       block: number
+      unheld?: true
       successor?: {
         valueWei: bigint
         spendableFromBlock?: number
         fundsVisibleFromBlock?: number
       }
     },
-  ): Promise<void> {
+  ): Promise<boolean> {
     const key = coinKey(coin.account, coin.nonce)
     const current = this.coinsByKey.get(key)
-    if (current === undefined || current.state === 'spent') return
+    if (current === undefined || current.state === 'spent') return false
+    if (outcome.unheld && current.holder !== undefined) return false
     const spent: EvmListCoin = {
       ...current,
       state: 'spent',
@@ -1093,6 +1098,7 @@ export class EvmCoinList {
     if (successor) this.coinsByKey.set(successorKey, successor)
     this.coinsByKey.set(key, spent)
     this.notify()
+    return true
   }
 
   /**

@@ -3,7 +3,7 @@
  * Under the rule the node enforces today (lotusd v0.34.1: fee >= ByteFee(size), and the
  * token burn), a transaction the fee-aware builder signs is accepted, and the same
  * transaction paying one atom less is refused with `bad-txns-fee-floor`. A rule (c)
- * transaction pays more than that floor and is accepted too.
+ * transaction paying exactly the shared Lotus vector's fee is accepted too.
  *
  * `testv2transaction` checks scripts and costs only ("fees, finality and mempool policy are
  * not checked"), so the one-atom-short transaction still evaluates valid there; the fee
@@ -12,6 +12,9 @@
  * Needs a Lotus v2 lotusd (LOTUSD_BIN, see lotusd-regtest.testutil.ts). Without one the suite
  * reports itself as NOT RUN, or fails under FRANK_REQUIRE_NODES=1. Regtest only.
  */
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { privateKeyFromSecretBytes, signingKey } from "@frank/nakamoto";
 import {
   buildLotusV2Transaction,
@@ -20,7 +23,6 @@ import {
   LOTUS_V2_SPEC_FEE_RULE,
   lotusV2KeyhashTemplate,
   type LotusV2Output,
-  lotusV2RequiredFee,
   type LotusV2TemplateSpend,
   signLotusV2Transaction,
 } from "@frank/nakamoto/lotus-v2";
@@ -28,6 +30,23 @@ import {
 import { nodeSuiteReady } from "../node-binaries.testutil";
 import { findLotusd, lotusdBinary, startLotusRegtest, type LotusRegtest } from "./lotusd-regtest.testutil";
 import { fromHex, lotusV2KeyhashDestination, lotusV2XOnlyKey, rpcTxid, toHex } from "./network";
+
+// The shared Lotus fee vectors, as copied into @frank/nakamoto's fixtures.
+const sharedVectors = JSON.parse(
+  readFileSync(join(__dirname, "../../nakamoto/test/fixtures/lotus-v2/fee_vectors.json"), "utf8"),
+) as {
+  vectors: {
+    name: string;
+    size_bytes: number;
+    base_cost_cu: string;
+    recommended_fee_atoms: string;
+    inputs: {
+      ema_block_cost: string;
+      cu_index: { subsidy: string; parent_work: string };
+      byte_fee_index: { subsidy: string; parent_work: string };
+    };
+  }[];
+};
 
 const lotusd = findLotusd();
 const suite = nodeSuiteReady("lotus-v2 fee.regtest", [lotusdBinary(lotusd)]) ? describe : describe.skip;
@@ -140,27 +159,36 @@ suite("Lotus v2 fees on a real regtest node", () => {
     await node.mine(1);
   }, 120_000);
 
-  test("a rule (c) fee clears the node's floor", async () => {
+  test("the exact rule (c) fee of the shared keyhash vector is accepted", async () => {
+    // The shared Lotus vector keyhash-payment-1in-2out (nakamoto
+    // test/fixtures/lotus-v2/fee_vectors.json, Lotus 3f72f1cca3) prices a 1-in/2-out
+    // keyhash payment at I = 1, E = E_min. This transaction has the same shape (keys and
+    // amounts differ, never the length), so it pays exactly that fee.
+    const vector = sharedVectors.vectors.find((v) => v.name === "keyhash-payment-1in-2out");
+    if (vector === undefined) throw new Error("shared vector keyhash-payment-1in-2out is missing");
+    const index = (i: { subsidy: string; parent_work: string }) => ({
+      subsidy: BigInt(i.subsidy),
+      work: BigInt(i.parent_work),
+    });
     const spend = await fundedSpend(105, 10n * XPI);
     const change = lockedTo(105, 0n);
-    const state = {
-      ema: 0n,
-      byteFeeIndex: {
-        subsidy: LOTUS_V2_SPEC_FEE_RULE.anchors.genesisTail,
-        work: LOTUS_V2_SPEC_FEE_RULE.anchors.genesisWork,
-      },
-    };
     const built = buildLotusV2Transaction({
       chain,
       inputs: [spend],
       outputs: [lockedTo(102, 3n * XPI)],
       change: { branches: change.branches, paths: change.paths },
       rule: LOTUS_V2_SPEC_FEE_RULE,
-      state,
+      state: {
+        ema: BigInt(vector.inputs.ema_block_cost),
+        byteFeeIndex: index(vector.inputs.byte_fee_index),
+        cuIndex: index(vector.inputs.cu_index),
+        blockCostCu: BigInt(vector.base_cost_cu),
+      },
       maxFee: 100_000n,
     });
-    const floor = lotusV2RequiredFee({ chain, tx: built.signed.transaction, rule: LOTUS_V2_REGTEST_NODE_FEE_RULE });
-    expect(built.fee).toBeGreaterThan(floor.total);
+    expect(built.signed.raw.length).toBe(vector.size_bytes);
+    expect(built.fee).toBe(BigInt(vector.recommended_fee_atoms));
+    expect(built.change?.value).toBe(7n * XPI - built.fee);
     expect(await accept(built.signed.raw)).toMatchObject({ allowed: true });
     await node.rpc("sendrawtransaction", [toHex(built.signed.raw)]);
     await node.mine(1);

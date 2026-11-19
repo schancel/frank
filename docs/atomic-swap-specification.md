@@ -217,9 +217,10 @@ funding, lock and withdraw cutoffs once more against the device clock alone
 being resumed skips that check. The refunds follow only the chains' own clocks.
 
 **What the chains enforce, and what only the runner does.** The chains enforce only the two
-locks: whoever shows the preimage before T_B gets the MON, B gets its MON back from T_B, and
-whoever shows the preimage gets the XEC at any time, while A can take the XEC back once the
-median time passes T_A. So after T_A the XEC goes to whoever spends it first. A's runner holding
+locks: anyone can submit the withdraw with the preimage before T_B, and it always pays A's main
+account; B gets its MON back from T_B; B can claim the XEC with the preimage and its own claim
+key at any time, while A can take the XEC back once the median time passes T_A. So after T_A the
+XEC goes to whichever of A and B spends it first. A's runner holding
 back the output B is owed is the behaviour of an honest runner, not something the chain
 enforces. B's only protection is to claim the XEC before T_A.
 

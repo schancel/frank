@@ -3694,6 +3694,13 @@ export function createEvmChain(config: EvmChainConfig): ActiveChain {
                 // look at the account's funds, which frees nothing itself).
                 await releaseSettledMainAccounts(wallet, false);
               },
+              // A contract call or cancellation seen in a block is in none after all: the next coin
+              // listed from its receipt is read again.
+              onOwnSpendUndone: (account) => {
+                const sync = transactionSetRuntime.coinListSync;
+                sync.markDirty(account);
+                void sync.refreshAccounts([account]).catch(() => undefined);
+              },
               // After a contract call or token payment, the account's other devices are told through a note this
               // wallet writes to itself: a FREE message (no stamp), carrying only the sync item.
               // It creates no payment attempt, funds and reserves nothing, and is not held by a

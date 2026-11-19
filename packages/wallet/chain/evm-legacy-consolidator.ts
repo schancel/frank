@@ -170,6 +170,10 @@ export interface EvmLegacyConsolidatorConfig {
     debitWei: bigint
     observed: EvmNativeAccountObservation
   }) => Promise<void>
+  /** A contract call (or its cancellation) seen in a block is, on a later look, in none after
+   * all (a reorganisation): what `onOwnSpendIncluded` listed for `account` past that nonce no
+   * longer holds. Composition has the account read again. */
+  onOwnSpendUndone?: (account: string) => void
   /** Clock for the re-observation bounds (`reobservePending`), in milliseconds. Defaults to
    * `Date.now`. */
   now?: () => number
@@ -630,6 +634,20 @@ export class EvmLegacyConsolidator {
       contradiction,
     )
     if (!recorded) return
+    const landedBefore =
+      'feeWei' in member.observation || member.cancellation?.included !== undefined
+    const after = journal.get(operationId).members[index]!
+    if (
+      landedBefore &&
+      !('feeWei' in after.observation) &&
+      after.cancellation?.included === undefined
+    ) {
+      try {
+        this.config.onOwnSpendUndone?.(member.source.address)
+      } catch {
+        /* The account's next read lists what it holds. */
+      }
+    }
     if (
       observation.state === 'included-success' ||
       observation.state === 'included-revert'
@@ -1616,6 +1634,8 @@ export class EvmLegacyConsolidator {
               operation: syncOperationOf(row, member),
             },
             reverted ? undefined : contractCallRecordItemOf(row),
+            'member',
+            feeWei,
           )
         }
         // A given-up call's cancellation took its nonce: a transfer of nothing from the account
@@ -1659,6 +1679,7 @@ export class EvmLegacyConsolidator {
             },
             row.record?.kind === 'swap' ? swapRecordItemOf(row) : undefined,
             'cancellation',
+            cancellation.included.feeWei,
           )
         }
       }
@@ -1687,23 +1708,37 @@ export class EvmLegacyConsolidator {
     operationId: string,
     memberIndex: number,
     item: WalletSyncItem,
-    record?: ContractCallRecordItem,
+    record: ContractCallRecordItem | undefined,
     /** Which transaction of the member the item reports: its own signing, or its cancellation. */
-    of: 'member' | 'cancellation' = 'member',
+    of: 'member' | 'cancellation',
+    /** The fee the item states. Delivered, it marks the member sync-applied only while that is
+     * still the fee recorded. */
+    feeWei: string,
   ): void {
     const key = `${operationId}:${memberIndex}${of === 'cancellation' ? ':cancellation' : ''}`
     if (this.transporting.has(key)) return
     this.transporting.add(key)
+    let delivered = false
     const mark = (lifetime?: WalletOperationLifetime) =>
       of === 'cancellation'
-        ? this.journal(lifetime).markCancellationSyncApplied(operationId, memberIndex)
-        : this.journal(lifetime).markSyncApplied(operationId, memberIndex)
+        ? this.journal(lifetime).markCancellationSyncApplied(operationId, memberIndex, feeWei)
+        : this.journal(lifetime).markSyncApplied(operationId, memberIndex, feeWei)
+    // Still owed after a delivery: the fee changed while this note was on its way (a
+    // reorganisation), and the corrected note found this one in flight and was not sent.
+    const owed = () => {
+      const member = this.config.journal.get(operationId).members[memberIndex]
+      if (!member) return false
+      return of === 'cancellation'
+        ? member.cancellation?.included !== undefined && member.cancellation.syncApplied !== true
+        : 'feeWei' in member.observation && !member.syncApplied
+    }
     this.transportTail = this.transportTail
       .then(async () => {
         await this.config.onSyncTransaction!(item, record)
         await (this.config.runLifetime
           ? this.config.runLifetime(lifetime => mark(lifetime))
           : mark())
+        delivered = true
         await this.config.onSyncCheckpoint?.()
         this.transportFailed.delete(operationId)
       })
@@ -1712,6 +1747,13 @@ export class EvmLegacyConsolidator {
       })
       .finally(() => {
         this.transporting.delete(key)
+        let again = false
+        try {
+          again = delivered && owed()
+        } catch {
+          /* A closed journal: the next flush decides. */
+        }
+        if (again) void this.startSync(operationId).catch(() => undefined)
       })
   }
   resumeOperation(
@@ -1929,10 +1971,11 @@ export class EvmLegacyConsolidator {
     } catch {
       /* A closed journal, an ended lifetime or an unreadable head ends the pass. */
     }
-    // A note delivered with a fee the chain no longer charges: the corrected one goes out now.
+    // A note delivered with a fee the chain no longer charges: the corrected one is started now
+    // (its delivery is not waited for: a slow relay never holds the host's poll).
     for (const operationId of changed)
       await this.startSync(operationId).then(
-        started => started.transported,
+        () => undefined,
         () => undefined,
       )
   }

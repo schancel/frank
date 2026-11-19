@@ -1093,8 +1093,8 @@ export function nativeAdmissionJournal(
         owner.checkNative(id)
         return journal.markExposed(id, index)
       }),
-    markSyncApplied: (id, index) =>
-      mutation(() => journal.markSyncApplied(id, index)),
+    markSyncApplied: (id, index, feeWei) =>
+      mutation(() => journal.markSyncApplied(id, index, feeWei)),
     markTransactionSetInventoryApplied: (id, index) =>
       mutation(() => journal.markTransactionSetInventoryApplied(id, index)),
     cancelUnsigned: id => mutation(() => journal.cancelUnsigned(id)),
@@ -1112,8 +1112,8 @@ export function nativeAdmissionJournal(
       }),
     recordCancellationIncluded: (id, index, included) =>
       mutation(() => journal.recordCancellationIncluded(id, index, included)),
-    markCancellationSyncApplied: (id, index) =>
-      mutation(() => journal.markCancellationSyncApplied(id, index)),
+    markCancellationSyncApplied: (id, index, feeWei) =>
+      mutation(() => journal.markCancellationSyncApplied(id, index, feeWei)),
     beginCapture: (id, index) => {
       owner.owners.assertLifetime(lifetime)
       return journal.beginCapture(id, index)

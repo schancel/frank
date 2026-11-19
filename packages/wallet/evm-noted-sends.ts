@@ -153,9 +153,9 @@ export class EvmNotedSends {
    * chain whose bytes decode are taken; anything else is passed (the note's spend application
    * decides about it on its own). What one note says of a transaction is added to what others
    * said, in whatever order the notes are read, so every device ends with the same record.
-   * A note whose debit implies another fee than the receipt read for the transaction (the
-   * sending device saw a reorganisation move it into a block that charged another fee) drops
-   * what was read, and the next `read` asks the chain again. Returns the hashes recorded or
+   * A note that states another fee than the receipt read for the transaction (the sending
+   * device saw a reorganisation move it into a block that charged another fee) drops what was
+   * read, and the next `read` asks the chain again. Returns the hashes recorded or
    * already known.
    */
   async recordNote(note: {
@@ -164,9 +164,9 @@ export class EvmNotedSends {
       txHash?: string
       /** The sending wallet's operation, as the transaction's own note names it. */
       operation?: { id: string; stage?: string }
-      /** What the note says the transaction debited its account, value plus fee
-       * (`WalletSyncSpentInput.valueWei`), when it says. */
-      debitWei?: string
+      /** The fee the note says the transaction paid, when it says (its debit less the value it
+       * moved: none for a call that reverted). */
+      feeWei?: string
     }[]
     /** Hashes of the transactions the note's message pays as items (stealth payments). */
     readonly itemTransactions: ReadonlySet<string>
@@ -177,7 +177,7 @@ export class EvmNotedSends {
   }): Promise<string[]> {
     const recorded: string[] = []
     const burn = this.config.burnAddress?.toLowerCase()
-    for (const [noteIndex, { rawTx, txHash, operation, debitWei }] of note.transactions.entries()) {
+    for (const [noteIndex, { rawTx, txHash, operation, feeWei }] of note.transactions.entries()) {
       let tx: Transaction
       try {
         tx = Transaction.from(rawTx)
@@ -219,17 +219,10 @@ export class EvmNotedSends {
           ? { message: existing?.message ?? message }
           : {}),
       }
-      let fee: bigint | undefined
-      try {
-        fee = debitWei === undefined ? undefined : BigInt(debitWei) - tx.value
-      } catch {
-        fee = undefined
-      }
       const stale =
         existing?.inclusion !== undefined &&
-        fee !== undefined &&
-        fee >= 0n &&
-        fee.toString() !== existing.inclusion.feeWei
+        feeWei !== undefined &&
+        feeWei !== existing.inclusion.feeWei
       const next: NotedSend = {
         ...(existing !== undefined && stale ? withoutInclusion(existing) : existing ?? {
           txHash: hash,

@@ -602,6 +602,8 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
       // it moved.
       await poll()
       await poll()
+      // The corrected note was started by the poll; its delivery is waited for here.
+      expect(await alice.flushNativeSync!()).toEqual([])
       const member = rowOf(swap.handle.operationId).members[0]!
       expect(member.cancellation!.included).toMatchObject({
         blockHash: moved.blockHash.toLowerCase(),
@@ -691,6 +693,63 @@ suite('the wallet’s own background pass cancels a swap past its deadline inste
       clock.mockRestore()
       // A failed step leaves no device open behind it.
       await deviceB.close().catch(() => undefined)
+    }
+  })
+
+  it('a cancellation a reorganisation takes out of every block loses its recorded inclusion, the account is read again, and it is recorded again once it lands', async () => {
+    const realNow = Date.now.bind(Date)
+    let offset = 0
+    const clock = jest.spyOn(Date, 'now').mockImplementation(() => realNow() + offset)
+    const poll = async () => {
+      offset += 20 * 60_000
+      await alice.reobserveNativeOperations!()
+    }
+    try {
+      await alice.getSpendableBalance!()
+      const swap = await submitLostSwap()
+      await passDeadline(swap.deadline)
+      await poll()
+      const cancellation = rowOf(swap.handle.operationId).members[0]!.cancellation!
+      const fork = await chain.send('evm_snapshot', [])
+      await chain.send('evm_mine', [])
+      await expectFreed(swap.nonce)
+      const first = rowOf(swap.handle.operationId).members[0]!.cancellation!.included!
+      expect(first).toBeDefined()
+      // A reorganisation: the block is gone and the cancellation with it; blocks follow without
+      // it, so the account's nonce is free again at a block past the one it was seen in.
+      await chain.send('evm_revert', [fork])
+      await chain.send('anvil_dropTransaction', [cancellation.transactionHash]).catch(() => undefined)
+      await chain.send('evm_mine', [])
+      await chain.send('evm_mine', [])
+      expect(await chain.getTransactionCount(main, 'latest')).toBe(swap.nonce)
+      await poll()
+      await poll()
+      const member = rowOf(swap.handle.operationId).members[0]!
+      expect(member.cancellation!.included).toBeUndefined()
+      expect(member.cancellation!.transactionHash).toBe(cancellation.transactionHash)
+      // The next coin listed from its receipt no longer holds: the account is read again, and
+      // nothing of it is offered meanwhile.
+      expect(evmWalletInternals(alice).coinListSync!.isDirty(main)).toBe(true)
+      expect(await alice.transactionSetPreparer!.spendableNowWei()).toBe(0n)
+      // The background pass hands the same cancellation out again; once it lands it is recorded
+      // again, and the account frees.
+      for (let i = 0; i < 6 && !rowOf(swap.handle.operationId).members[0]!.cancellation!.included; i++) {
+        await poll()
+        await chain.send('evm_mine', [])
+        await alice.getContractCallFunds!()
+      }
+      const again = rowOf(swap.handle.operationId).members[0]!.cancellation!
+      expect(again.transactionHash).toBe(cancellation.transactionHash)
+      expect(again.included).toBeDefined()
+      expect(again.included!.blockHash).not.toBe(first.blockHash)
+      await expectFreed(swap.nonce)
+      expect(await alice.getSpendableBalance!()).toBeGreaterThan(0n)
+      expect(evmWalletInternals(alice).coinList!.latestOf(main)).toMatchObject({
+        nonce: swap.nonce + 1,
+        valueWei: await chain.getBalance(main),
+      })
+    } finally {
+      clock.mockRestore()
     }
   })
 

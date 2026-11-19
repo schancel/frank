@@ -133,7 +133,7 @@
     <div class="q-mt-sm">
       <!-- Buy-in: lock, join, refund after the deadline (newest card of the table only) -->
       <table-buy-in-panel
-        v-if="item.escrow && isNewest"
+        v-if="isNewest && (item.escrow || hasOwnLock)"
         game="poker"
         :table-id="item.tableId"
         :buy-in-wei="item.buyInWei"
@@ -264,6 +264,8 @@ import { formatCard, isRedSuit } from '@frank/wallet/message-item-plugins/poker'
 import { chatGameItems } from '../../../utils/chat-game-items'
 import { useReactiveOwnCanonicalAddress } from '../../../utils/own-address'
 import TableBuyInPanel from './TableBuyInPanel.vue'
+import { activeChain } from '@frank/wallet/chain'
+import { useTableLockStore } from '../../../stores/table-locks'
 
 export default defineComponent({
   name: 'ChatMessagePoker',
@@ -345,6 +347,18 @@ export default defineComponent({
     )
 
     /** This card is the newest the bot sent for its table: only it offers the buy-in. */
+    /** This account noted a buy-in lock of its own at this table (`table-htlc-record`): its
+     * refund stays on the table's newest card even once the bot's card no longer states terms. */
+    const tableLocks = useTableLockStore()
+    const hasOwnLock = computed(
+      () =>
+        tableLocks.locksAt(
+          activeChain.chainIdentifier,
+          'poker',
+          props.item.tableId,
+        ).length > 0,
+    )
+
     const isNewest = computed(() => {
       const ofTable = chatGameItems('poker', props.address).filter(
         entry => !entry.outbound && entry.item.tableId === props.item.tableId,
@@ -427,6 +441,7 @@ export default defineComponent({
       callNeeded,
       localPlayer,
       isNewest,
+      hasOwnLock,
       joinable,
       joinItem,
       sendStart,

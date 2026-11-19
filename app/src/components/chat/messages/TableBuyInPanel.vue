@@ -75,8 +75,9 @@ const REFRESH_MS = 60_000
 
 /**
  * A table's buy-in, on the newest card of the table: join (lock, then the structured join), the
- * state of this account's lock, and its refund from the deadline on. Shown only for a table
- * whose bot states an escrow.
+ * state of this account's lock, and its refund from the deadline on. The card mounts it for a
+ * table whose bot states an escrow, or for which this account noted a lock of its own: a card
+ * without terms (a closed table's) still offers that lock's refund.
  */
 export default defineComponent({
   name: 'TableBuyInPanel',
@@ -150,7 +151,7 @@ export default defineComponent({
       if (lock.state === 'refunded') return this.$t('tableBuyIn.lockRefunded')
       if (lock.state === 'withdrawn') return this.$t('tableBuyIn.lockPaidOut')
       return this.$t('tableBuyIn.lockOpen', {
-        amount: this.buyInText,
+        amount: formatDisplayAmount(activeChain, lock.amountWei),
         deadline: this.deadlineText,
       })
     },
@@ -159,9 +160,11 @@ export default defineComponent({
       if (phase === 'working') {
         switch (progress?.stage) {
           case 'funding':
-            return this.$t('tableBuyIn.funding', {
-              amount: formatDisplayAmount(activeChain, progress.moveWei),
-            })
+            return progress.moveWei === undefined
+              ? this.$t('tableBuyIn.fundingEarlier')
+              : this.$t('tableBuyIn.funding', {
+                  amount: formatDisplayAmount(activeChain, progress.moveWei),
+                })
           case 'locking':
             return this.$t('tableBuyIn.locking')
           case 'lock-sent':
@@ -189,7 +192,6 @@ export default defineComponent({
     },
   },
   mounted() {
-    if (!this.escrow) return
     void this.buyIn.refresh()
     this.timer = setInterval(() => void this.buyIn.refresh(), REFRESH_MS)
   },

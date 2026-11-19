@@ -44,6 +44,8 @@ export type TableBuyInPhase =
 export interface TableBuyInLockView {
   lockId: string
   state: 'open' | 'withdrawn' | 'refunded'
+  /** What the lock holds, in the native coin's smallest unit. */
+  amountWei: string
   /** Seconds. */
   expiresAt: number
 }
@@ -98,20 +100,22 @@ export function useTableBuyIn(table: {
     return escrow && buyIn ? termsOfItem(escrow, buyIn) : undefined
   }
 
-  /** Reads this account's lock at the table from the chain: the id its terms give, and any the
-   * account's notes to itself name for the table. Only a lock refunding to this account counts. */
+  /** Reads this account's lock at the table from the chain: the id the card's terms give (when
+   * the card states them), and any the account's notes to itself name for the table, so a lock
+   * stays refundable from a card without terms. Only a lock refunding to this account counts. */
   async function refresh(): Promise<void> {
     const t = terms()
-    if (!t) return
+    const recorded = (chainIdentifier: string) =>
+      useTableLockStore()
+        .locksAt(chainIdentifier, table.game(), table.tableId())
+        .map(record => record.lockId)
     try {
       const s = await sessionOf()
-      const ids = new Set([s.lockIdFor(t)])
-      for (const record of useTableLockStore().locksAt(
-        s.chainIdentifier,
-        table.game(),
-        table.tableId(),
-      ))
-        ids.add(record.lockId)
+      const ids = new Set([
+        ...(t ? [s.lockIdFor(t)] : []),
+        ...recorded(s.chainIdentifier),
+      ])
+      if (ids.size === 0) return
       let found: TableBuyInLockView | null = null
       for (const lockId of ids) {
         const lock = await s.readLock(lockId)
@@ -123,6 +127,7 @@ export function useTableBuyIn(table: {
         found = {
           lockId: lock.lockId.toLowerCase(),
           state: lock.state,
+          amountWei: lock.amount.toString(),
           expiresAt: Number(lock.expiresAt),
         }
         // An open lock is the one that matters; a closed one is shown only if no other is open.

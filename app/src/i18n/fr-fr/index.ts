@@ -324,6 +324,8 @@ export const rawFrFR = {
     checking: 'Vérification de votre mise…',
     funding:
       'Transfert de {amount} vers votre compte principal pour la mise et ses frais…',
+    fundingEarlier:
+      'En attente de l’inclusion du transfert précédent vers votre compte principal…',
     locking: 'Blocage de votre mise sur la chaîne…',
     lockSent: 'Blocage de la mise envoyé. En attente de son inclusion…',
     joining: 'Mise bloquée. Envoi de votre demande de place…',
@@ -338,7 +340,7 @@ export const rawFrFR = {
       'insufficient-funds':
         'Pas assez dans votre portefeuille pour la mise et ses frais de réseau.',
       'lock-reverted':
-        'Le blocage de la mise a échoué sur la chaîne. Rien n’a été bloqué ; seuls ses frais de réseau ont été payés.',
+        'Le blocage de la mise n’a pas abouti sur la chaîne. Rien n’a été bloqué ; vous pouvez réessayer.',
       'lock-closed': 'Votre mise à cette table est déjà clôturée.',
       'refund-reverted': 'Le remboursement a échoué sur la chaîne. Réessayez.',
       'unavailable':

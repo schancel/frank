@@ -318,6 +318,8 @@ export const rawEnUS = {
     checking: 'Checking your buy-in…',
     funding:
       'Moving {amount} into your main account for the buy-in and its fee…',
+    fundingEarlier:
+      'Waiting for the earlier move into your main account to be included…',
     locking: 'Locking your buy-in on chain…',
     lockSent: 'Buy-in lock sent. Waiting for it to be included…',
     joining: 'Buy-in locked. Sending your join…',
@@ -331,7 +333,7 @@ export const rawEnUS = {
       'insufficient-funds':
         'Not enough in your wallet for the buy-in and its network fee.',
       'lock-reverted':
-        'The buy-in lock failed on chain. Nothing was locked; you only paid its network fee.',
+        'The buy-in lock did not go through on chain. Nothing was locked; you can try again.',
       'lock-closed': 'Your buy-in lock at this table is already closed.',
       'refund-reverted': 'The refund failed on chain. Try again.',
       'unavailable': 'Table buy-ins are not available on this network.',

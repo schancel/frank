@@ -93,6 +93,7 @@ const session = {
       ? {
           lockId,
           state: lock.state,
+          amount: 10n ** 17n,
           expiresAt: BigInt(lock.expiresAt),
           refundAddress: lock.refundAddress ?? MAIN,
         }
@@ -409,6 +410,81 @@ describe('refunding a buy-in after the deadline', () => {
     expect(session.refund).toHaveBeenCalledWith(
       expect.objectContaining({ lockId: OTHER_LOCK }),
     )
+  })
+
+  it('a refused player keeps its refund on the newest card of the table, even one without terms', async () => {
+    // Carol locked and was refused (the hand had started). The table then ended and its bot's
+    // newest card, her `/poker status`, no longer states an escrow.
+    noted.push({
+      type: 'table-htlc-record',
+      chainIdentifier: 'monad-testnet',
+      action: 'lock',
+      game: 'poker',
+      tableId: TABLE,
+      lockIds: [LOCK],
+      txHash: '0x' + '78'.repeat(32),
+      timestamp: 1,
+    })
+    chainLocks.set(LOCK, { state: 'open', expiresAt: escrow.expiresAt })
+    head = escrow.expiresAt
+    session.refund.mockResolvedValue({ txHash: '0x' + '9a'.repeat(32) })
+    const older = pokerTable({ action: 'join' })
+    const status = pokerTable({
+      action: 'settle',
+      street: 'settled',
+      escrow: undefined,
+      buyInWei: undefined,
+    })
+    store.activeConversation.messages = [
+      { outbound: false, senderAddress: BOT, items: [older] },
+      { outbound: false, senderAddress: BOT, items: [status] },
+    ]
+    const old = mountCard(ChatMessagePoker, older)
+    const wrapper = mountCard(ChatMessagePoker, status)
+    await flushPromises()
+    expect(old.find('[data-testid="table-buy-in"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="table-join-btn"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="table-buy-in-lock"]').text()).toContain(
+      '0.1 MON',
+    )
+    await wrapper.find('[data-testid="table-refund-btn"]').trigger('click')
+    await flushPromises()
+    expect(session.refund).toHaveBeenCalledWith(
+      expect.objectContaining({ game: 'poker', tableId: TABLE, lockId: LOCK }),
+    )
+    // The same for liar's dice.
+    const dice = mountCard(
+      ChatMessageLiarsDice,
+      diceTable({
+        action: 'settle',
+        escrow: undefined,
+        buyInWei: undefined,
+      }),
+    )
+    noted[0] = { ...noted[0], game: 'liars-dice' }
+    await flushPromises()
+    expect(dice.find('[data-testid="table-buy-in"]').exists()).toBe(false)
+    const diceAgain = mountCard(
+      ChatMessageLiarsDice,
+      diceTable({
+        action: 'settle',
+        escrow: undefined,
+        buyInWei: undefined,
+      }),
+    )
+    await flushPromises()
+    expect(diceAgain.find('[data-testid="table-refund-btn"]').exists()).toBe(
+      true,
+    )
+  })
+
+  it('a card without terms and no lock of this account shows no buy-in', async () => {
+    const wrapper = mountCard(
+      ChatMessagePoker,
+      pokerTable({ escrow: undefined, buyInWei: undefined }),
+    )
+    await flushPromises()
+    expect(wrapper.find('[data-testid="table-buy-in"]').exists()).toBe(false)
   })
 
   it("never offers a lock that refunds to someone else's account", async () => {

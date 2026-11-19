@@ -1,9 +1,9 @@
 /**
  * An anvil suite skips itself (prints NOT RUN and passes) when it finds no anvil binary, so a
  * suite that hosted CI does not name, or names in a step that has no binary, is silently gone.
- * Every tracked `*.anvil.jest.test.ts` under packages/ must be named by a workflow step that
- * finds the binary, fails if it is missing (`test -x "$ANVIL_BIN"`), and passes it as
- * ANVIL_BIN to the `yarn workspace <package> test` command that names the suite.
+ * Every tracked `*.anvil.jest.test.ts` under app/ and packages/ must be named by a workflow step
+ * that finds the binary, fails if it is missing (`test -x "$ANVIL_BIN"`), and passes it as
+ * ANVIL_BIN to the `yarn workspace <package> test` (or `test:<script>`) command naming it.
  */
 import { execFileSync } from 'child_process'
 import { existsSync, readdirSync, readFileSync } from 'fs'
@@ -14,10 +14,9 @@ const workflowsDir = join(repo, '.github', 'workflows')
 
 /** Package name (`@frank/wallet`) to its directory relative to the repo (`packages/wallet`). */
 const packageDirs = new Map<string, string>()
-for (const dir of readdirSync(join(repo, 'packages'))) {
-  const manifest = join(repo, 'packages', dir, 'package.json')
-  if (existsSync(manifest))
-    packageDirs.set(JSON.parse(readFileSync(manifest, 'utf8')).name, `packages/${dir}`)
+for (const dir of ['app', ...readdirSync(join(repo, 'packages')).map(name => `packages/${name}`)]) {
+  const manifest = join(repo, dir, 'package.json')
+  if (existsSync(manifest)) packageDirs.set(JSON.parse(readFileSync(manifest, 'utf8')).name, dir)
 }
 
 /** The steps of every workflow, each as its own block of lines. */
@@ -29,10 +28,11 @@ const steps = readdirSync(workflowsDir)
       .slice(1),
   )
 
-const anvilSuites = execFileSync('git', ['ls-files', '-z', 'packages/**/*.anvil.jest.test.ts'], {
-  cwd: repo,
-  encoding: 'utf8',
-})
+const anvilSuites = execFileSync(
+  'git',
+  ['ls-files', '-z', 'app/**/*.anvil.jest.test.ts', 'packages/**/*.anvil.jest.test.ts'],
+  { cwd: repo, encoding: 'utf8' },
+)
   .split('\0')
   .filter(Boolean)
 
@@ -43,8 +43,8 @@ for (const block of steps) {
   const exported = /export ANVIL_BIN=/.test(block)
   for (const line of block.split('\n')) {
     const match =
-      line.match(/ANVIL_BIN=\S+.*yarn workspace (@frank\/[\w-]+) test\b(.*)$/) ??
-      (exported ? line.match(/yarn workspace (@frank\/[\w-]+) test\b(.*)$/) : null)
+      line.match(/ANVIL_BIN=\S+.*yarn workspace ([@\w/-]+) test(?::[\w:]+)?(\s.*)$/) ??
+      (exported ? line.match(/yarn workspace ([@\w/-]+) test(?::[\w:]+)?(\s.*)$/) : null)
     if (!match) continue
     const dir = packageDirs.get(match[1])
     if (!dir) continue

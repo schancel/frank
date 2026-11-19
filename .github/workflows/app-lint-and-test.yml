@@ -43,6 +43,15 @@ jobs:
       - run: yarn install
       - run: yarn lint
       - run: yarn test:unit:ci
+      # The app's anvil suite also runs inside test:unit:ci, which finds the hoisted anvil package
+      # on its own; here it is named and handed the binary, and the step fails if the binary is
+      # missing, so the suite can never be silently skipped.
+      - name: Outgoing stealth payments on a real EVM node (anvil)
+        working-directory: .
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace frank test:unit:ci src/utils/outgoing-stealth-payments.anvil.jest.test.ts
 
   wallet-monad-chain:
     runs-on: ubuntu-latest

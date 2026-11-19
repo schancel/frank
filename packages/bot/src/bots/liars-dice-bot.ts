@@ -6,12 +6,14 @@
  * Known wrong, as it stands:
  * - dice are never dealt at the start of a round: players bid blind and the bot rolls at
  *   challenge time (`setPlayerRoundCommit` / `setPlayerRoundSecret` are never called);
- * - no buy-in is collected, so the "pot" is a number nothing a player paid backs;
- * - the app's card emitted a malformed message (`{type:'text', text}` with no `items`).
- * While parked it sends no "settlement": the call to the HTLC contract with lock IDs the bot
- * made up is removed, and its profile makes no fairness claim.
+ * - the app's card emitted a malformed message (`{type:'text', text}` with no `items`), and the
+ *   app has no join that locks the buy-in yet.
+ * Its profile makes no fairness claim.
+ *
+ * Buy-ins are held in a GenericHTLC v2 table escrow (`./table-htlc`): a player is seated only by a
+ * join naming an open buy-in lock with the table's terms; the winner is paid the pot of locked
+ * buy-ins with `batchDistribute`.
  */
-import { randomBytes } from "crypto";
 import type {
   FrankBotDefinition,
   BotProfile,
@@ -39,10 +41,13 @@ import {
 import { generateAvatarPng } from "../../bot-directory";
 import { ACCOUNT_TYPE_BOT, BOT_ROLE_GAME } from "@frank/codec";
 import {
-  tableHtlcEscrow,
-  TABLE_SETTLEMENT_UNSUPPORTED,
-  type TableHtlcEscrow,
-  type TableSettlementUnsupported,
+  TableEscrows,
+  seatRefusalText,
+  settlementText,
+  tableEscrowItemTerms,
+  type TableEscrowBook,
+  type TableEscrowRecord,
+  type TableSettlementResult,
 } from "./table-htlc";
 import {
   announceTableToTopic,
@@ -50,45 +55,8 @@ import {
   DEFAULT_GAMES_TOPIC,
 } from "./table-announcements";
 
-export type LiarsDiceTableEscrowRecord = TableHtlcEscrow;
-export type TableEscrowRecord = LiarsDiceTableEscrowRecord;
-
-export interface PendingPayoutRecord {
-  payoutId: string;
-  tableId: string;
-  roundNumber: number;
-  winnerAddress: string;
-  amountWei: string;
-  recordedAtMs: number;
-}
-
-async function writeBotState(
-  ctx: BotContext | undefined,
-  key: string,
-  value: string,
-): Promise<void> {
-  if (!ctx?.state) return;
-  const store = ctx.state as unknown as {
-    put?: (k: string, v: string) => Promise<void> | void;
-    set?: (k: string, v: string) => Promise<void> | void;
-  };
-  if (typeof store.put === "function") {
-    await store.put(key, value);
-  }
-  if (typeof store.set === "function") {
-    await store.set(key, value);
-  }
-}
-
-export async function recordPendingPayout(
-  ctx: BotContext | undefined,
-  record: PendingPayoutRecord,
-): Promise<PendingPayoutRecord> {
-  // Only a record of what was won: table escrow is unsupported (./table-htlc), so nothing is
-  // owed or sent from the bot's wallet for it.
-  await writeBotState(ctx, `payout:pending:${record.payoutId}`, JSON.stringify(record));
-  return record;
-}
+export type LiarsDiceTableEscrowRecord = TableEscrowRecord;
+export type { TableEscrowRecord };
 
 export class LiarsDiceBot implements FrankBotDefinition {
   readonly id = "liars-dice";
@@ -99,42 +67,40 @@ export class LiarsDiceBot implements FrankBotDefinition {
     process.env.LIARS_DICE_BOT_IDENTITY_JSON ?? "/tmp/liars-dice-bot-identity.json";
 
   private readonly tables = new Map<string, LiarsDiceGameState>();
-  private readonly tableEscrows = new Map<string, LiarsDiceTableEscrowRecord>();
-  private readonly pendingPayouts = new Map<string, PendingPayoutRecord>();
   private readonly conversationTables = new Map<string, string>();
   private readonly timers = new Map<string, NodeJS.Timeout>();
   private latestTableId?: string;
+  private readonly escrows: TableEscrowBook;
 
-  getPendingPayouts(): ReadonlyMap<string, PendingPayoutRecord> {
-    return this.pendingPayouts;
+  constructor(options: { escrows?: TableEscrowBook } = {}) {
+    this.escrows = options.escrows ?? new TableEscrows("liars-dice");
   }
 
   getTableEscrow(tableId: string): Readonly<LiarsDiceTableEscrowRecord> | undefined {
-    return this.tableEscrows.get(tableId);
+    return this.escrows.get(tableId);
   }
 
+  /** After a restart: every kept table's game is gone, so each is settled as it was written
+   * down, or its buy-ins are returned (`TableEscrows.recover`). */
+  async onStart(ctx: BotContext): Promise<void> {
+    const results = await this.escrows.recover(ctx, tableId => this.tables.has(tableId));
+    for (const result of results)
+      console.log(`[liars-dice] table ${result.tableId} after restart: ${settlementText(result, ctx)}`);
+  }
+
+  /** The game is won: the winner is paid every locked buy-in. */
   private async settleGameEscrow(
     game: LiarsDiceGameState,
-    ctx?: BotContext
-  ): Promise<TableSettlementUnsupported | undefined> {
-    if (!game.winnerAddress) return undefined;
-
-    // 1. Record what the winner won before the announcement
-    const payoutId = `${game.tableId}:${game.roundNumber}:${game.winnerAddress.toLowerCase()}`;
-    const record: PendingPayoutRecord = {
-      payoutId,
-      tableId: game.tableId,
-      roundNumber: game.roundNumber,
-      winnerAddress: game.winnerAddress,
-      amountWei: game.potWei.toString(),
-      recordedAtMs: Date.now(),
-    };
-    this.pendingPayouts.set(payoutId, record);
-    await recordPendingPayout(ctx, record);
-
-    // 2. Table escrow is not wired to GenericHTLC (./table-htlc): nothing is sent and no
-    //    value moves. The records above only say what was won.
-    return TABLE_SETTLEMENT_UNSUPPORTED;
+    ctx: BotContext
+  ): Promise<TableSettlementResult | undefined> {
+    const escrow = this.escrows.get(game.tableId);
+    if (!game.winnerAddress || !escrow) return undefined;
+    const pool = BigInt(escrow.buyInWei) * BigInt(escrow.seats.length);
+    return this.escrows.settle(
+      ctx,
+      game.tableId,
+      pool === 0n ? [] : [{ player: game.winnerAddress, amountWei: pool }]
+    );
   }
 
   getProfile(): BotProfile {
@@ -236,6 +202,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
       ? game.players.find(p => p.address.toLowerCase() === recipientAddress.toLowerCase())
       : undefined;
 
+    const escrow = this.escrows.get(game.tableId);
     return {
       type: "liars-dice",
       tableId: game.tableId,
@@ -271,6 +238,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         : undefined,
       winnerAddress: game.winnerAddress,
       potWei: game.potWei.toString(),
+      escrow: escrow ? tableEscrowItemTerms(escrow) : undefined,
     };
   }
 
@@ -340,18 +308,17 @@ export class LiarsDiceBot implements FrankBotDefinition {
           }
         }
 
-        const tableId = randomBytes(8).toString("hex");
+        const escrow = await this.escrows.open(ctx, buyInWei);
+        if ("status" in escrow) {
+          await msgCtx.reply([{ type: "text", text: `❌ Cannot open a table: ${escrow.reason}` }]);
+          return;
+        }
+        const tableId = escrow.tableId;
         const game = createLiarsDiceGame({
           tableId,
           hostAddress: sender,
           buyInWei,
         });
-
-        // Host automatically joins
-        joinGame(game, sender);
-
-        // A random preimage held in memory: where it should come from is undecided (./table-htlc).
-        this.tableEscrows.set(tableId, tableHtlcEscrow(randomBytes(32)));
 
         this.tables.set(tableId, game);
         this.conversationTables.set(conversationId, tableId);
@@ -373,7 +340,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         await msgCtx.reply([
           {
             type: "text",
-            text: `🎲 Table **${tableId}** created! Buy-in: ${ctx.formatAmount(buyInWei)}. Joined: 1/${game.maxPlayers}. Type \`/table join\` to join!`,
+            text: `🎲 Table **${tableId}** created! Buy-in: ${ctx.formatAmount(buyInWei)}. Joined: 0/${game.maxPlayers}. Join from the app: it locks your buy-in, then sits you down.`,
           },
           item,
         ]);
@@ -388,23 +355,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
           return;
         }
 
-        const game = this.tables.get(tableId)!;
-        const res = joinGame(game, sender);
-        if (!res.success) {
-          await msgCtx.reply([{ type: "text", text: `❌ Could not join table: ${res.error}` }]);
-          return;
-        }
-
-        this.conversationTables.set(conversationId, tableId);
-
-        const item = this.buildLiarsDiceItem(game, "join", sender);
-        await msgCtx.reply([
-          {
-            type: "text",
-            text: `👤 ${sender.slice(0, 8)} joined table! Players: ${game.players.length}/${game.maxPlayers}. Type \`/start\` to begin!`,
-          },
-          item,
-        ]);
+        await this.join(this.tables.get(tableId)!, sender, undefined, msgCtx, ctx);
         return;
       }
     }
@@ -546,7 +497,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
         msg += `\n\n🏆 **GAME OVER!** Winner: ${game.winnerAddress?.slice(0, 8)}! Pot: ${ctx.formatAmount(game.potWei)}.`;
         const settlement = await this.settleGameEscrow(game, ctx);
         if (settlement) {
-          msg += `\n⚠️ **Not settled on chain:** ${settlement.reason}`;
+          msg += `\n${settlementText(settlement, ctx)}`;
         }
       }
 
@@ -573,6 +524,37 @@ export class LiarsDiceBot implements FrankBotDefinition {
     }
   }
 
+  /** Seats `sender` for the buy-in lock its join names, then sits it at the table. */
+  private async join(
+    game: LiarsDiceGameState,
+    sender: string,
+    lock: LiarsDiceItem["buyInLock"],
+    msgCtx: BotMessageContext,
+    ctx: BotContext,
+  ): Promise<void> {
+    // The game must take the player before the escrow seats its lock.
+    const fits = joinGame(structuredClone(game), sender);
+    if (!fits.success) {
+      await msgCtx.reply([{ type: "text", text: `❌ Could not join table: ${fits.error}` }]);
+      return;
+    }
+    const seat = await this.escrows.seat(ctx, game.tableId, sender, lock);
+    if (!seat.seated) {
+      await msgCtx.reply([{ type: "text", text: `❌ Not seated: ${seatRefusalText(seat)}` }]);
+      return;
+    }
+    joinGame(game, sender);
+    this.conversationTables.set(sender, game.tableId);
+    const item = this.buildLiarsDiceItem(game, "join", sender);
+    await msgCtx.reply([
+      {
+        type: "text",
+        text: `👤 ${sender.slice(0, 8)} joined table! Players: ${game.players.length}/${game.maxPlayers}. Type \`/start\` to begin!`,
+      },
+      item,
+    ]);
+  }
+
   private async handleStructuredAction(
     item: LiarsDiceItem,
     sender: string,
@@ -586,11 +568,7 @@ export class LiarsDiceBot implements FrankBotDefinition {
     }
 
     if (item.action === "join") {
-      const res = joinGame(game, sender);
-      if (res.success) {
-        const out = this.buildLiarsDiceItem(game, "join", sender);
-        await msgCtx.reply([out]);
-      }
+      await this.join(game, sender, item.buyInLock, msgCtx, ctx);
       return;
     }
 
@@ -608,11 +586,12 @@ export class LiarsDiceBot implements FrankBotDefinition {
       const res = applyChallenge(game, sender);
       if (res.success) {
         this.clearTableTimer(game.tableId);
-        if (game.status === "resolved") {
-          await this.settleGameEscrow(game, ctx);
-        }
+        const settlement =
+          game.status === "resolved" ? await this.settleGameEscrow(game, ctx) : undefined;
         const out = this.buildLiarsDiceItem(game, "showdown", sender);
-        await msgCtx.reply([out]);
+        await msgCtx.reply(
+          settlement ? [{ type: "text", text: settlementText(settlement, ctx) }, out] : [out]
+        );
       }
     }
   }

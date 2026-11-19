@@ -2,15 +2,31 @@ import { PokerBot } from './poker-bot'
 import { commitSeed, foldPokerState } from '@frank/wallet/message-item-plugins/poker'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 import { harness } from './bot-harness.testutil'
+import { amountsOf } from './chain-amounts.testutil'
+import { seatingEscrowBook } from './table-escrow-book.testutil'
+
+/** Alice sits down: the unit escrow book seats every join (see its file). */
+async function aliceJoins(bot: PokerBot, ctx: BotContext) {
+  const reply = jest.fn()
+  await bot.onMessage({
+    senderAddress: '0xAlice',
+    items: [{ type: 'text', text: '/poker join' }],
+    reply,
+  } as unknown as BotMessageContext, ctx)
+  return reply
+}
 
 
 describe("Texas Hold'em Poker Bot Coordinator", () => {
   let bot: PokerBot
   let mockBotCtx: BotContext
+  let escrow: ReturnType<typeof seatingEscrowBook>
 
   beforeEach(() => {
-    bot = new PokerBot()
+    escrow = seatingEscrowBook('poker')
+    bot = new PokerBot({ escrows: escrow.book })
     mockBotCtx = {
+      ...amountsOf('monad-testnet'),
       sendMessage: jest.fn(),
       state: {
         get: jest.fn(),
@@ -38,6 +54,11 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(replyCreate).toHaveBeenCalledTimes(1)
     expect(replyCreate.mock.calls[0][0][0].text).toContain('Poker Table')
     expect(replyCreate.mock.calls[0][0][1].type).toBe('poker')
+
+    expect(replyCreate.mock.calls[0][0][1].escrow).toEqual(
+      expect.objectContaining({ arbiter: expect.any(String), hashLock: expect.any(String) })
+    )
+    await aliceJoins(bot, mockBotCtx)
 
     // 2. Bob joins table
     const replyJoin = jest.fn()
@@ -85,9 +106,7 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
     expect(replyFold.mock.calls[0][0][0].text).toContain(otherAddress.slice(0, 8))
   })
 
-  it('settling a table moves no value, on a real-shaped state store (get/put/batch)', async () => {
-    // The unit harness's in-memory store has `get` and `batch`, as the host's does: an outbox
-    // payout would be owed into it and sent from the bot's wallet.
+  it('a settled hand pays the locked pot out by chip stack, through the escrow alone', async () => {
     const h = harness()
     const mockSendTx = jest.fn(async () => ({ txHash: '0xsettletx999' }))
     const ctx = { ...h.ctx, sendTransaction: mockSendTx } as unknown as BotContext
@@ -99,6 +118,7 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       reply: jest.fn(),
     } as unknown as BotMessageContext, ctx)
 
+    await aliceJoins(bot, ctx)
     // 2. Bob joins
     await bot.onMessage({
       senderAddress: '0xBob',
@@ -124,28 +144,37 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       reply: replyFold,
     } as unknown as BotMessageContext, ctx)
 
-    // Table escrow is not wired to GenericHTLC: no transaction, no message, nothing owed.
+    // The pot of two buy-ins, split by the stacks after the hand: the escrow pays it, nothing else.
     expect(mockSendTx).not.toHaveBeenCalled()
     expect(h.sent).toEqual([])
-    expect(bot.schedules).toBeUndefined()
-    expect(bot.getPendingPayouts().size).toBeGreaterThan(0)
-    const keys = [...h.data.keys()]
-    expect(keys.length).toBeGreaterThan(0)
-    for (const key of keys) expect(key).toMatch(/^payout:pending:/)
+    expect(escrow.settlements).toHaveLength(1)
+    const { shares } = escrow.settlements[0]!
+    expect(shares.reduce((sum, s) => sum + s.amountWei, 0n)).toBe(2n * 10n ** 17n)
+    const winner = shares.find(s => s.player !== firstActAddress)!
+    const folder = shares.find(s => s.player === firstActAddress)!
+    expect(winner.amountWei).toBeGreaterThan(folder.amountWei)
 
     const textReply = replyFold.mock.calls[0][0][0].text
     expect(textReply).toContain('HAND SETTLED')
-    expect(textReply).not.toContain('On-Chain Settlement')
-    expect(textReply).toContain('Not settled on chain')
+    expect(textReply).toContain('Paid out on chain')
+
+    // The table is closed: one escrowed hand.
+    const replyAgain = jest.fn()
+    await bot.onMessage({
+      senderAddress: '0xAlice',
+      items: [{ type: 'text', text: '/poker start' }],
+      reply: replyAgain,
+    } as unknown as BotMessageContext, ctx)
+    expect(replyAgain.mock.calls[0][0][0].text).toContain('settled')
   })
 
-  it('durably records pending payouts before sending settlement announcement and verifies multi-party commitments', async () => {
+  it('settles through the escrow before announcing, and verifies multi-party commitments', async () => {
     const events: string[] = []
-    ;(mockBotCtx.state as any).put = jest.fn(async (key: string) => {
-      if (key.startsWith('payout:pending:')) {
-        events.push(`record:${key}`)
-      }
-    })
+    const settle = escrow.book.settle
+    escrow.book.settle = async (...args) => {
+      events.push('settle')
+      return settle(...args)
+    }
 
     // 1. Create & join
     const replyCreate = jest.fn()
@@ -154,6 +183,7 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       items: [{ type: 'text', text: '/poker create' }],
       reply: replyCreate,
     } as unknown as BotMessageContext, mockBotCtx)
+    const replyAliceJoin = await aliceJoins(bot, mockBotCtx)
 
     const replyJoin = jest.fn()
     await bot.onMessage({
@@ -224,15 +254,14 @@ describe("Texas Hold'em Poker Bot Coordinator", () => {
       reply: replyCall,
     } as unknown as BotMessageContext, mockBotCtx)
 
-    expect(events.length).toBeGreaterThanOrEqual(2)
-    expect(events[0]).toMatch(/^record:payout:pending:/)
-    expect(events[events.length - 1]).toBe('reply:settled')
-    expect(bot.getPendingPayouts().size).toBeGreaterThanOrEqual(1)
+    expect(events).toEqual(['settle', 'reply:settled'])
+    expect(escrow.settlements).toHaveLength(1)
 
     // Fold state from the emitted messages and verify showdown
     const settleItem = replyCall.mock.calls[0][0][1]
     const folded = foldPokerState([
       replyCreate.mock.calls[0][0][1],
+      replyAliceJoin.mock.calls[0][0][1],
       replyJoin.mock.calls[0][0][1],
       { ...dealItem, action: 'deal' },
       settleItem,

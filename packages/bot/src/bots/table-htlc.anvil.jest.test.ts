@@ -1,30 +1,80 @@
 /**
- * INTEGRATION: the hash lock and buy-in lock ids of a poker and a liars-dice table, as the bots
- * build them, are the ones GenericHTLC v2 (`packages/contracts/artifacts/GenericHTLC.json`)
- * computes on a real EVM node (`anvil`): `lockIdOf` and the `Locked` event give the same id, the
- * lock holds the table's hash lock, and the arbiter's `batchDistribute` with the table's preimage
- * pays the pot.
+ * INTEGRATION: a poker and a liars-dice table's buy-in escrow on GenericHTLC v2, deployed from its
+ * compiled artifact on a real EVM node (`anvil` as `monad-regtest`, chain ID 20143), with real
+ * wallets on both sides: the bot (arbiter) and two players are typed wallets opened from their
+ * own roots, and every chain call goes through each wallet's contract-call path
+ * (`sendContractCall`, the native operation journal, a `table-htlc` record).
+ *
+ * - A player locks its buy-in (`lockTableBuyIn`) with the terms the bot's table item states and
+ *   joins naming that lock; the bot reads the lock on chain and seats it. A text join, a lock that
+ *   is not on chain, a lock with other terms, or a join naming a lock id the terms do not give
+ *   are refused, and nobody is seated by them.
+ * - Settling pays the pot out with `batchDistribute` from the bot's main account, using the
+ *   table preimage the bot derives from its own account; the payouts land on the accounts the
+ *   players locked from.
+ * - A bot that never settles leaves each player its refund from the deadline on
+ *   (`refundTableBuyIn`), and not before.
+ * - A bot restarted from the same account and state store derives the same preimage and still
+ *   settles: a table whose game is gone gets its buy-ins back; a settlement written down but never
+ *   sent is sent as written (the winner is paid), not recomputed.
+ *
+ * Real: the node, the contract, signing, the wallets, their journals and Level stores, the bot's
+ * Level state store. No relay: the bots' replies are captured, and players' join items are handed
+ * to the bot as the host would after decoding (each wallet's sync hook records notes to self).
+ * Only the wallets' RPC URL is redirected (to the anvil node).
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
  * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
  */
 import { spawn, spawnSync, type ChildProcess } from "child_process";
-import { existsSync } from "fs";
+import { createHash } from "crypto";
+import { existsSync, mkdtempSync, rmSync } from "fs";
 import { createServer } from "net";
+import { tmpdir } from "os";
 import { dirname, join } from "path";
-import { Contract, ContractFactory, JsonRpcProvider, Wallet, parseEther } from "ethers";
-import type { BotContext, BotMessageContext } from "@frank/bot-framework";
+import { ContractFactory, JsonRpcProvider, Wallet, sha256 } from "ethers";
 import {
-  encodeHtlcLock,
-  evmHtlcInterface,
-  HTLC_NATIVE_TOKEN,
-} from "@frank/wallet/swap-escrow";
-import { encodeBatchDistributeCall } from "@frank/wallet/game-escrow";
+  LevelBotStateStore,
+  botContractCallsOf,
+  type BotContext,
+  type BotMessageContext,
+} from "@frank/bot-framework";
+import type {
+  LiarsDiceItem,
+  MessageItem,
+  PokerItem,
+  TableEscrowItemTerms,
+} from "@frank/cashweb/types/messages";
+import type { EvmChainWalletHandle } from "@frank/wallet/evm-wallet-handle";
+import type { MonadRootBundle } from "@frank/wallet/evm-wallet-material";
+import {
+  createEvmChain,
+  tableSecretCapabilityOf,
+  type EvmChainConfig,
+} from "@frank/wallet/chain/evm-chain";
+import { InMemoryNativeTransactionAttemptStore } from "@frank/wallet/chain/chain-wallet";
+import { fixedStampDefault } from "@frank/wallet/oracle/stamp-policy.testutil";
+import { encodeHtlcLock, readHtlcLock, HTLC_NATIVE_TOKEN } from "@frank/wallet/swap-escrow";
+import {
+  lockTableBuyIn,
+  refundTableBuyIn,
+  tableBuyInLockId,
+  type TableEscrowTerms,
+} from "@frank/wallet/table-escrow";
 import GenericHTLCArtifact from "../../../contracts/artifacts/GenericHTLC.json";
 import { PokerBot } from "./poker-bot";
 import { LiarsDiceBot } from "./liars-dice-bot";
-import { tableBuyInLockId, type TableHtlcEscrow } from "./table-htlc";
 import { amountsOf } from "./chain-amounts.testutil";
+
+const mockNode = { url: "" };
+jest.mock("@frank/wallet/evm-provider", () => {
+  const actual = jest.requireActual("@frank/wallet/evm-provider");
+  return {
+    ...actual,
+    createMonadJsonRpcProvider: (options: { chainId?: number | bigint }) =>
+      actual.createMonadJsonRpcProvider({ rpcUrl: mockNode.url, chainId: options.chainId }),
+  };
+});
 
 function findAnvil(): string | undefined {
   if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN;
@@ -48,120 +98,418 @@ const freePort = () =>
     });
   });
 
+/** Synthetic roots for this test's three accounts: public test data, nobody's keys. */
+function roots(name: string): MonadRootBundle {
+  const root = <P extends "evm-wallet" | "identity-authentication" | "messaging-encryption">(
+    purpose: P
+  ) => ({
+    registry: "frank-domain-roots-v1" as const,
+    purpose,
+    bytes: new Uint8Array(createHash("sha256").update(`table-htlc-anvil/${name}/${purpose}`).digest()),
+  });
+  return {
+    evm: root("evm-wallet"),
+    authentication: root("identity-authentication"),
+    messaging: root("messaging-encryption"),
+  };
+}
+
 /** anvil's first well-known development key: holds the node's test ether. */
 const DEV_KEY = "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80";
+/** monad-regtest's registry minimum gas price (docs/protocol/chains/v1.json). */
+const GAS_PRICE = 100n * 10n ** 9n;
+const BUY_IN = 10n ** 17n;
 const anvilBin = findAnvil();
 if (!anvilBin)
   // eslint-disable-next-line no-console
   console.warn("NOT RUN: table-htlc.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.");
 const suite = anvilBin ? describe : describe.skip;
 
-const botCtx = () =>
-  ({
-    ...amountsOf("monad-testnet"),
-    address: "0x0000000000000000000000000000000000000b07",
-    sendMessage: jest.fn(),
-    state: { get: jest.fn(), set: jest.fn(), put: jest.fn() },
-  }) as unknown as BotContext;
-
-/** Creates a table through the bot's own command and returns the escrow it holds for it. */
-async function createTable(
-  bot: { onMessage(m: BotMessageContext, c: BotContext): Promise<unknown>; getTableEscrow(id: string): Readonly<TableHtlcEscrow> | undefined },
-  command: string
-): Promise<Readonly<TableHtlcEscrow>> {
-  const reply = jest.fn();
-  await bot.onMessage(
-    { senderAddress: "0xAlice", items: [{ type: "text", text: command }], reply } as unknown as BotMessageContext,
-    botCtx()
-  );
-  const tableId = reply.mock.calls[0][0][1].tableId as string;
-  const escrow = bot.getTableEscrow(tableId);
-  if (!escrow) throw new Error(`no escrow for table ${tableId}`);
-  return escrow;
+interface Party {
+  name: string;
+  open(): Promise<EvmChainWalletHandle>;
+  wallet: EvmChainWalletHandle;
+  main: string;
+  /** The identity address it messages from. */
+  identity: string;
 }
 
-suite("game table escrow against GenericHTLC v2 on a real EVM node (anvil)", () => {
-  jest.setTimeout(60_000);
+suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM node (anvil)", () => {
+  jest.setTimeout(300_000);
   let node: ChildProcess;
   let chain: JsonRpcProvider;
   let dev: Wallet;
-  let htlcAddress: string;
-  let htlc: Contract;
+  let htlc: string;
+  let directory: string;
+  let bot: Party;
+  let alice: Party;
+  let bob: Party;
+  let state: LevelBotStateStore;
+  const opened: EvmChainWalletHandle[] = [];
 
-  beforeAll(async () => {
+  async function party(name: string): Promise<Party> {
+    const config: EvmChainConfig = {
+      networkId: "monad-regtest",
+      rpcChain: "monad-regtest",
+      localNodeWithoutSpendRule: true,
+      chainId: 20143,
+      nativeAttemptStore: new InMemoryNativeTransactionAttemptStore(),
+      relayBaseUrl: "http://127.0.0.1:1",
+      networkTag: "MONR",
+      contracts: { htlc },
+      stampBurnAddress: "0x000000000000000000000000000000000000dEaD",
+      resolveDefaultStamp: fixedStampDefault(10n ** 15n),
+      defaultTopicVoteValueWei: 1_000n,
+      subAccountPoolSize: 0,
+      walletStorageLocation: join(directory, name),
+      emitWalletSync: async () => undefined,
+    };
+    const open = async () => {
+      const wallet = (await createEvmChain(config).createWallet(roots(name))) as EvmChainWalletHandle;
+      opened.push(wallet);
+      return wallet;
+    };
+    const wallet = await open();
+    const main = (await wallet.getContractCallFunds!()).mainAddress;
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait();
+    return { name, open, wallet, main, identity: wallet.identity.address.raw };
+  }
+
+  beforeEach(async () => {
     const port = await freePort();
-    node = spawn(anvilBin!, ["--port", String(port), "--silent"], { stdio: "ignore" });
-    chain = new JsonRpcProvider(`http://127.0.0.1:${port}`, undefined, { cacheTimeout: -1 });
+    mockNode.url = `http://127.0.0.1:${port}`;
+    node = spawn(
+      anvilBin!,
+      ["--port", String(port), "--chain-id", "20143", "--base-fee", "0", "--gas-price", String(GAS_PRICE), "--silent"],
+      { stdio: "ignore" }
+    );
+    chain = new JsonRpcProvider(mockNode.url, 20143, { staticNetwork: true, cacheTimeout: -1 });
     for (let attempt = 0; ; attempt++) {
       try {
         await chain.getBlockNumber();
         break;
-      } catch (err) {
-        if (attempt > 100) throw err;
-        await new Promise(r => setTimeout(r, 100));
+      } catch (error) {
+        if (attempt > 100) throw error;
+        await new Promise(resolve => setTimeout(resolve, 100));
       }
     }
     dev = new Wallet(DEV_KEY, chain);
     const deployed = await new ContractFactory(GenericHTLCArtifact.abi, GenericHTLCArtifact.bytecode, dev).deploy();
     await deployed.waitForDeployment();
-    htlcAddress = await deployed.getAddress();
-    htlc = new Contract(htlcAddress, evmHtlcInterface, chain);
+    htlc = await deployed.getAddress();
+    directory = mkdtempSync(join(tmpdir(), "frank-table-htlc-"));
+    bot = await party("bot");
+    alice = await party("alice");
+    bob = await party("bob");
+    for (let i = 0; i < 4; i++) await chain.send("evm_mine", []);
+    state = new LevelBotStateStore(join(directory, "bot-state"));
   });
-  afterAll(() => {
+  afterEach(async () => {
+    await state?.close().catch(() => undefined);
+    for (const wallet of opened.splice(0)) await wallet.close().catch(() => undefined);
     chain?.destroy();
     node?.kill();
+    rmSync(directory, { recursive: true, force: true });
   });
 
-  async function funded(): Promise<Wallet> {
-    const w = Wallet.createRandom().connect(chain);
-    await (await dev.sendTransaction({ to: w.address, value: parseEther("10") })).wait();
-    return w;
+  /** The bot's context as its host builds it: the wallet's contract calls and table secret. */
+  function botCtx(wallet = bot.wallet, store = state): BotContext {
+    return {
+      ...amountsOf("monad-regtest"),
+      botId: "table-test",
+      address: bot.identity,
+      provider: chain,
+      state: store,
+      sendMessage: jest.fn(),
+      publishTopicMessage: undefined,
+      contractCalls: botContractCallsOf(wallet, () => htlc),
+      tableSecrets: tableSecretCapabilityOf(wallet),
+    } as unknown as BotContext;
   }
 
-  async function playTable(escrow: Readonly<TableHtlcEscrow>) {
-    const arbiter = await funded();
-    const buyIn = parseEther("0.1");
-    const expiresAt = BigInt((await chain.getBlock("latest"))!.timestamp) + 3600n;
-    const lockIds: string[] = [];
-    for (let seat = 0; seat < 2; seat++) {
-      const player = await funded();
-      const terms = { refundAddress: player.address, token: HTLC_NATIVE_TOKEN, amount: buyIn, expiresAt };
-      const expected = tableBuyInLockId(escrow, arbiter.address, player.address, terms);
-
-      const onChainId: string = await htlc.lockIdOf(
-        player.address, arbiter.address, player.address, HTLC_NATIVE_TOKEN, buyIn, escrow.hashLock, expiresAt
-      );
-      expect(onChainId.toLowerCase()).toBe(expected.toLowerCase());
-
-      const tx = encodeHtlcLock(htlcAddress, { ...terms, recipient: arbiter.address, hashLock: escrow.hashLock });
-      const receipt = (await (await player.sendTransaction(tx)).wait())!;
-      const locked = receipt.logs
-        .map(log => evmHtlcInterface.parseLog(log))
-        .find(parsed => parsed?.name === "Locked");
-      expect(String(locked!.args.lockId).toLowerCase()).toBe(expected.toLowerCase());
-      const stored = await htlc.locks(expected);
-      expect(String(stored.hashLock).toLowerCase()).toBe(escrow.hashLock.toLowerCase());
-      lockIds.push(expected);
+  type Bot = { onMessage(m: BotMessageContext, c: BotContext): Promise<unknown> };
+  /** One message to the bot from `from`; the items it replied with. */
+  async function say(b: Bot, ctx: BotContext, from: Party, items: MessageItem[]): Promise<MessageItem[]> {
+    const reply = jest.fn(async () => ({}) as never);
+    await b.onMessage(
+      { peerAddress: from.identity, items, reply } as unknown as BotMessageContext,
+      ctx
+    );
+    return reply.mock.calls.flatMap(call => (call as unknown as [MessageItem[]])[0]);
+  }
+  const text = (items: MessageItem[]) =>
+    items.flatMap(i => (i.type === "text" ? [(i as { text: string }).text] : [])).join("\n");
+  const tableItem = <T extends PokerItem | LiarsDiceItem>(items: MessageItem[], type: T["type"]) =>
+    items.find(i => i.type === type) as T;
+  const termsOf = (escrow: TableEscrowItemTerms, buyInWei: string): TableEscrowTerms => ({
+    arbiter: escrow.arbiter,
+    hashLock: escrow.hashLock,
+    buyInWei: BigInt(buyInWei),
+    expiresAt: BigInt(escrow.expiresAt),
+  });
+  const balance = (address: string) => chain.getBalance(address);
+  async function included(txHash: string) {
+    for (let i = 0; i < 200; i++) {
+      const receipt = await chain.getTransactionReceipt(txHash);
+      if (receipt) return receipt;
+      await new Promise(resolve => setTimeout(resolve, 50));
     }
-
-    // The contract accepts the table's preimage against the hash lock: sha256 of the 32 bytes.
-    const winner = Wallet.createRandom().address;
-    const data = encodeBatchDistributeCall({
-      lockIds,
-      payouts: [{ recipient: winner, amount: 2n * buyIn }],
-      preimage: escrow.preimage,
-    });
-    const settled = (await (await arbiter.sendTransaction({ to: htlcAddress, data })).wait())!;
-    expect(settled.status).toBe(1);
-    expect(await chain.getBalance(winner)).toBe(2n * buyIn);
-    for (const id of lockIds) expect(Number((await htlc.locks(id)).state)).toBe(2);
+    throw new Error(`${txHash} was never included`);
   }
 
-  it("a poker table's hash lock and buy-in lock ids are GenericHTLC v2's", async () => {
-    await playTable(await createTable(new PokerBot(), "/poker create"));
+  /** The player's side of joining: lock the buy-in through its wallet, then the join item. */
+  async function lockAndJoinItem(
+    player: Party,
+    type: "poker" | "liars-dice",
+    table: PokerItem | LiarsDiceItem
+  ): Promise<{ item: MessageItem; lockId: string }> {
+    const locked = await lockTableBuyIn({
+      wallet: player.wallet,
+      contract: htlc,
+      game: type,
+      tableId: table.tableId,
+      table: termsOf(table.escrow!, table.buyInWei!),
+    });
+    expect((await included(locked.call.txHash)).status).toBe(1);
+    expect(locked.account.toLowerCase()).toBe(player.main.toLowerCase());
+    const buyInLock = { lockId: locked.lockId, account: locked.account };
+    const item =
+      type === "poker"
+        ? ({ type, tableId: table.tableId, action: "join", smallBlind: 10, bigBlind: 20, pot: 0, buyInLock } as PokerItem)
+        : ({ type, tableId: table.tableId, action: "join", buyInLock } as LiarsDiceItem);
+    return { item, lockId: locked.lockId };
+  }
+
+  it("poker: two players lock and are seated; the settled hand pays the pot out by chip stack", async () => {
+    const poker = new PokerBot();
+    const ctx = botCtx();
+    const created = tableItem<PokerItem>(await say(poker, ctx, alice, [{ type: "text", text: "/poker create" }]), "poker");
+    expect(created.escrow!.arbiter.toLowerCase()).toBe(bot.main.toLowerCase());
+    expect(created.buyInWei).toBe(BUY_IN.toString());
+    // The hash lock is the sha256 of the preimage the bot's own account derives for this table.
+    const preimage = tableSecretCapabilityOf(bot.wallet)!.tablePreimage({
+      game: "poker",
+      tableId: Buffer.from(created.tableId, "hex"),
+    });
+    expect(sha256(preimage)).toBe(created.escrow!.hashLock);
+
+    const locks: string[] = [];
+    for (const player of [alice, bob]) {
+      const { item, lockId } = await lockAndJoinItem(player, "poker", created);
+      const replied = await say(poker, ctx, player, [item]);
+      expect(text(replied)).toContain("joined table");
+      locks.push(lockId);
+    }
+    expect(poker.getTableEscrow(created.tableId)!.seats.map(s => s.lockId)).toEqual(locks);
+    expect(await balance(htlc)).toBe(2n * BUY_IN);
+
+    const dealt = tableItem<PokerItem>(await say(poker, ctx, alice, [{ type: "text", text: "/poker start" }]), "poker");
+    const folder = dealt.activePlayer!.toLowerCase() === alice.identity.toLowerCase() ? alice : bob;
+    const winner = folder === alice ? bob : alice;
+    const before = { winner: await balance(winner.main), folder: await balance(folder.main) };
+    const settled = await say(poker, ctx, folder, [{ type: "text", text: "/fold" }]);
+    expect(text(settled)).toContain("Paid out on chain");
+
+    const record = poker.getTableEscrow(created.tableId)!;
+    const txHash = record.settlement!.txHash!;
+    expect((await included(txHash)).status).toBe(1);
+    for (const id of locks) {
+      const lock = await readHtlcLock(chain, htlc, id);
+      expect(lock!.state).toBe("withdrawn");
+      expect(lock!.preimage).toBe("0x" + Buffer.from(preimage).toString("hex"));
+    }
+    const paid = new Map(record.settlement!.payouts.map(p => [p.recipient.toLowerCase(), BigInt(p.amountWei)]));
+    expect([...paid.values()].reduce((a, b) => a + b, 0n)).toBe(2n * BUY_IN);
+    // Stacks 1010 / 990 after the blinds: the pot splits the same way, onto the locking accounts.
+    expect(paid.get(winner.main.toLowerCase())).toBe((2n * BUY_IN * 1010n) / 2000n);
+    expect(paid.get(folder.main.toLowerCase())).toBe((2n * BUY_IN * 990n) / 2000n);
+    expect((await balance(winner.main)) - before.winner).toBe(paid.get(winner.main.toLowerCase()));
+    expect((await balance(folder.main)) - before.folder).toBe(paid.get(folder.main.toLowerCase()));
+    expect(await balance(htlc)).toBe(0n);
+    // Sent from the bot's main account: the lock's recipient, the only one that may distribute.
+    expect((await chain.getTransaction(txHash))!.from.toLowerCase()).toBe(bot.main.toLowerCase());
   });
 
-  it("a liars-dice table's hash lock and buy-in lock ids are GenericHTLC v2's", async () => {
-    await playTable(await createTable(new LiarsDiceBot(), "/table create 0.1"));
+  it("liars-dice: a text join, a missing lock, other terms or a wrong lock id seat nobody; the right lock does", async () => {
+    const dice = new LiarsDiceBot();
+    const ctx = botCtx();
+    const created = tableItem<LiarsDiceItem>(await say(dice, ctx, alice, [{ type: "text", text: "/table create 0.1" }]), "liars-dice");
+    const terms = termsOf(created.escrow!, created.buyInWei!);
+    const join = (buyInLock?: { lockId: string; account: string }) =>
+      say(dice, ctx, alice, [
+        { type: "liars-dice", tableId: created.tableId, action: "join", ...(buyInLock ? { buyInLock } : {}) } as LiarsDiceItem,
+      ]);
+    const seats = () => dice.getTableEscrow(created.tableId)!.seats.length;
+
+    expect(text(await say(dice, ctx, alice, [{ type: "text", text: "/table join" }]))).toContain("join from the app");
+    expect(text(await join())).toContain("join from the app");
+    // The id the terms give, but nothing locked there.
+    const expectedId = tableBuyInLockId(terms, alice.main);
+    expect(text(await join({ lockId: expectedId, account: alice.main }))).toContain("not on chain");
+    // A lock with another amount (one wei more), through the same wallet path.
+    const other = encodeHtlcLock(htlc, {
+      recipient: terms.arbiter,
+      refundAddress: alice.main,
+      token: HTLC_NATIVE_TOKEN,
+      amount: terms.buyInWei + 1n,
+      hashLock: terms.hashLock,
+      expiresAt: terms.expiresAt,
+    });
+    const { htlcTableCallOf } = await import("@frank/wallet/swap-escrow");
+    const otherId = htlcTableCallOf(alice.main, other.data).lockIds[0]!;
+    const sent = await alice.wallet.sendContractCall!({
+      to: { raw: other.to },
+      data: other.data,
+      value: other.value,
+      record: { kind: "table-htlc", action: "lock", game: "liars-dice", tableId: created.tableId, lockIds: [otherId] },
+    });
+    expect((await included(sent.txHash)).status).toBe(1);
+    expect((await readHtlcLock(chain, htlc, otherId))!.state).toBe("open");
+    expect(text(await join({ lockId: otherId, account: alice.main }))).toContain("does not have this table's terms");
+    // The right id claimed for another account.
+    expect(text(await join({ lockId: expectedId, account: bob.main }))).toContain("does not have this table's terms");
+    expect(seats()).toBe(0);
+    // A record that is not its call is refused before anything is signed.
+    await expect(
+      alice.wallet.sendContractCall!({
+        to: { raw: other.to },
+        data: other.data,
+        value: other.value,
+        record: { kind: "table-htlc", action: "refund", game: "liars-dice", tableId: created.tableId, lockIds: [otherId] },
+      })
+    ).rejects.toMatchObject({ code: "invalid", validation: "record" });
+
+    const { item, lockId } = await lockAndJoinItem(alice, "liars-dice", created);
+    expect(lockId).toBe(expectedId);
+    expect(text(await say(dice, ctx, alice, [item]))).toContain("joined table");
+    expect(seats()).toBe(1);
+    // The same lock does not seat a second player.
+    const again = await say(dice, ctx, bob, [{ ...item }]);
+    expect(text(again)).toContain("already holds a seat");
+    expect(seats()).toBe(1);
+  });
+
+  it("a table the bot never settles: each player refunds its own lock from the deadline on, not before", async () => {
+    const dice = new LiarsDiceBot();
+    const ctx = botCtx();
+    const created = tableItem<LiarsDiceItem>(await say(dice, ctx, alice, [{ type: "text", text: "/table create 0.1" }]), "liars-dice");
+    const { item, lockId } = await lockAndJoinItem(alice, "liars-dice", created);
+    expect(text(await say(dice, ctx, alice, [item]))).toContain("joined table");
+    const refund = () =>
+      refundTableBuyIn({
+        wallet: alice.wallet,
+        reader: chain,
+        contract: htlc,
+        game: "liars-dice",
+        tableId: created.tableId,
+        lockId,
+      });
+    await expect(refund()).rejects.toThrow("not past its deadline");
+    // Bob cannot refund Alice's lock from his wallet.
+    await chain.send("evm_setNextBlockTimestamp", [created.escrow!.expiresAt]);
+    await chain.send("evm_mine", []);
+    await expect(
+      refundTableBuyIn({ wallet: bob.wallet, reader: chain, contract: htlc, game: "liars-dice", tableId: created.tableId, lockId })
+    ).rejects.toThrow("does not refund to this wallet");
+    const before = await balance(alice.main);
+    const handle = await refund();
+    const receipt = await included(handle.txHash);
+    expect(receipt.status).toBe(1);
+    expect((await readHtlcLock(chain, htlc, lockId))!.state).toBe("refunded");
+    const gas = receipt.gasUsed * receipt.gasPrice;
+    expect((await balance(alice.main)) - before).toBe(BUY_IN - gas);
+    expect(alice.wallet.getNativeOperations!().find(r => r.operationId === handle.operationId)!.record).toEqual({
+      kind: "table-htlc",
+      action: "refund",
+      game: "liars-dice",
+      tableId: created.tableId,
+      lockIds: [lockId],
+    });
+  });
+
+  /** Two players seated at a fresh liars-dice table of `dice`. */
+  async function seatedTable(dice: LiarsDiceBot, ctx: BotContext) {
+    const created = tableItem<LiarsDiceItem>(await say(dice, ctx, alice, [{ type: "text", text: "/table create 0.1" }]), "liars-dice");
+    const locks: string[] = [];
+    for (const player of [alice, bob]) {
+      const { item, lockId } = await lockAndJoinItem(player, "liars-dice", created);
+      expect(text(await say(dice, ctx, player, [item]))).toContain("joined table");
+      locks.push(lockId);
+    }
+    return { created, locks };
+  }
+
+  /** The bot process dies: its wallet and state store close. A new one opens both again. */
+  async function restartBot(): Promise<BotContext> {
+    await state.close();
+    await bot.wallet.close();
+    bot.wallet = await bot.open();
+    state = new LevelBotStateStore(join(directory, "bot-state"));
+    return botCtx();
+  }
+
+  it("restarted, the bot derives the same preimage and returns the buy-ins of a table whose game is gone", async () => {
+    const { created, locks } = await seatedTable(new LiarsDiceBot(), botCtx());
+    const before = { alice: await balance(alice.main), bob: await balance(bob.main) };
+
+    const ctx = await restartBot();
+    const revived = new LiarsDiceBot();
+    await revived.onStart(ctx);
+    const record = revived.getTableEscrow(created.tableId)!;
+    expect(record.settlement!.payouts).toHaveLength(2);
+    expect((await included(record.settlement!.txHash!)).status).toBe(1);
+    const preimage = tableSecretCapabilityOf(bot.wallet)!.tablePreimage({
+      game: "liars-dice",
+      tableId: Buffer.from(created.tableId, "hex"),
+    });
+    expect(sha256(preimage)).toBe(created.escrow!.hashLock);
+    for (const id of locks) {
+      const lock = await readHtlcLock(chain, htlc, id);
+      expect(lock!.state).toBe("withdrawn");
+      expect(lock!.preimage).toBe("0x" + Buffer.from(preimage).toString("hex"));
+    }
+    expect((await balance(alice.main)) - before.alice).toBe(BUY_IN);
+    expect((await balance(bob.main)) - before.bob).toBe(BUY_IN);
+
+    // Started again: the table is settled on chain, so it is dropped and nothing is sent.
+    const restarted = await restartBot();
+    const sends = jest.fn(restarted.contractCalls!.send);
+    const ctx2 = { ...restarted, contractCalls: { ...restarted.contractCalls!, send: sends } } as BotContext;
+    const third = new LiarsDiceBot();
+    await third.onStart(ctx2);
+    expect(sends).not.toHaveBeenCalled();
+    expect(third.getTableEscrow(created.tableId)).toBeUndefined();
+  });
+
+  it("a settlement written down but never sent is sent as written after a restart: the winner gets the pot", async () => {
+    const dice = new LiarsDiceBot();
+    const dying = botCtx();
+    const { created, locks } = await seatedTable(dice, dying);
+    // The process dies after the payouts are written down and before the call is handed out.
+    const crashing = {
+      ...dying,
+      contractCalls: { ...dying.contractCalls!, send: async () => { throw new Error("process died"); } },
+    } as BotContext;
+    const game = (dice as unknown as { tables: Map<string, { players: Array<{ diceCount: number }> }> }).tables.get(created.tableId)!;
+    for (const p of game.players) p.diceCount = 1;
+    await say(dice, crashing, alice, [{ type: "text", text: "/start" }]);
+    await say(dice, crashing, alice, [{ type: "text", text: "/bid 1 2" }]);
+    await expect(say(dice, crashing, bob, [{ type: "text", text: "/liar" }])).rejects.toThrow("process died");
+    const written = dice.getTableEscrow(created.tableId)!.settlement!;
+    expect(written.operationId).toBeUndefined();
+    expect(written.payouts).toHaveLength(1);
+    const winner = written.payouts[0]!.recipient.toLowerCase() === alice.main.toLowerCase() ? alice : bob;
+    expect(written.payouts[0]!.amountWei).toBe((2n * BUY_IN).toString());
+    for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("open");
+    const before = await balance(winner.main);
+
+    const ctx = await restartBot();
+    const revived = new LiarsDiceBot();
+    await revived.onStart(ctx);
+    const record = revived.getTableEscrow(created.tableId)!;
+    expect(record.settlement!.payouts).toEqual(written.payouts);
+    expect((await included(record.settlement!.txHash!)).status).toBe(1);
+    for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("withdrawn");
+    expect((await balance(winner.main)) - before).toBe(2n * BUY_IN);
   });
 });

@@ -3,14 +3,28 @@ import { commitSeed, foldLiarsDiceState } from '@frank/wallet/message-item-plugi
 import { amountsOf } from './chain-amounts.testutil'
 import type { BotMessageContext, BotContext } from '@frank/bot-framework'
 import { harness } from './bot-harness.testutil'
+import { seatingEscrowBook } from './table-escrow-book.testutil'
+
+/** Alice sits down: the unit escrow book seats every join (see its file). */
+async function aliceJoins(bot: LiarsDiceBot, ctx: BotContext) {
+  const reply = jest.fn()
+  await bot.onMessage({
+    senderAddress: '0xAlice',
+    items: [{ type: 'text', text: '/join' }],
+    reply,
+  } as unknown as BotMessageContext, ctx)
+  return reply
+}
 
 
 describe("Liar's Dice Bot Table Coordinator", () => {
   let bot: LiarsDiceBot
   let mockBotCtx: BotContext
+  let escrow: ReturnType<typeof seatingEscrowBook>
 
   beforeEach(() => {
-    bot = new LiarsDiceBot()
+    escrow = seatingEscrowBook('liars-dice')
+    bot = new LiarsDiceBot({ escrows: escrow.book })
     mockBotCtx = {
       ...amountsOf('monad-testnet'),
       sendMessage: jest.fn(),
@@ -43,6 +57,10 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(msg1[0].text).toContain('created')
     expect(msg1[1].type).toBe('liars-dice')
     expect(msg1[1].action).toBe('create')
+    expect(msg1[1].escrow).toEqual(
+      expect.objectContaining({ arbiter: expect.any(String), hashLock: expect.any(String) })
+    )
+    await aliceJoins(bot, mockBotCtx)
 
     // Bob joins
     const reply2 = jest.fn()
@@ -67,6 +85,7 @@ describe("Liar's Dice Bot Table Coordinator", () => {
       reply: jest.fn(),
     } as unknown as BotMessageContext, mockBotCtx)
 
+    await aliceJoins(bot, mockBotCtx)
     // 2. Bob joins
     await bot.onMessage({
       senderAddress: '0xBob',
@@ -118,9 +137,7 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     expect(item.playerSeeds).toBeDefined()
   })
 
-  it('settling a table moves no value, on a real-shaped state store (get/put/batch)', async () => {
-    // The unit harness's in-memory store has `get` and `batch`, as the host's does: an outbox
-    // payout would be owed into it and sent from the bot's wallet.
+  it('the winner is paid the locked pot, through the escrow alone', async () => {
     const h = harness()
     const mockSendTx = jest.fn(async () => ({ txHash: '0xdicetx777' }))
     const ctx = { ...h.ctx, sendTransaction: mockSendTx } as unknown as BotContext
@@ -132,6 +149,7 @@ describe("Liar's Dice Bot Table Coordinator", () => {
       reply: jest.fn(),
     } as unknown as BotMessageContext, ctx)
 
+    await aliceJoins(bot, ctx)
     // 2. Bob joins
     await bot.onMessage({
       senderAddress: '0xBob',
@@ -168,28 +186,27 @@ describe("Liar's Dice Bot Table Coordinator", () => {
     } as unknown as BotMessageContext, ctx)
 
     expect(game.status).toBe('resolved')
-    // Table escrow is not wired to GenericHTLC: no transaction, no message, nothing owed.
     expect(mockSendTx).not.toHaveBeenCalled()
     expect(h.sent).toEqual([])
-    expect(bot.schedules).toBeUndefined()
-    expect(bot.getPendingPayouts().size).toBeGreaterThan(0)
-    const keys = [...h.data.keys()]
-    expect(keys.length).toBeGreaterThan(0)
-    for (const key of keys) expect(key).toMatch(/^payout:pending:/)
+    expect(escrow.settlements).toEqual([
+      {
+        tableId,
+        shares: [{ player: game.winnerAddress, amountWei: 2n * BigInt(game.buyInWei) }],
+      },
+    ])
 
     const msg = replyLiar.mock.calls[0][0][0].text
     expect(msg).toContain('GAME OVER')
-    expect(msg).not.toContain('On-Chain Settlement')
-    expect(msg).toContain('Not settled on chain')
+    expect(msg).toContain('Paid out on chain')
   })
 
-  it('durably records pending payouts before sending settlement announcement and verifies multi-party commitments', async () => {
+  it('settles through the escrow before announcing, and verifies multi-party commitments', async () => {
     const events: string[] = []
-    ;(mockBotCtx.state as any).put = jest.fn(async (key: string) => {
-      if (key.startsWith('payout:pending:')) {
-        events.push(`record:${key}`)
-      }
-    })
+    const settle = escrow.book.settle
+    escrow.book.settle = async (...args) => {
+      events.push('settle')
+      return settle(...args)
+    }
 
     const replyCreate = jest.fn()
     await bot.onMessage({
@@ -197,6 +214,7 @@ describe("Liar's Dice Bot Table Coordinator", () => {
       items: [{ type: 'text', text: '/create' }],
       reply: replyCreate,
     } as unknown as BotMessageContext, mockBotCtx)
+    const replyAliceJoin = await aliceJoins(bot, mockBotCtx)
 
     const replyJoin = jest.fn()
     await bot.onMessage({
@@ -267,14 +285,13 @@ describe("Liar's Dice Bot Table Coordinator", () => {
       reply: replyLiar,
     } as unknown as BotMessageContext, mockBotCtx)
 
-    expect(events.length).toBeGreaterThanOrEqual(2)
-    expect(events[0]).toMatch(/^record:payout:pending:/)
-    expect(events[events.length - 1]).toBe('reply:resolved')
-    expect(bot.getPendingPayouts().size).toBe(1)
+    expect(events).toEqual(['settle', 'reply:resolved'])
+    expect(escrow.settlements).toHaveLength(1)
 
     const showdownItem = replyLiar.mock.calls[0][0][1]
     const folded = foldLiarsDiceState([
       replyCreate.mock.calls[0][0][1],
+      replyAliceJoin.mock.calls[0][0][1],
       replyJoin.mock.calls[0][0][1],
       {
         ...replyStart.mock.calls[0][0][1],

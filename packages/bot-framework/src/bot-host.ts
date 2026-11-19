@@ -296,6 +296,10 @@ interface ActiveBotInstance {
   /** This bot's questions to the wallet (`askWallet`), while they run: beside the mailbox read,
    * and they may outlive the poll that started them. Never rejects. */
   walletQuestions?: Promise<void>;
+  /** The wallet's pass over this bot's kept forum operations (`reconcileTopicOperations`),
+   * while it runs. Single flight: it may outlive the wallet questions that started it, and the
+   * next one is not started beside it. Never rejects. */
+  topicReconcile?: Promise<void>;
   /** The record last reported as not translatable yet, so the warning is not repeated. */
   incompleteWarned?: number;
   lastAuthRecoveryMs?: number;
@@ -349,6 +353,8 @@ export class FrankBotHost {
   private readonly instances = new Map<string, ActiveBotInstance>();
   /** Bots whose wallet-wide retry is failing; warned when it starts failing, not every poll. */
   private readonly walletRetryWarned = new Set<string>();
+  /** Bots whose kept forum operations failed to reconcile, warned once until one pass succeeds. */
+  private readonly topicReconcileWarned = new Set<string>();
   private readonly registrationListeners = new Set<
     (user: NewUserEvent) => void | Promise<void>
   >();
@@ -971,6 +977,14 @@ export class FrankBotHost {
         },
 
         runInBackground: (what, task) => {
+          // Once the host is closing, its stop may already have drained this bot's tasks and be
+          // closing its wallet: new work is refused, not run against it.
+          if (this.closing) {
+            console.warn(
+              `[bot-host] [${definition.id}] ${what} was not started: the host is stopping`
+            );
+            return;
+          }
           const side = Promise.resolve()
             .then(task)
             .catch((error) =>
@@ -1479,8 +1493,8 @@ export class FrankBotHost {
   /** One poll's questions to the wallet, beside the poll's mailbox read (see `pollOnce`):
    * stored replies the wallet already holds an attempt for are asked about (the wallet sends the
    * same bytes again and says what became of them, rows behind the mailbox cursor included);
-   * with none, the wallet retries every unresolved payment it holds. Idle, it may then merge
-   * small coins. */
+   * with none, the wallet retries every unresolved payment it holds. Then the wallet reconciles
+   * the forum posts and votes it kept unresolved. Idle, it may then merge small coins. */
   private async askWallet(
     id: string,
     instance: ActiveBotInstance
@@ -1566,6 +1580,14 @@ export class FrankBotHost {
       }
       if (this.closing) return;
     }
+    // The bot's paid forum posts and votes the wallet kept unresolved (a crash or a timeout
+    // left their outcome unknown): the wallet sends the same signed set again and settles it
+    // from the chain, never a new payment. Single flight across polls: a pass still running
+    // from an earlier poll goes on, and none is started beside it. Only a pass still running
+    // holds coin merging: one that ended in an error does not, since an operation that keeps
+    // failing (one whose value is spread over too many coins, say) may need the merge itself.
+    if ((await this.reconcileTopicOperations(id, instance)) === "running") held = true;
+    if (this.closing) return;
     // Idle (no reply being handled or asked about): the wallet may merge the small coins
     // stamps and payouts left (owner, 2026-10-26). Not awaited; its failure is not this
     // poll's, and the next idle poll tries again. A handle without it has nothing to do.
@@ -1582,6 +1604,67 @@ export class FrankBotHost {
       } catch {
         /* Nothing to do. */
       }
+  }
+
+  /** One pass of the wallet's public reconciliation of this bot's kept forum operations
+   * (`topics.reconcileOperations`), bounded like every wallet question. Resolves how it ended
+   * ("running": still running past its bound, or one from an earlier poll is); never rejects.
+   * A failure is warned once until a pass succeeds again, and the next poll's wallet questions
+   * try again: the operation stays kept by the wallet, unpaid again. */
+  private async reconcileTopicOperations(
+    id: string,
+    instance: ActiveBotInstance
+  ): Promise<"done" | "failed" | "running"> {
+    if (this.closing) return "done";
+    // A pass that outlived an earlier poll's bound goes on; this poll does not start another.
+    if (instance.topicReconcile) return "running";
+    let ended = false;
+    const pass = Promise.resolve()
+      .then(() =>
+        this.chain.topics.reconcileOperations({ wallet: instance.wallet })
+      )
+      .then(
+        () => {
+          ended = true;
+          if (this.topicReconcileWarned.delete(id))
+            console.log(
+              `[bot-host] [${id}] The wallet's kept forum operations reconcile again`
+            );
+        },
+        (error) => {
+          ended = true;
+          if (!this.topicReconcileWarned.has(id)) {
+            this.topicReconcileWarned.add(id);
+            console.warn(
+              `[bot-host] [${id}] The wallet's kept forum operations could not be reconciled; retried on later polls, never paid again:`,
+              error instanceof Error ? error.message : error
+            );
+          }
+          throw error;
+        }
+      );
+    const settled = pass.catch(() => undefined);
+    instance.topicReconcile = settled;
+    void settled.finally(() => {
+      if (instance.topicReconcile === settled) instance.topicReconcile = undefined;
+    });
+    try {
+      await bounded(
+        pass,
+        "Reconciling the wallet's forum operations",
+        this.options.callTimeoutMs
+      );
+      return "done";
+    } catch (error) {
+      // A failed pass was warned above; one still running past the bound is said here.
+      if (ended) return "failed";
+      console.warn(
+        `[bot-host] [${id}] ${
+          error instanceof Error ? error.message : error
+        }; it goes on beside later polls`
+      );
+      return "running";
+    }
   }
 
   private async pollOnce(
@@ -2781,6 +2864,7 @@ export class FrankBotHost {
           instance.polling,
           instance.mailboxRead,
           instance.walletQuestions,
+          instance.topicReconcile,
         ])
       );
       for (const [id, instance] of this.instances) {

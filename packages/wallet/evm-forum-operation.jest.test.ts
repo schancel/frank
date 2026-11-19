@@ -29,6 +29,7 @@ import { EvmTransactionSetPreparer } from './evm-transaction-set'
 import { EvmTransactionSetLifecycle } from './evm-transaction-set-lifecycle'
 import {
   bindForumAuthority,
+  FORUM_RELAY_TIMEOUT_MS,
   ForumOperationDroppedError,
   reconcileForumOperations,
   submitForumOperation,
@@ -888,6 +889,132 @@ test('acknowledged Forum publication remains acknowledged while old exposed own 
       )
     ).toEqual(row.members.map((member) => member.signed))
     expect(pending).toHaveBeenCalled()
+  } finally {
+    await f.close()
+  }
+})
+
+test('a relay that takes a Forum request and never answers is abandoned at the bound; the operation stays kept and the next pass finishes the same signed set', async () => {
+  const f = await fixture()
+  try {
+    http.mockRejectedValueOnce(new Error('relay response lost'))
+    await expect(submitForumOperation(f.wallet, f.params)).rejects.toThrow(
+      'retained pending',
+    )
+    const signed = f.retained().rawTransactions
+    const members = f.preparer
+      .getOperation('forum-test')!
+      .members.map(member => member.signed)
+    // The relay accepts the request and never answers, until the request is aborted.
+    http.mockImplementation(
+      ((config: { signal?: AbortSignal }) =>
+        new Promise((_, reject) =>
+          config.signal?.addEventListener('abort', () =>
+            reject(new Error('canceled')),
+          ),
+        )) as never,
+    )
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+    })
+    let outcome: unknown = 'running'
+    const pass = reconcileForumOperations(f.wallet, 'post').then(
+      () => (outcome = 'resolved'),
+      error => (outcome = error),
+    )
+    for (let step = 0; step < 4 && outcome === 'running'; step++)
+      await jest.advanceTimersByTimeAsync(FORUM_RELAY_TIMEOUT_MS)
+    await pass
+    jest.useRealTimers()
+    expect(outcome).toBeInstanceOf(Error)
+    const requests = http.mock.calls.slice(1) as unknown as [
+      { timeout?: number; signal?: AbortSignal },
+    ][]
+    expect(requests.length).toBeGreaterThan(0)
+    for (const [config] of requests) {
+      expect(config.timeout).toBe(FORUM_RELAY_TIMEOUT_MS)
+      expect(config.signal?.aborted).toBe(true)
+    }
+    // Kept, unchanged: nothing new was signed.
+    expect(f.retained().rawTransactions).toEqual(signed)
+    http.mockImplementation(async () => {
+      f.mine()
+      return response(f.status()) as never
+    })
+    await reconcileForumOperations(f.wallet, 'post')
+    expect(f.bundle.topicOperationJournal.getAll()).toEqual([])
+    expect(f.journal.list()).toHaveLength(1)
+    expect(
+      f.preparer.getOperation('forum-test')!.members.map(member => member.signed),
+    ).toEqual(members)
+  } finally {
+    jest.useRealTimers()
+    await f.close()
+  }
+})
+
+test('a submission and a reconciliation pass of the same operation at once: one signed set, one burn submitted, the row settled', async () => {
+  const f = await fixture()
+  try {
+    let release!: () => void
+    const gate = new Promise<void>(resolve => (release = resolve))
+    let reached!: () => void
+    const first = new Promise<void>(resolve => (reached = resolve))
+    // The relay answers about the one operation it was handed, whichever caller asks.
+    let operation: OutgoingTopicOperation | undefined
+    http.mockImplementation(async () => {
+      operation ??= f.retained()
+      if (http.mock.calls.length === 1) {
+        // The submission's first relay request: held while a reconciliation pass starts.
+        reached()
+        await gate
+      }
+      f.mine()
+      return response(f.status(operation)) as never
+    })
+    const submitting = submitForumOperation(f.wallet, f.params)
+    await first
+    const reconciling = reconcileForumOperations(f.wallet, 'post')
+    await new Promise(resolve => setTimeout(resolve, 20))
+    const whileHeld = http.mock.calls.length
+    release()
+    const [submitted, reconciled] = await Promise.allSettled([
+      submitting,
+      reconciling,
+    ])
+    expect(submitted.status).toBe('fulfilled')
+    expect(reconciled.status).toBe('fulfilled')
+    // The pass reached the relay with the same operation while the submission's request was held.
+    expect(whileHeld).toBeGreaterThanOrEqual(2)
+    // One transaction-set operation, with exactly one payment: the burn.
+    expect(f.journal.list()).toHaveLength(1)
+    const payments = f.preparer
+      .getOperation('forum-test')!
+      .members.filter(member => member.transactionSet?.role === 'payment')
+    expect(payments).toHaveLength(1)
+    const burnRaw = payments[0]!.signed!.rawTransaction
+    // Every burn broadcast and every relay request carried that same one signed burn.
+    const broadcastBurns = f.provider.broadcastTransaction.mock.calls
+      .map(([raw]) => raw as string)
+      .filter(
+        raw => Transaction.from(raw).to?.toLowerCase() === burn.toLowerCase(),
+      )
+    expect(broadcastBurns.every(raw => raw === burnRaw)).toBe(true)
+    const bodies = new Set(
+      http.mock.calls.map(([config]) =>
+        hexlify((config as unknown as { data: Uint8Array }).data),
+      ),
+    )
+    expect(bodies.size).toBe(1)
+    expect(
+      (
+        submitted as PromiseFulfilledResult<{
+          operation: OutgoingTopicOperation
+        }>
+      ).value.operation.rawTransactions,
+    ).toEqual([burnRaw])
+    // Settled: nothing kept.
+    expect(f.bundle.topicOperationJournal.getAll()).toEqual([])
   } finally {
     await f.close()
   }

@@ -68,7 +68,7 @@ jest.mock("@frank/wallet/chain/evm-chain", () => {
         : {
             chainIdentifier: "monad-testnet",
             directMessages: {},
-            topics: { post: jest.fn() },
+            topics: { post: jest.fn(), reconcileOperations: async () => undefined },
             createWallet: async (roots: MonadRootBundle) => {
               const { MonadIdentity } = jest.requireActual<
                 typeof import("@frank/wallet/evm-identity")
@@ -110,6 +110,7 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
   let host: FrankBotHost;
   let bobInbox: InboxRecord[];
   let reconcileAttempts: jest.Mock;
+  let reconcileTopicOperations: jest.Mock;
   let registrationRequests: number;
 
   /** Every request that left the wallet: node RPC, chain HTTP, and payment sets to the relay. */
@@ -161,6 +162,10 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
       minimumStamp: (params: any) => f.chain.directMessages.minimumStamp!(params),
       fetchSince: async () => [],
     });
+    reconcileTopicOperations = jest.fn((params) =>
+      f.chain.topics.reconcileOperations(params)
+    );
+    (host as any).chain.topics.reconcileOperations = reconcileTopicOperations;
     await host.register(bot);
     registrationRequests = requests();
     // From here the bot's wallet is the fixture's funded real wallet.
@@ -175,6 +180,7 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
   // reply), so the reply is never delivered.
   it("a paid reply with no row is delivered by polls alone, as the same single payment set; nothing is asked or sent during registration", async () => {
     expect(reconcileAttempts).not.toHaveBeenCalled();
+    expect(reconcileTopicOperations).not.toHaveBeenCalled();
     expect(registrationRequests).toBe(0);
 
     f.setPhase("retained");
@@ -233,6 +239,9 @@ describe("the bot host's poll on a real wallet (#1236 Q3)", () => {
     for (let i = 0; i < 20; i++) await poll();
     await settled();
     expect(reconcileAttempts).toHaveBeenCalledTimes(asked + 20);
+    // The real wallet's forum reconciliation, with nothing kept, is asked on every poll too
+    // and reaches neither the node nor the relay.
+    expect(reconcileTopicOperations).toHaveBeenCalledTimes(asked + 20);
     expect(providerRequests).toEqual([]);
     expect(chainHttpRequests).toEqual([]);
     expect(f.requests).toHaveLength(0);

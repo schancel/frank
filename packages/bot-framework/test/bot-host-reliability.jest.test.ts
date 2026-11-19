@@ -50,6 +50,8 @@ jest.mock("@frank/wallet/chain/evm-chain", () => {
       },
       topics: {
         post: jest.fn(),
+        // A wallet with no kept forum operations: reconciling them has nothing to do.
+        reconcileOperations: async () => undefined,
       },
       createWallet: jest
         .fn()
@@ -1369,6 +1371,249 @@ describe("FrankBotHost Reliability Features", () => {
       await (host as any).pollAllBots();
       expect(reconcileAttempts).not.toHaveBeenCalled();
       (host as any).closing = false;
+    });
+  });
+  // #2095. On main eba13ae5f the bot host never asks the wallet to reconcile its kept forum
+  // operations, so a paid topic post a crash or timeout left uncertain stays kept for ever: the
+  // first four tests fail there (zero calls).
+  describe("The wallet's kept forum operations are reconciled beside the mailbox read", () => {
+    const bot: FrankBotDefinition = {
+      id: "forum-reconcile-bot",
+      getProfile: () => ({ name: "ForumReconcileBot", bot: true }),
+      onMessage: async () => undefined,
+    };
+    const registered = async (
+      name: string,
+      reconcileOperations: jest.Mock,
+      options: { callTimeoutMs?: number } = {}
+    ) => {
+      const host = new FrankBotHost({
+        relayBaseUrl: "http://127.0.0.1:8098",
+        stateDir: `${stateDir}/forum-reconcile-${name}`,
+        ...options,
+      });
+      // Installed before registration, so a call made while registering would be seen.
+      (host as any).chain.topics.reconcileOperations = reconcileOperations;
+      await host.register(bot);
+      const instance = (host as any).instances.get("forum-reconcile-bot");
+      mockDirectMessagesFetchSince.mockResolvedValue([]);
+      return { host, instance };
+    };
+
+    it("never during registration; on every poll, with the bot's own wallet, beside the mailbox read", async () => {
+      const order: string[] = [];
+      const reconcileOperations = jest.fn(async () => {
+        order.push("forum reconciled");
+      });
+      const { host, instance } = await registered("order", reconcileOperations);
+      expect(reconcileOperations).not.toHaveBeenCalled();
+      mockDirectMessagesFetchSince.mockImplementation(async () => {
+        order.push("fetch");
+        return [];
+      });
+      await (host as any).pollAllBots();
+      expect(order).toEqual(expect.arrayContaining(["forum reconciled", "fetch"]));
+      expect(reconcileOperations.mock.calls).toEqual([[{ wallet: instance.wallet }]]);
+      await (host as any).pollAllBots();
+      expect(reconcileOperations).toHaveBeenCalledTimes(2);
+      expect(mockDirectMessagesSend).not.toHaveBeenCalled();
+      await host.stop();
+    });
+
+    it("a pass that does not answer never holds the mailbox, and is not started again beside itself", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        let answer!: () => void;
+        const reconcileOperations = jest.fn(
+          () => new Promise<void>((resolve) => (answer = resolve))
+        );
+        const { host, instance } = await registered("slow", reconcileOperations, {
+          callTimeoutMs: 50,
+        });
+        let fetches = 0;
+        mockDirectMessagesFetchSince.mockImplementation(async () => {
+          fetches++;
+          return [];
+        });
+        const tick = () =>
+          (host as any).pollBot("forum-reconcile-bot", instance) as Promise<void>;
+        await tick();
+        await tick();
+        expect(fetches).toBe(2);
+        expect(reconcileOperations).toHaveBeenCalledTimes(1);
+        // Past its bound: the poll's wallet questions end, the pass goes on beside later polls.
+        await instance.walletQuestions;
+        expect(instance.topicReconcile).toBeDefined();
+        await tick();
+        await instance.walletQuestions;
+        expect(fetches).toBe(3);
+        expect(reconcileOperations).toHaveBeenCalledTimes(1);
+        expect(
+          warn.mock.calls.some(([line]) => String(line).includes("goes on beside later polls"))
+        ).toBe(true);
+        answer();
+        await instance.topicReconcile;
+        expect(instance.topicReconcile).toBeUndefined();
+        await tick();
+        await instance.walletQuestions;
+        expect(reconcileOperations).toHaveBeenCalledTimes(2);
+        answer();
+        await host.stop();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("a failure is logged once until a pass works again, retried on the next poll, and never holds the mailbox", async () => {
+      const unhandled: unknown[] = [];
+      const onUnhandled = (reason: unknown) => void unhandled.push(reason);
+      process.on("unhandledRejection", onUnhandled);
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      const log = jest.spyOn(console, "log").mockImplementation(() => undefined);
+      try {
+        const reconcileOperations = jest
+          .fn()
+          .mockRejectedValueOnce(new Error("fixture: relay unreachable"))
+          .mockImplementationOnce(() => {
+            throw new Error("fixture: wallet busy");
+          })
+          .mockResolvedValueOnce(undefined)
+          .mockRejectedValue(new Error("fixture: relay unreachable again"));
+        const { host } = await registered("failure", reconcileOperations);
+        const warned = () =>
+          warn.mock.calls.filter(([line]) =>
+            String(line).includes("kept forum operations could not be reconciled")
+          ).length;
+        for (let poll = 0; poll < 2; poll++)
+          await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+        expect(warned()).toBe(1);
+        await (host as any).pollAllBots();
+        expect(
+          log.mock.calls.some(([line]) => String(line).includes("reconcile again"))
+        ).toBe(true);
+        for (let poll = 0; poll < 2; poll++)
+          await expect((host as any).pollAllBots()).resolves.toBeUndefined();
+        await new Promise((resolve) => setImmediate(resolve));
+        expect(warned()).toBe(2);
+        expect(reconcileOperations).toHaveBeenCalledTimes(5);
+        expect(mockDirectMessagesFetchSince).toHaveBeenCalledTimes(5);
+        expect(mockDirectMessagesSend).not.toHaveBeenCalled();
+        expect(unhandled).toEqual([]);
+        await host.stop();
+      } finally {
+        warn.mockRestore();
+        log.mockRestore();
+        process.off("unhandledRejection", onUnhandled);
+      }
+    });
+
+    it("a pass that keeps failing does not hold coin merging; only one still running does", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        // An operation that never builds (its value spread over too many coins, say): the
+        // merge is what may let it build, so its failure must not stop the merge.
+        const failing = jest.fn(async () => {
+          throw new Error("fixture: too many coins for one post");
+        });
+        const { host, instance } = await registered("maintain-failed", failing);
+        instance.wallet.maintainCoins = jest.fn(async () => undefined);
+        for (let poll = 0; poll < 2; poll++) await (host as any).pollAllBots();
+        expect(failing).toHaveBeenCalledTimes(2);
+        expect(instance.wallet.maintainCoins).toHaveBeenCalledTimes(2);
+        await host.stop();
+
+        let answer!: () => void;
+        // The first pass runs past its bound; the next one answers.
+        const hung = jest
+          .fn(async () => undefined)
+          .mockImplementationOnce(() => new Promise<void>((resolve) => (answer = resolve)));
+        const running = await registered("maintain-running", hung, { callTimeoutMs: 20 });
+        running.instance.wallet.maintainCoins = jest.fn(async () => undefined);
+        for (let poll = 0; poll < 2; poll++) await (running.host as any).pollAllBots();
+        expect(running.instance.wallet.maintainCoins).not.toHaveBeenCalled();
+        answer();
+        await running.instance.topicReconcile;
+        await (running.host as any).pollAllBots();
+        expect(hung).toHaveBeenCalledTimes(2);
+        expect(running.instance.wallet.maintainCoins).toHaveBeenCalledTimes(1);
+        await running.host.stop();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("stop waits for a pass still running before closing the wallet", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      try {
+        let answer!: () => void;
+        const reconcileOperations = jest.fn(
+          () => new Promise<void>((resolve) => (answer = resolve))
+        );
+        // Bounded quickly, so only the pass itself (not the poll's questions) is still running.
+        const { host, instance } = await registered("stop", reconcileOperations, {
+          callTimeoutMs: 20,
+        });
+        const closed = jest.spyOn(instance.wallet, "close");
+        await (host as any).pollBot("forum-reconcile-bot", instance);
+        await instance.walletQuestions;
+        expect(instance.topicReconcile).toBeDefined();
+        let stopped = false;
+        const stopping = host.stop().then(() => {
+          stopped = true;
+        });
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        expect(stopped).toBe(false);
+        expect(closed).not.toHaveBeenCalled();
+        answer();
+        await stopping;
+        expect(closed).toHaveBeenCalled();
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it("pin: not while closing", async () => {
+      const reconcileOperations = jest.fn(async () => undefined);
+      const { host } = await registered("closing", reconcileOperations);
+      (host as any).closing = true;
+      await (host as any).pollAllBots();
+      expect(reconcileOperations).not.toHaveBeenCalled();
+      (host as any).closing = false;
+      await host.stop();
+    });
+  });
+  describe("BotContext.runInBackground once the host is closing", () => {
+    // On main eba13ae5f a side task asked for after the drain (from onStop, or a timer) still runs,
+    // against a wallet the host is closing: this test fails there.
+    it("refuses new work, says so, and never runs it", async () => {
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      const ran = jest.fn(async () => undefined);
+      const bot: FrankBotDefinition = {
+        id: "late-side-task-bot",
+        getProfile: () => ({ name: "LateSideTaskBot", bot: true }),
+        onMessage: async () => undefined,
+        // A side task asked for from onStop: after the host drained the bot's tasks.
+        onStop: async (ctx) => {
+          ctx.runInBackground("A late announcement", ran);
+        },
+      };
+      try {
+        const host = new FrankBotHost({
+          relayBaseUrl: "http://127.0.0.1:8098",
+          stateDir: `${stateDir}/late-side-task`,
+        });
+        await host.register(bot);
+        await host.stop();
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        expect(ran).not.toHaveBeenCalled();
+        expect(
+          warn.mock.calls.some(([line]) =>
+            String(line).includes("A late announcement was not started: the host is stopping")
+          )
+        ).toBe(true);
+      } finally {
+        warn.mockRestore();
+      }
     });
   });
   // A launcher that must publish a bot's address before the bot runs creates the profile through

@@ -23,8 +23,16 @@
 import { getAddress } from "ethers";
 import type { BlockTag, Provider } from "ethers";
 import type { ChainAddress, ContractCallHandle } from "./chain/chain-wallet";
-import type { EvmTableHtlcCallRecord } from "./storage/evm-native-operation-journal";
-import { MAX_TABLE_HTLC_LOCKS } from "./storage/evm-native-operation-journal";
+import type {
+  EvmNativeMember,
+  EvmNativeOperation,
+  EvmTableHtlcCallRecord,
+} from "./storage/evm-native-operation-journal";
+import {
+  MAX_TABLE_HTLC_LOCKS,
+  nativeMemberAbandoned,
+  nativeMemberSuperseded,
+} from "./storage/evm-native-operation-journal";
 import { encodeBatchDistributeCall } from "./game-escrow";
 import { verifyTableJoin, type TableJoinSigner } from "./table-join";
 import {
@@ -385,7 +393,8 @@ export const DEFAULT_TABLE_ESCROW_TIMING: TableEscrowTiming = {
 /** Where a join or a refund is. */
 export type TableEscrowProgress =
   | { stage: "checking" }
-  | { stage: "funding"; moveWei: bigint }
+  /** Moving the shortfall into the main account; `moveWei` absent when an earlier move is continued. */
+  | { stage: "funding"; moveWei?: bigint }
   | { stage: "locking" }
   | { stage: "lock-sent"; txHash: string }
   | { stage: "locked"; txHash?: string }
@@ -423,6 +432,17 @@ interface JournaledCall {
   txHash: string;
 }
 
+/** A journal row as the table escrow reads it: the wallet's own `EvmNativeOperation`. */
+type TableJournalRow = Pick<
+  EvmNativeOperation,
+  "operationId" | "kind" | "cancelled" | "record" | "recipient"
+> & {
+  members: readonly Pick<
+    EvmNativeMember,
+    "signed" | "observation" | "account" | "unsignedTransaction"
+  >[];
+};
+
 /** What the player's side of the table escrow needs of its wallet beyond the call itself: its
  * funds, the move into the main account, and its journal, to continue an earlier call. */
 export interface TableJoinWallet extends TableEscrowWallet {
@@ -432,15 +452,44 @@ export interface TableJoinWallet extends TableEscrowWallet {
     otherBalance?: bigint;
   }>;
   fundMainAccount?(params: { value: bigint }): Promise<unknown>;
+  getUnresolvedLegacySend?(): readonly Pick<EvmNativeOperation, "operationId" | "recipient">[];
   resumeLegacySend?(operationId: string): Promise<unknown>;
   resumeNativeOperation?(operationId: string): Promise<unknown>;
-  getNativeOperations?(): readonly {
-    operationId: string;
-    kind: string;
-    cancelled: boolean;
-    record?: { kind: string; action?: string; lockIds?: string[] };
-    members: readonly { signed?: { transactionHash: string } }[];
-  }[];
+  /** One look at the chain for every signed transaction not yet in a block (superseded,
+   * abandoned, included), written into the journal. */
+  reobserveNativeOperations?(): Promise<void>;
+  getNativeOperations?(): readonly TableJournalRow[];
+}
+
+/** What this wallet's journal says of one table call. */
+type JournaledState =
+  /** In a block and it succeeded: the journal's included hash. */
+  | { state: "landed"; call: JournaledCall }
+  /** Signed, not seen in a block, and nothing the chain showed rules it out: it may still land. */
+  | { state: "open"; call: JournaledCall }
+  /** It can never do anything: it reverted, another transaction took its nonce (superseded), or
+   * the wallet gave it up on what the chain showed (abandoned). A new call may be sent. */
+  | { state: "ended" };
+
+function journaledStateOf(row: TableJournalRow): JournaledState | undefined {
+  const member = row.members[0];
+  if (!member?.signed) return undefined;
+  const observation = member.observation;
+  if (observation.state === "included-success")
+    return {
+      state: "landed",
+      call: { operationId: row.operationId, txHash: observation.transactionHash },
+    };
+  if (
+    observation.state === "included-revert" ||
+    nativeMemberSuperseded(member) ||
+    nativeMemberAbandoned(member)
+  )
+    return { state: "ended" };
+  return {
+    state: "open",
+    call: { operationId: row.operationId, txHash: member.signed.transactionHash },
+  };
 }
 
 /** This wallet's journaled table calls of `action` on `lockId` that were signed, newest first. */
@@ -448,33 +497,43 @@ function journaledTableCalls(
   wallet: TableJoinWallet,
   action: "lock" | "refund",
   lockId: string
-): JournaledCall[] {
+): { operationId: string; journaled: JournaledState }[] {
   const id = lockId.toLowerCase();
   return (wallet.getNativeOperations?.() ?? [])
     .flatMap(row => {
-      const signed = row.members[0]?.signed;
-      return row.kind === "contract" &&
+      const journaled =
+        row.kind === "contract" &&
         !row.cancelled &&
         row.record?.kind === "table-htlc" &&
         row.record.action === action &&
-        row.record.lockIds?.length === 1 &&
-        row.record.lockIds[0] === id &&
-        signed
-        ? [{ operationId: row.operationId, txHash: signed.transactionHash }]
-        : [];
+        row.record.lockIds.length === 1 &&
+        row.record.lockIds[0] === id
+          ? journaledStateOf(row)
+          : undefined;
+      return journaled ? [{ operationId: row.operationId, journaled }] : [];
     })
     .reverse();
 }
 
-/** The receipt of `txHash` once it is in a block, or null when it is not within the timeout. */
+/** The journal's state of `operationId` now (after the wallet looked at the chain again). A
+ * row the wallet no longer keeps, or cancelled, can no longer land from this wallet. */
+function journaledNow(wallet: TableJoinWallet, operationId: string): JournaledState | undefined {
+  const row = wallet.getNativeOperations?.().find(r => r.operationId === operationId);
+  return row && !row.cancelled ? journaledStateOf(row) : { state: "ended" };
+}
+
+/** The receipt of `txHash` once it is in a block, or null when it is not within the timeout.
+ * `ended` is asked between looks: a call the wallet found can never land stops the wait. */
 async function awaitInclusion(
   reader: Pick<TableEscrowReader, "getTransactionReceipt">,
   txHash: string,
-  timing: TableEscrowTiming
-): Promise<{ status: number | null } | null> {
+  timing: TableEscrowTiming,
+  ended: () => boolean = () => false
+): Promise<{ status: number | null } | null | "ended"> {
   for (let waited = 0; ; waited += timing.pollMs) {
     const receipt = await reader.getTransactionReceipt(txHash).catch(() => null);
     if (receipt) return receipt;
+    if (ended()) return "ended";
     if (waited >= timing.inclusionTimeoutMs) return null;
     await timing.sleep(timing.pollMs);
   }
@@ -491,6 +550,32 @@ function submittedOperation(error: unknown): string | undefined {
     : undefined;
 }
 
+/** Continues a move into the main account that was handed out and not yet seen (the same
+ * operation, never started again), and waits for it. */
+async function continueFunding(wallet: TableJoinWallet, operationId: string, timing: TableEscrowTiming) {
+  if (!wallet.resumeLegacySend)
+    throw new TableEscrowError("lock-pending", "Moving the buy-in into the main account has not confirmed yet");
+  for (let waited = 0; ; waited += timing.pollMs) {
+    try {
+      await wallet.resumeLegacySend(operationId);
+      return;
+    } catch (again) {
+      if (!submittedOperation(again)) throw again;
+      if (waited >= timing.inclusionTimeoutMs)
+        throw new TableEscrowError("lock-pending", "Moving the buy-in into the main account has not confirmed yet");
+    }
+    await timing.sleep(timing.pollMs);
+  }
+}
+
+/** This wallet's moves into `main` that may still land (an earlier join's funding). */
+function unresolvedFunding(wallet: TableJoinWallet, main: string): string[] {
+  const account = main.toLowerCase();
+  return (wallet.getUnresolvedLegacySend?.() ?? [])
+    .filter(row => row.recipient.toLowerCase() === account)
+    .map(row => row.operationId);
+}
+
 /** Moves `value` into the main account and waits for it; a move that was handed out and not yet
  * seen is continued (the same operation), never started again. */
 async function fundMain(wallet: TableJoinWallet, value: bigint, timing: TableEscrowTiming) {
@@ -500,23 +585,16 @@ async function fundMain(wallet: TableJoinWallet, value: bigint, timing: TableEsc
     await wallet.fundMainAccount({ value });
   } catch (error) {
     const pending = submittedOperation(error);
-    if (!pending || !wallet.resumeLegacySend) throw error;
-    for (let waited = 0; ; waited += timing.pollMs) {
-      await timing.sleep(timing.pollMs);
-      try {
-        await wallet.resumeLegacySend(pending);
-        return;
-      } catch (again) {
-        if (!submittedOperation(again)) throw again;
-        if (waited >= timing.inclusionTimeoutMs)
-          throw new TableEscrowError("lock-pending", "Moving the buy-in into the main account has not confirmed yet");
-      }
-    }
+    if (!pending) throw error;
+    await timing.sleep(timing.pollMs);
+    await continueFunding(wallet, pending, timing);
   }
 }
 
 /** Waits for a handed-out table call and lets the wallet read its inclusion into its journal
- * (which starts the note to self carrying its `table-htlc-record`). */
+ * (which starts the note to self carrying its `table-htlc-record`). A call the journal finds
+ * can never land (its nonce taken, or given up) ends the wait as a revert would: it locked
+ * nothing, and the caller may send a new one. */
 async function settleTableCall(
   wallet: TableJoinWallet,
   reader: Pick<TableEscrowReader, "getTransactionReceipt">,
@@ -524,7 +602,14 @@ async function settleTableCall(
   timing: TableEscrowTiming,
   failures: { reverted: TableEscrowFailure; pending: TableEscrowFailure }
 ): Promise<void> {
-  const receipt = await awaitInclusion(reader, call.txHash, timing);
+  const receipt = await awaitInclusion(
+    reader,
+    call.txHash,
+    timing,
+    () => journaledNow(wallet, call.operationId)?.state === "ended"
+  );
+  if (receipt === "ended")
+    throw new TableEscrowError(failures.reverted, "The transaction can no longer land: another took its place", call.txHash);
   if (!receipt)
     throw new TableEscrowError(failures.pending, "The transaction is not in a block yet; it may still land", call.txHash);
   try {
@@ -538,8 +623,9 @@ async function settleTableCall(
     throw new TableEscrowError(failures.reverted, "The transaction failed on chain", call.txHash);
 }
 
-/** An earlier call of this wallet for `lockId` that may still land: continued and waited for.
- * One that reverted is skipped (it changed nothing). False when there is none. */
+/** An earlier call of this wallet for `lockId` that landed or may still land: continued and
+ * waited for. One that reverted, was superseded or was abandoned is skipped (it changed nothing
+ * and holds nothing). Undefined when there is none. */
 async function continueEarlier(
   wallet: TableJoinWallet,
   reader: Pick<TableEscrowReader, "getTransactionReceipt">,
@@ -548,22 +634,37 @@ async function continueEarlier(
   timing: TableEscrowTiming,
   onSent: (txHash: string) => void
 ): Promise<JournaledCall | undefined> {
+  const failures: { reverted: TableEscrowFailure; pending: TableEscrowFailure } =
+    action === "lock"
+      ? { reverted: "lock-reverted", pending: "lock-pending" }
+      : { reverted: "refund-reverted", pending: "refund-pending" };
   for (const earlier of journaledTableCalls(wallet, action, lockId)) {
-    const receipt = await reader.getTransactionReceipt(earlier.txHash).catch(() => null);
-    if (receipt && receipt.status !== 1) continue;
-    // Not in a block yet: the same signed bytes are handed out again.
-    if (!receipt) await wallet.resumeNativeOperation?.(earlier.operationId).catch(() => undefined);
-    onSent(earlier.txHash);
-    await settleTableCall(
-      wallet,
-      reader,
-      earlier,
-      timing,
-      action === "lock"
-        ? { reverted: "lock-reverted", pending: "lock-pending" }
-        : { reverted: "refund-reverted", pending: "refund-pending" }
-    );
-    return earlier;
+    let journaled = earlier.journaled;
+    if (journaled.state === "ended") continue;
+    if (journaled.state === "open") {
+      const receipt = await reader.getTransactionReceipt(journaled.call.txHash).catch(() => null);
+      if (receipt && receipt.status !== 1) continue;
+      if (!receipt) {
+        // Not in a block yet: the wallet looks at the chain again (another transaction may have
+        // taken its nonce), and hands the same signed bytes out again if it can still land.
+        await wallet.reobserveNativeOperations?.().catch(() => undefined);
+        journaled = journaledNow(wallet, earlier.operationId) ?? journaled;
+        if (journaled.state === "ended") continue;
+        if (journaled.state === "open")
+          await wallet.resumeNativeOperation?.(earlier.operationId).catch(() => undefined);
+        journaled = journaledNow(wallet, earlier.operationId) ?? journaled;
+        if (journaled.state === "ended") continue;
+      }
+    }
+    onSent(journaled.call.txHash);
+    try {
+      await settleTableCall(wallet, reader, journaled.call, timing, failures);
+    } catch (error) {
+      // Found unable to land while waiting: as if it had never been sent.
+      if (journaledNow(wallet, earlier.operationId)?.state === "ended") continue;
+      throw error;
+    }
+    return journaled.call;
   }
   return undefined;
 }
@@ -632,6 +733,12 @@ export async function joinTableWithBuyIn(params: {
     return authorized(earlier.txHash);
   }
 
+  // An earlier join's move into the main account that may still land is continued and waited
+  // for first: never a second move, and never a shortfall read before it arrives.
+  for (const pending of unresolvedFunding(wallet, account)) {
+    onProgress?.({ stage: "funding" });
+    await continueFunding(wallet, pending, timing);
+  }
   const funds = await wallet.getContractCallFunds!();
   if (funds.mainBalance !== undefined) {
     const fee = await reader.getFeeData();

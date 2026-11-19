@@ -261,8 +261,8 @@ export interface EvmNativeMember extends EvmNativeMemberPlan {
 /**
  * What a contract call is, kept with its signed transaction. Plain JSON. The chain is the
  * journal's binding. The wallet's sync event turns it into the note the account sends itself:
- * a `swap-record` item for a swap, an `htlc-record` item for an HTLC call. A game table's
- * call (`table-htlc`) has no note item yet: its note carries only the wallet-sync item.
+ * a `swap-record` item for a swap, an `htlc-record` item for an HTLC call, and a
+ * `table-htlc-record` item for a game table's buy-in lock, refund or payout (`table-htlc`).
  */
 export type EvmContractCallRecord =
   | EvmSwapCallRecord

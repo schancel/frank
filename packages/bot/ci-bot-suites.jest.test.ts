@@ -34,3 +34,27 @@ describe('the bot suites hosted CI names', () => {
     expect(named).toContain(name)
   })
 })
+
+// The table buy-in escrow suites need anvil, so they run in their own job.
+const tableJob = workflow.split('\n  bot-table-escrow:\n')[1]?.split(/^  \S/m)[0] ?? ''
+const tableNamed = tableJob
+  .split('\n')
+  .filter(line => line.includes('yarn workspace @frank/bot test'))
+  .flatMap(line => line.match(/[\w./-]+\.jest\.test\.ts/g) ?? [])
+
+describe('the table escrow bot suites hosted CI names', () => {
+  it('fails the step when no anvil binary is found', () => {
+    expect(tableJob).toContain('test -x "$ANVIL_BIN"')
+  })
+
+  it.each(tableNamed)('%s exists', name => {
+    expect(existsSync(join(__dirname, name))).toBe(true)
+  })
+
+  it.each(['src/bots/table-htlc.anvil.jest.test.ts', 'src/bots/table-join.anvil.jest.test.ts'])(
+    'runs %s',
+    name => {
+      expect(tableNamed).toContain(name)
+    },
+  )
+})

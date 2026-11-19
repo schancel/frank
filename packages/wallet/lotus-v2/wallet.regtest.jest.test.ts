@@ -177,6 +177,47 @@ suite("Lotus v2 wallet on a real regtest node", () => {
     const remaining = 2n * XPI - XPI - BigInt(keyhashPaymentSize(1, 2));
     expect(await deviceOne.getBalance()).toBe(remaining);
     expect(await deviceTwo.getBalance()).toBe(remaining);
+    // History: device one shows its send; device two's refused one paid nothing and is absent.
+    expect((await deviceOne.getNativeTransfers()).filter((row) => row.direction === "sent")).toHaveLength(1);
+    expect((await deviceTwo.getNativeTransfers()).filter((row) => row.direction === "sent")).toEqual([]);
+  }, 60_000);
+
+  it("History: a send is pending until mined, then confirmed; each receipt is one row with its block", async () => {
+    const alice = await fresh();
+    const bob = await fresh();
+    const fundTxid = await node.fund((await alice.wallet.getReceiveAddress()).raw, 6n * XPI);
+    const recipient = await bob.wallet.getReceiveAddress();
+    const sent = await alice.wallet.sendNative({ recipient, value: 2n * XPI });
+    const fee = BigInt(keyhashPaymentSize(1, 2));
+    const before = await alice.wallet.getNativeTransfers();
+    expect(before).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ direction: "received", txid: fundTxid, value: 6n * XPI, state: "confirmed" }),
+        expect.objectContaining({
+          direction: "sent",
+          txid: sent.txHash,
+          value: 2n * XPI,
+          fee,
+          recipient: recipient.raw,
+          state: "pending",
+        }),
+      ])
+    );
+    expect(before).toHaveLength(2);
+    // Confirmed-only index: Bob sees nothing until the block.
+    expect(await bob.wallet.getNativeTransfers()).toEqual([]);
+    await node.mine(1);
+    await alice.wallet.getBalance();
+    expect((await alice.wallet.getNativeTransfers()).find((row) => row.direction === "sent")).toMatchObject({
+      state: "confirmed",
+    });
+    const bobRows = await bob.wallet.getNativeTransfers();
+    expect(bobRows).toEqual([
+      expect.objectContaining({ direction: "received", txid: sent.txHash, value: 2n * XPI, state: "confirmed" }),
+    ]);
+    expect(bobRows[0]!.height).toBeGreaterThan(node.checkpoint.height);
+    // The change went to a change address: it is not a receipt.
+    expect((await alice.wallet.getNativeTransfers()).filter((row) => row.direction === "received")).toHaveLength(1);
   }, 60_000);
 
   it("recorded bytes another party mined before the wallet's own broadcast settle the send; nothing is paid twice", async () => {

@@ -7,8 +7,9 @@
  *   every sync and never restored from storage for selection. `/v2` is confirmed-only, so only
  *   mined coins are ever selected.
  * - The store owns what the chain cannot say: the next receive and change indices, every send
- *   this wallet signed (exact bytes and the coins it claims) until that send is mined, and the
- *   coins known spent by a mined send (so a lagging index cannot offer them again).
+ *   this wallet signed (exact bytes and the coins it claims) until that send is mined, the
+ *   coins known spent by a mined send (so a lagging index cannot offer them again), and what
+ *   each pending or mined send paid (recipient, amount, fee) for History.
  *
  * A send reads the chain unlocked, then chooses, signs and records in one short critical
  * section with no network wait, and broadcasts outside it. Two sends never choose one coin. A
@@ -32,6 +33,7 @@ import {
   NativeFeeExceededError,
   NativeTransactionRefusedError,
   NativeTransactionSubmissionError,
+  type NativeTransferRecord,
   type NativeWalletHandle,
   nativeTransactionAttemptKey,
   runNativeTransactionExclusive,
@@ -110,8 +112,19 @@ interface PendingSend {
   readonly inputs: readonly Outpoint[];
 }
 
+/** What one send paid, for History. Kept after it is mined; removed if it never went out. */
+interface SendRecord {
+  readonly txid: string;
+  readonly recipient: string;
+  /** Atoms, decimal. */
+  readonly value: string;
+  /** Atoms, decimal. */
+  readonly fee: string;
+  readonly recordedAt: number;
+}
+
 interface StoredState {
-  readonly version: 1;
+  readonly version: 2;
   readonly chainIdentifier: string;
   readonly receiveIndex: number;
   readonly changeIndex: number;
@@ -119,6 +132,8 @@ interface StoredState {
   readonly pending: readonly PendingSend[];
   /** Inputs of mined sends: never selectable again, whatever an index says. */
   readonly consumedInputs: readonly Outpoint[];
+  /** Every send this wallet signed that is pending or mined, oldest first. */
+  readonly sends: readonly SendRecord[];
 }
 
 const outpointKey = (o: Outpoint) => `${o.txid}:${o.outIdx}`;
@@ -137,10 +152,18 @@ function validOutpoint(o: unknown): o is Outpoint {
 
 function parseState(text: string | undefined, chainIdentifier: string): StoredState {
   if (text === undefined)
-    return { version: 1, chainIdentifier, receiveIndex: 0, changeIndex: 0, pending: [], consumedInputs: [] };
+    return {
+      version: 2,
+      chainIdentifier,
+      receiveIndex: 0,
+      changeIndex: 0,
+      pending: [],
+      consumedInputs: [],
+      sends: [],
+    };
   const state = JSON.parse(text) as StoredState;
   if (
-    state.version !== 1 ||
+    state.version !== 2 ||
     !Number.isSafeInteger(state.receiveIndex) ||
     state.receiveIndex < 0 ||
     !Number.isSafeInteger(state.changeIndex) ||
@@ -154,7 +177,16 @@ function parseState(text: string | undefined, chainIdentifier: string): StoredSt
         send.inputs.every(validOutpoint)
     ) ||
     !Array.isArray(state.consumedInputs) ||
-    !state.consumedInputs.every(validOutpoint)
+    !state.consumedInputs.every(validOutpoint) ||
+    !Array.isArray(state.sends) ||
+    !state.sends.every(
+      (send) =>
+        /^[0-9a-f]{64}$/.test(send.txid) &&
+        typeof send.recipient === "string" &&
+        /^[0-9]+$/.test(send.value) &&
+        /^[0-9]+$/.test(send.fee) &&
+        Number.isSafeInteger(send.recordedAt)
+    )
   )
     throw new Error(
       "Unsupported Lotus wallet record; reset this development wallet's local storage (frank:lotus-v2-wallet:v1:*)"
@@ -288,6 +320,52 @@ export class LotusV2Wallet implements NativeWalletHandle {
     return this.unresolved?.transaction;
   }
 
+  /**
+   * History, derived: sends from this wallet's own records (pending until seen mined), and
+   * receipts from the confirmed outputs Chronik `/v2` shows on the receive addresses, one row
+   * per transaction. `/v2` is confirmed-only, so an incoming payment appears once mined. A
+   * transaction this wallet sent is shown only as the send, even when it paid one of its own
+   * receive addresses.
+   */
+  async getNativeTransfers(): Promise<readonly NativeTransferRecord[]> {
+    await this.ensureDiscovered();
+    const { sends, pending, receiveIndex } = await this.exclusive(async () => this.state);
+    const unmined = new Set(pending.map((send) => send.txid));
+    const own = new Set(sends.map((send) => send.txid));
+    const received = new Map<string, { value: bigint; height: number }>();
+    for (let index = 0; index <= receiveIndex; index++)
+      for (const output of await this.indexer.listOutputs(this.rootAt(0, index))) {
+        if (own.has(output.txid)) continue;
+        const row = received.get(output.txid);
+        received.set(output.txid, {
+          value: (row?.value ?? 0n) + output.value,
+          height: output.height,
+        });
+      }
+    return [
+      ...sends.map(
+        (send): NativeTransferRecord => ({
+          direction: "sent",
+          txid: send.txid,
+          value: BigInt(send.value),
+          fee: BigInt(send.fee),
+          recipient: send.recipient,
+          state: unmined.has(send.txid) ? "pending" : "confirmed",
+          recordedAt: send.recordedAt,
+        })
+      ),
+      ...[...received].map(
+        ([txid, row]): NativeTransferRecord => ({
+          direction: "received",
+          txid,
+          value: row.value,
+          state: "confirmed",
+          height: row.height,
+        })
+      ),
+    ];
+  }
+
   localReceiveAddress(): ChainAddress {
     return { raw: this.addressAt(0, this.state.receiveIndex) };
   }
@@ -370,6 +448,16 @@ export class LotusV2Wallet implements NativeWalletHandle {
         pending: [
           ...this.state.pending,
           { txid: tx.txid, raw: tx.raw, inputs: plan.inputs.map(({ txid, outIdx }) => ({ txid, outIdx })) },
+        ],
+        sends: [
+          ...this.state.sends,
+          {
+            txid: tx.txid,
+            recipient: params.recipient.raw.trim().toLowerCase(),
+            value: params.value.toString(),
+            fee: plan.fee.toString(),
+            recordedAt: Date.now(),
+          },
         ],
       });
       this.inFlight.add(tx.txid);
@@ -479,6 +567,8 @@ export class LotusV2Wallet implements NativeWalletHandle {
       ...this.state,
       pending: this.state.pending.filter((row) => row.txid !== txid),
       consumedInputs: consumed,
+      // A send that never went out paid nothing: it leaves History with its claim.
+      sends: mined ? this.state.sends : this.state.sends.filter((row) => row.txid !== txid),
     });
     this.markClaims();
   }

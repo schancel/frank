@@ -246,6 +246,28 @@ export interface FrankIdentityHandle {
 }
 
 /**
+ * One plain native transfer to or from a wallet, as that wallet's own records and its indexer
+ * show it: a derived view for History, never an authority for spending.
+ */
+export interface NativeTransferRecord {
+  readonly direction: "sent" | "received";
+  /** The transaction id as the wallet's indexer names it. */
+  readonly txid: string;
+  /** Base units paid to the recipient (sent) or to this wallet's addresses (received). */
+  readonly value: bigint;
+  /** The network fee this wallet paid. Sent only. */
+  readonly fee?: bigint;
+  /** The address paid. Sent only. */
+  readonly recipient?: string;
+  /** `pending` until the chain has included the transaction. */
+  readonly state: "pending" | "confirmed";
+  /** The including block's height, when the indexer reports it. */
+  readonly height?: number;
+  /** When this wallet recorded the send (epoch ms). Sent only. */
+  readonly recordedAt?: number;
+}
+
+/**
  * The wallet surface used by chain-neutral UI code. Complex build/sign/retry protocols remain
  * capabilities below this boundary; a simple native transfer is one logical operation here.
  */
@@ -295,6 +317,8 @@ export interface NativeWalletHandle {
   getSpendableBalance?(): Promise<bigint>;
   /** The exact signed attempt whose submission outcome must be resolved before a fresh send. */
   getUnresolvedNativeTransaction?(): ChainTransaction | undefined;
+  /** This wallet's plain native sends and receipts, unordered. A wallet that keeps none omits it. */
+  getNativeTransfers?(): Promise<readonly NativeTransferRecord[]>;
   /** Resubmits the exact unresolved signed bytes; never builds a replacement payment. */
   retryUnresolvedNativeTransaction?(): Promise<ChainTransaction>;
   /** Clears a blocked attempt only after the caller has reconciled its exact id with the chain. */

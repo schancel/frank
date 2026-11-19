@@ -1,6 +1,6 @@
 # Lotus v2 as Frank's base coin — stage 1 contract (local regtest)
 
-Status: stage 1 implemented on a task branch (not yet reviewed or landed). This file is the change contract required by
+Status: stages 1 and 2 landed; stage 3 (Lotus v2 as the main balance) on a task branch, not yet reviewed. This file is the change contract required by
 AGENTS.md §7: what owns what today, what owns it after this change, the dependency direction,
 the formats it creates, what it deliberately does not do, and the evidence that it works.
 
@@ -74,7 +74,7 @@ ruling above); that refusal stays in the wallet, not in nakamoto.
   (needs the accounting delta) is an explicit `unsupported` result. BIP340 signing via nakamoto
   `SigningKey`; verification of a spend witness's signature.
 - Legacy coins (P01 "Spending a legacy coin"): the `LegacyCoinOutput` wire (`80 || value ||
-  Bytes(scriptPubKey)`, value in `MoneyRange`, script at most 10,000 bytes) wherever a coin's
+Bytes(scriptPubKey)`, value in `MoneyRange`, script at most 10,000 bytes) wherever a coin's
   output wire is used (`CoinsRoot`, `OwnInputHash`); `decodeLotusV2CoinOutput` tells the two
   encodings apart by the first byte. Legacy-bridge signing messages (`LegacyBridgeLeaf` in
   `SpendSelector`, branch 0) for P2PKH and P2SH; building and verifying P2PKH bridge spends
@@ -366,9 +366,58 @@ family without a base-wallet adapter; absent configuration returns nothing (no d
 (balance, Wallet page receive/send), first reading the relay's operator checkpoint for the row;
 session custody passes stealth custody only to the eCash and Electrum adapters.
 
-Not yet done (gap G1): no host composition reads `QCLI_FRANK_BASE_CHAIN` and calls
-`resolveBaseChain`, so the Lotus wallet appears as one more Bitcoin-family network, not as the
-account's primary balance in place of the EVM network.
+## Stage 3: Lotus v2 is the main balance (G1/F7/F8, 2026-11-19)
+
+Identity, the directory and DM stamps stay on the EVM key and Monad (D2); only the account's
+_main balance_ moves.
+
+Ownership and dependency direction:
+
+| Fact                                         | Owner                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Which network is the main balance            | the app host, `app/src/accounts/base-wallet.ts`: `MAIN_WALLET_CHAIN = resolveMainWalletChain(QCLI_FRANK_BASE_CHAIN)`, read once at start. One setting name, `QCLI_FRANK_BASE_CHAIN` (on the public client allowlist, `app/config/public-client-env.cjs`). A Node host would read `FRANK_BASE_CHAIN`; no Node host reads it yet (bots keep their EVM wallet).                                                                                                        |
+| Refusals                                     | `resolveBaseChain` (unknown id, family name, walletless row, Solana); `resolveMainWalletChain` adds a network the build's mode cannot open (a regtest/testnet base under a mainnet messaging chain). Both throw at start: a misconfigured build never shows another network's balance.                                                                                                                                                                              |
+| Not configured, or names the messaging chain | the main balance is the messaging chain's own wallet (the EVM network of `QCLI_MONAD_RPC_CHAIN` / `activeChain`), exactly as before. Chosen explicitly in `resolveMainWalletChain`; no shared service picks a network.                                                                                                                                                                                                                                              |
+| Wallet rows                                  | `buildWalletConfigs(MAIN_WALLET_CHAIN)` (`app/src/utils/wallet-configs.ts`): the base network's row, keyed by its canonical id, is first, `isMain` ("Main wallet", `/wallet`, the `wallet-row`/`wallet-balance` test ids) and replaces its kind's row; the Monad row stays as `isMessaging` (mailbox indicator, stamp/contact-payment features, "Monad"). `MAIN_WALLET_ID` / `MESSAGING_WALLET_ID`.                                                                 |
+| Main balance figure                          | `useChainBalance(MAIN_WALLET_ID)` (Wallet page) and `useMainBalance()` (the drawer), through the existing family-neutral reader: a Bitcoin-family row opens `openUtxoWallet` (relay operator checkpoint, `openRelayUtxoChain`, session custody).                                                                                                                                                                                                                    |
+| Receive / Send                               | Wallet page: a Bitcoin-family network without a presentation adapter is opened as the session's UTXO wallet (`rotatesReceiveAddress` defaults by family, as Send and the balance already choose); Send goes to `/send?chainIdentifier=lotus-v2-regtest` (`createNativeTransferContext`, unchanged).                                                                                                                                                                 |
+| History                                      | family-neutral `NativeWalletHandle.getNativeTransfers()` / `NativeTransferRecord` (`chain-wallet.ts`). Lotus: sends from the wallet store's `sends[]` (pending while the send's record is unmined, then confirmed, block height from its change output), receipts from Chronik `/v2/branches/outputs` on the receive addresses, one row per transaction. Shown by `NativeTransferHistory.vue`, read again whenever History is; the last rows stay on a failed read. |
+| Settings                                     | Network section: "Main balance: Lotus Regtest · messages and stamps on Monad Regtest".                                                                                                                                                                                                                                                                                                                                                                              |
+
+Not changed: stamps, contact payments, the balance breakdown, AVU rates (shown only where a rate
+exists), swaps. Confirmed-only `/v2` (F5) means an incoming payment shows once mined.
+
+### Running it locally
+
+Needs a Lotus v2 build (regtest only; the stack never starts lotusd on another network) and
+solonet for messaging (packages/bot/demo/regtest/monad-regtest.ts):
+
+```sh
+# 1. The stack: solonet + lotusd -regtest with Chronik + the real relay with both rows
+#    (CASHWEBD_BIN optional; without it this worktree's Cargo build is used). Leave running.
+LOTUSD_BIN=/Users/shammah/repos/lotus/daemon/.build/v2-current/lotusd \
+  yarn --cwd packages/bot regtest:serve
+# 2. The app, with the command it prints, for example:
+cd app && QCLI_MONAD_RELAY_BASE_URL=http://127.0.0.1:<relay port> QCLI_MONAD_RPC_CHAIN=monad-regtest \
+  QCLI_MONAD_STAMP_BURN_ADDRESS=0x000000000000000000000000000000000000dEaD \
+  QCLI_FRANK_BASE_CHAIN=lotus-v2-regtest yarn dev:browser
+# 3. Pay the Lotus address the Wallet page shows (the stack directory is printed by step 1):
+yarn --cwd packages/bot regtest:lotus-fund <stack directory> rxpi1... 100
+```
+
+`FRANK_REGTEST_CHAINS=lotus-v2-regtest` runs Lotus alone (no account can be created then: the
+relay has no directory without an EVM network). A block comes every 3 s. Ctrl-C stops everything
+and removes the run's directory.
+
+Evidence (2026-11-19, lotusd v2-current ea95b1631f): `lotus-v2/wallet.regtest` 12/12 (new: History
+pending → confirmed, receipts per transaction with block, refused send absent);
+`app/src/accounts/base-wallet.regtest.jest.test.ts` 1/1 through the real relay (composition →
+main row → `openUtxoWallet` at the relay's checkpoint → receive, send, History); app unit tests
+`base-wallet.jest.test.ts` (composition and refusals) and `Wallet.baseChain.jest.test.ts` (the
+page with Lotus main: balance, address, History rows, Send route); `regtest:serve` +
+`regtest:lotus-fund` run by hand (relay advertises `lotus-v2-regtest` with its checkpoint; a
+funding payment mined). The app was not run in a browser: the local solonet container was
+stopped with its chain retained, and recovering or disposing of it is the owner's call.
 
 ## Relay
 
@@ -429,11 +478,9 @@ matches the pinned source generation. The relay network-tag table covers the row
 - F3: identity and stamps on Lotus (x-only keys, IS_BURN commitments, atom-based payment floor).
 - F4: share Lotus sends across a user's devices (self-sync item), as Monad does.
 - F5: a mempool-aware index (Chronik `/v2` is confirmed-only) so unconfirmed change is spendable.
-- F7 (gap G1 above): host composition reads `QCLI_FRANK_BASE_CHAIN` and shows the Lotus wallet
-  as the primary balance; Lotus transaction history in the Wallet page (the wallet reports no
-  history list yet).
-- F8: a regtest-stack (`packages/bot/demo/regtest`) Lotus chain, so the local demo starts lotusd
-  and the relay row together.
+- F7, F8: done in stage 3 above.
+- F16: a Node host (bots) reading `FRANK_BASE_CHAIN`; stamps and contact payments on the main
+  balance are F2/F3 (owner decision).
 - F9 (review, 2026-11-19): a node refusing a rebroadcast is taken as proof the inputs went
   elsewhere (`finishPending`, and the eCash adapter's equivalent); on a multi-node network the
   refusing node may lag. Revisit both adapters before any non-regtest use.

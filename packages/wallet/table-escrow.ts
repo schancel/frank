@@ -268,6 +268,15 @@ export async function checkTableBuyIn(params: {
   return { seated: true, lock };
 }
 
+/** The chain reads the player's side makes: an ethers provider, or the wallet's own reader
+ * (`evmReader`). A head block without a time is never taken as past a deadline. */
+export interface TableEscrowReader {
+  call(tx: { to: string; data: string }): Promise<string>;
+  getBlock(tag: "latest"): Promise<{ timestamp?: number | bigint } | null>;
+  getTransactionReceipt(hash: string): Promise<{ status: number | null } | null>;
+  getFeeData(): Promise<{ maxFeePerGas: bigint | null; gasPrice: bigint | null }>;
+}
+
 /** What a player's wallet needs to lock and refund a buy-in: its contract-call path. */
 export interface TableEscrowWallet {
   sendContractCall?(params: {
@@ -338,7 +347,7 @@ export async function lockTableBuyIn(params: {
  */
 export async function refundTableBuyIn(params: {
   wallet: TableEscrowWallet;
-  reader: Pick<Provider, "call" | "getBlock">;
+  reader: Pick<TableEscrowReader, "call" | "getBlock">;
   contract: string;
   game: string;
   tableId: string;
@@ -352,7 +361,327 @@ export async function refundTableBuyIn(params: {
   if (lock.refundAddress.toLowerCase() !== (await calls.mainAddress()).toLowerCase())
     throw new Error("The buy-in lock does not refund to this wallet");
   const head = await params.reader.getBlock("latest");
-  if (!head || BigInt(head.timestamp) < lock.expiresAt)
+  if (head?.timestamp === undefined || BigInt(head.timestamp) < lock.expiresAt)
     throw new Error("The buy-in lock is not past its deadline yet");
   return calls.send(tableBuyInRefundCall(params), params.gasLimit);
+}
+
+/** Gas allowed for a buy-in lock when sizing what to move into the main account first. The
+ * signed gas limit is the wallet's own estimate (plus its margin); this only sizes the move. */
+export const TABLE_LOCK_GAS_ALLOWANCE = 300_000n;
+
+/** How long a join waits to see its lock (or a funding move) in a block, and how often it looks. */
+export interface TableEscrowTiming {
+  pollMs: number;
+  inclusionTimeoutMs: number;
+  sleep(ms: number): Promise<void>;
+}
+export const DEFAULT_TABLE_ESCROW_TIMING: TableEscrowTiming = {
+  pollMs: 1_500,
+  inclusionTimeoutMs: 120_000,
+  sleep: ms => new Promise(resolve => setTimeout(resolve, ms)),
+};
+
+/** Where a join or a refund is. */
+export type TableEscrowProgress =
+  | { stage: "checking" }
+  | { stage: "funding"; moveWei: bigint }
+  | { stage: "locking" }
+  | { stage: "lock-sent"; txHash: string }
+  | { stage: "locked"; txHash?: string }
+  | { stage: "refund-sent"; txHash: string };
+
+export type TableEscrowFailure =
+  /** The wallet's accounts together cannot pay the buy-in and the lock's network fee. */
+  | "insufficient-funds"
+  /** The lock's transaction is in a block and failed: nothing is locked. */
+  | "lock-reverted"
+  /** The lock (or the move funding it) was handed to the network and is not in a block yet: it
+   * may still land. Joining again continues the same lock; it never locks twice. */
+  | "lock-pending"
+  /** This account's lock at this table is already withdrawn or refunded. */
+  | "lock-closed"
+  /** The refund's transaction is in a block and failed. */
+  | "refund-reverted"
+  /** The refund was handed to the network and is not in a block yet. */
+  | "refund-pending";
+
+export class TableEscrowError extends Error {
+  constructor(
+    readonly reason: TableEscrowFailure,
+    message: string,
+    readonly txHash?: string
+  ) {
+    super(message);
+    this.name = "TableEscrowError";
+  }
+}
+
+/** A table call this wallet journaled, as the join and refund find it again. */
+interface JournaledCall {
+  operationId: string;
+  txHash: string;
+}
+
+/** What the player's side of the table escrow needs of its wallet beyond the call itself: its
+ * funds, the move into the main account, and its journal, to continue an earlier call. */
+export interface TableJoinWallet extends TableEscrowWallet {
+  getContractCallFunds?(): Promise<{
+    mainAddress: string;
+    mainBalance?: bigint;
+    otherBalance?: bigint;
+  }>;
+  fundMainAccount?(params: { value: bigint }): Promise<unknown>;
+  resumeLegacySend?(operationId: string): Promise<unknown>;
+  resumeNativeOperation?(operationId: string): Promise<unknown>;
+  getNativeOperations?(): readonly {
+    operationId: string;
+    kind: string;
+    cancelled: boolean;
+    record?: { kind: string; action?: string; lockIds?: string[] };
+    members: readonly { signed?: { transactionHash: string } }[];
+  }[];
+}
+
+/** This wallet's journaled table calls of `action` on `lockId` that were signed, newest first. */
+function journaledTableCalls(
+  wallet: TableJoinWallet,
+  action: "lock" | "refund",
+  lockId: string
+): JournaledCall[] {
+  const id = lockId.toLowerCase();
+  return (wallet.getNativeOperations?.() ?? [])
+    .flatMap(row => {
+      const signed = row.members[0]?.signed;
+      return row.kind === "contract" &&
+        !row.cancelled &&
+        row.record?.kind === "table-htlc" &&
+        row.record.action === action &&
+        row.record.lockIds?.length === 1 &&
+        row.record.lockIds[0] === id &&
+        signed
+        ? [{ operationId: row.operationId, txHash: signed.transactionHash }]
+        : [];
+    })
+    .reverse();
+}
+
+/** The receipt of `txHash` once it is in a block, or null when it is not within the timeout. */
+async function awaitInclusion(
+  reader: Pick<TableEscrowReader, "getTransactionReceipt">,
+  txHash: string,
+  timing: TableEscrowTiming
+): Promise<{ status: number | null } | null> {
+  for (let waited = 0; ; waited += timing.pollMs) {
+    const receipt = await reader.getTransactionReceipt(txHash).catch(() => null);
+    if (receipt) return receipt;
+    if (waited >= timing.inclusionTimeoutMs) return null;
+    await timing.sleep(timing.pollMs);
+  }
+}
+
+/** A submission whose outcome the wallet could not learn still names the exact operation. */
+function submittedOperation(error: unknown): string | undefined {
+  const e = error as {
+    transaction?: { txHash?: unknown };
+    operation?: { operationId?: unknown };
+  } | null;
+  return typeof e?.transaction?.txHash === "string" && typeof e.operation?.operationId === "string"
+    ? e.operation.operationId
+    : undefined;
+}
+
+/** Moves `value` into the main account and waits for it; a move that was handed out and not yet
+ * seen is continued (the same operation), never started again. */
+async function fundMain(wallet: TableJoinWallet, value: bigint, timing: TableEscrowTiming) {
+  if (!wallet.fundMainAccount)
+    throw new TableEscrowError("insufficient-funds", "The main account cannot be funded from this wallet's other accounts");
+  try {
+    await wallet.fundMainAccount({ value });
+  } catch (error) {
+    const pending = submittedOperation(error);
+    if (!pending || !wallet.resumeLegacySend) throw error;
+    for (let waited = 0; ; waited += timing.pollMs) {
+      await timing.sleep(timing.pollMs);
+      try {
+        await wallet.resumeLegacySend(pending);
+        return;
+      } catch (again) {
+        if (!submittedOperation(again)) throw again;
+        if (waited >= timing.inclusionTimeoutMs)
+          throw new TableEscrowError("lock-pending", "Moving the buy-in into the main account has not confirmed yet");
+      }
+    }
+  }
+}
+
+/** Waits for a handed-out table call and lets the wallet read its inclusion into its journal
+ * (which starts the note to self carrying its `table-htlc-record`). */
+async function settleTableCall(
+  wallet: TableJoinWallet,
+  reader: Pick<TableEscrowReader, "getTransactionReceipt">,
+  call: JournaledCall,
+  timing: TableEscrowTiming,
+  failures: { reverted: TableEscrowFailure; pending: TableEscrowFailure }
+): Promise<void> {
+  const receipt = await awaitInclusion(reader, call.txHash, timing);
+  if (!receipt)
+    throw new TableEscrowError(failures.pending, "The transaction is not in a block yet; it may still land", call.txHash);
+  try {
+    // Nothing is re-sent for a transaction already in a block: the wallet reads it into its
+    // journal and sends the note to self. A note not sent yet is the wallet's to retry.
+    await wallet.resumeNativeOperation?.(call.operationId);
+  } catch {
+    /* A reverted call, or a note not sent yet: what the chain says is below. */
+  }
+  if (receipt.status !== 1)
+    throw new TableEscrowError(failures.reverted, "The transaction failed on chain", call.txHash);
+}
+
+/** An earlier call of this wallet for `lockId` that may still land: continued and waited for.
+ * One that reverted is skipped (it changed nothing). False when there is none. */
+async function continueEarlier(
+  wallet: TableJoinWallet,
+  reader: Pick<TableEscrowReader, "getTransactionReceipt">,
+  action: "lock" | "refund",
+  lockId: string,
+  timing: TableEscrowTiming,
+  onSent: (txHash: string) => void
+): Promise<JournaledCall | undefined> {
+  for (const earlier of journaledTableCalls(wallet, action, lockId)) {
+    const receipt = await reader.getTransactionReceipt(earlier.txHash).catch(() => null);
+    if (receipt && receipt.status !== 1) continue;
+    // Not in a block yet: the same signed bytes are handed out again.
+    if (!receipt) await wallet.resumeNativeOperation?.(earlier.operationId).catch(() => undefined);
+    onSent(earlier.txHash);
+    await settleTableCall(
+      wallet,
+      reader,
+      earlier,
+      timing,
+      action === "lock"
+        ? { reverted: "lock-reverted", pending: "lock-pending" }
+        : { reverted: "refund-reverted", pending: "refund-pending" }
+    );
+    return earlier;
+  }
+  return undefined;
+}
+
+/**
+ * The player's whole join, headless: makes sure this account's buy-in lock at the table is open
+ * on chain and returns what the join item names (`buyInLock`), signed for `joiner`.
+ *
+ * - The lock id follows from the table's terms and the main account, so every device of the
+ *   account finds the same lock. An open one is reused (nothing is sent); one already withdrawn
+ *   or refunded is refused (`lock-closed`).
+ * - A lock this wallet journaled and handed out earlier is continued (the same signed bytes),
+ *   never sent twice; one that reverted locked nothing, and a new lock is sent.
+ * - Otherwise, if the main account cannot pay the buy-in and the lock's fee, the shortfall moves
+ *   in from the wallet's other accounts first (the contract-call consolidation), then the lock
+ *   is sent and waited for.
+ *
+ * A lock not in a block within the timeout rejects with `lock-pending` and its transaction: it
+ * may still land, and joining again continues it.
+ */
+export async function joinTableWithBuyIn(params: {
+  wallet: TableJoinWallet;
+  reader: Pick<TableEscrowReader, "call" | "getTransactionReceipt" | "getFeeData">;
+  signer: TableJoinSigner;
+  joiner: string;
+  contract: string;
+  game: string;
+  tableId: string;
+  table: TableEscrowTerms;
+  onProgress?: (progress: TableEscrowProgress) => void;
+  timing?: TableEscrowTiming;
+}): Promise<{ lockId: string; account: string; signature: string; txHash?: string }> {
+  const { wallet, reader, onProgress } = params;
+  const timing = params.timing ?? DEFAULT_TABLE_ESCROW_TIMING;
+  requireTable(params.game, params.tableId);
+  onProgress?.({ stage: "checking" });
+  const account = await contractCallsOf(wallet).mainAddress();
+  if (getAddress(params.signer.account()) !== account)
+    throw new Error("The join signer is not the account the lock is sent from");
+  const lockId = tableBuyInLockId(params.table, account);
+  const authorized = (txHash?: string) => ({
+    lockId,
+    account,
+    signature: params.signer.signTableJoin({
+      contract: params.contract,
+      game: params.game,
+      tableId: params.tableId,
+      lockId,
+      joiner: params.joiner,
+    }),
+    ...(txHash === undefined ? {} : { txHash }),
+  });
+  const onChain = await readHtlcLock(reader, params.contract, lockId);
+  if (onChain?.state === "open") {
+    onProgress?.({ stage: "locked" });
+    return authorized();
+  }
+  if (onChain)
+    throw new TableEscrowError("lock-closed", `Your buy-in lock at this table is ${onChain.state}`);
+
+  const earlier = await continueEarlier(wallet, reader, "lock", lockId, timing, txHash =>
+    onProgress?.({ stage: "lock-sent", txHash })
+  );
+  if (earlier) {
+    onProgress?.({ stage: "locked", txHash: earlier.txHash });
+    return authorized(earlier.txHash);
+  }
+
+  const funds = await wallet.getContractCallFunds!();
+  if (funds.mainBalance !== undefined) {
+    const fee = await reader.getFeeData();
+    const maxFeePerGas = fee.maxFeePerGas ?? fee.gasPrice;
+    if (maxFeePerGas == null) throw new Error("Network fee quote unavailable");
+    const needed = params.table.buyInWei + TABLE_LOCK_GAS_ALLOWANCE * maxFeePerGas;
+    if (funds.mainBalance < needed) {
+      const moveWei = needed - funds.mainBalance;
+      if ((funds.otherBalance ?? 0n) < moveWei)
+        throw new TableEscrowError("insufficient-funds", "Not enough for the buy-in and its network fee");
+      onProgress?.({ stage: "funding", moveWei });
+      await fundMain(wallet, moveWei, timing);
+    }
+  }
+  onProgress?.({ stage: "locking" });
+  const locked = await lockTableBuyIn(params);
+  onProgress?.({ stage: "lock-sent", txHash: locked.call.txHash });
+  await settleTableCall(wallet, reader, locked.call, timing, {
+    reverted: "lock-reverted",
+    pending: "lock-pending",
+  });
+  onProgress?.({ stage: "locked", txHash: locked.call.txHash });
+  return { lockId, account, signature: locked.signature, txHash: locked.call.txHash };
+}
+
+/**
+ * The player's refund after the deadline, headless: refunds this account's lock (checked as
+ * {@link refundTableBuyIn} checks it) and waits for it. A refund this wallet already handed out
+ * is continued, never sent twice. Resolves with the refund's transaction once it is in a block.
+ */
+export async function refundTableBuyInAndWait(params: {
+  wallet: TableJoinWallet;
+  reader: Pick<TableEscrowReader, "call" | "getBlock" | "getTransactionReceipt">;
+  contract: string;
+  game: string;
+  tableId: string;
+  lockId: string;
+  onProgress?: (progress: TableEscrowProgress) => void;
+  timing?: TableEscrowTiming;
+}): Promise<{ txHash: string }> {
+  const { wallet, reader, onProgress } = params;
+  const timing = params.timing ?? DEFAULT_TABLE_ESCROW_TIMING;
+  const onSent = (txHash: string) => onProgress?.({ stage: "refund-sent", txHash });
+  const earlier = await continueEarlier(wallet, reader, "refund", params.lockId, timing, onSent);
+  if (earlier) return { txHash: earlier.txHash };
+  const handle = await refundTableBuyIn(params);
+  onSent(handle.txHash);
+  await settleTableCall(wallet, reader, handle, timing, {
+    reverted: "refund-reverted",
+    pending: "refund-pending",
+  });
+  return { txHash: handle.txHash };
 }

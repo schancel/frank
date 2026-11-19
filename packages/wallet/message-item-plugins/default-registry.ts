@@ -35,6 +35,7 @@ import { initStealthPlugin } from './stealth/plugin'
 import { initSwapOfferPlugin } from './swap-offer/plugin'
 import { initSwapRecordPlugin } from './swap-record/plugin'
 import { initHtlcRecordPlugin } from './htlc-record/plugin'
+import { initTableHtlcRecordPlugin } from './table-htlc-record/plugin'
 import { initTextPlugin } from './text/plugin'
 import { initWalletSyncPlugin } from './wallet-sync/plugin'
 import {
@@ -64,6 +65,7 @@ export const DEFAULT_MESSAGE_ITEM_PLUGINS: ReadonlyArray<
   ['swap-offer', initSwapOfferPlugin],
   ['swap-record', initSwapRecordPlugin],
   ['htlc-record', initHtlcRecordPlugin],
+  ['table-htlc-record', initTableHtlcRecordPlugin],
   ['received-coin', initReceivedCoinPlugin],
   ['conversation-state', initConversationStatePlugin],
   ['contact-state', initContactStatePlugin],

@@ -3,7 +3,8 @@ import type { StampDefaultResolver } from "../oracle/stamp-policy";
 import type { NativeTransactionAttemptStore } from "./chain-wallet";
 import type { EvmTransactionBuilder } from "./evm-transaction-builder";
 import type { EvmTransactionSetPolicy } from "../evm-transaction-set-types";
-import type { HtlcRecordItem, SwapRecordItem, WalletSyncItem } from "@frank/cashweb/types/messages";
+import type { ContractCallRecordItem } from "./evm-legacy-consolidator";
+import type { WalletSyncItem } from "@frank/cashweb/types/messages";
 
 export interface EvmChainConfig {
   /** Stable chain/deployment identifier used for wallet affinity checks. */
@@ -92,7 +93,7 @@ export interface EvmChainConfig {
    */
   readonly emitWalletSync?: (
     item: WalletSyncItem,
-    swapRecord: SwapRecordItem | HtlcRecordItem | undefined,
+    swapRecord: ContractCallRecordItem | undefined,
     messageId: Uint8Array,
   ) => Promise<void>;
   /** Directory network tag of the principal signing relay RPC capabilities.

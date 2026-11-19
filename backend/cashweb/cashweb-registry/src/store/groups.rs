@@ -716,6 +716,9 @@ pub struct GroupAppendOutcome {
     pub message: StoredGroupMessage,
     /// True only for the transaction that created the receipt.
     pub appended: bool,
+    /// Keccak256 of the signed transaction that paid for the write, recorded when it was
+    /// accepted. A retry presenting a different payment did not fund the write.
+    pub payment_tx_hash: [u8; 32],
 }
 
 const GROUP_FORMAT_KEY: &[u8] = b"G_format";
@@ -894,6 +897,24 @@ impl MessageRow {
 
 fn acceptance_key(group_id: &[u8; 32], digest: &[u8; 32]) -> Vec<u8> {
     [b"G_accept:".as_slice(), group_id, digest].concat()
+}
+
+/// The `G_accept` value: the accepted write's sequence and the hash of the payment that funded
+/// it, `server_seq_be[8] || tx_hash[32]`.
+fn acceptance_locator(server_seq: u64, tx_hash: &[u8; 32]) -> Vec<u8> {
+    [server_seq.to_be_bytes().as_slice(), tx_hash].concat()
+}
+
+/// A locator of any other length is refused: one without its payment hash was written before
+/// receipts named their payment, and is not read.
+fn parse_acceptance_locator(locator: &[u8]) -> Result<(u64, [u8; 32]), GroupError> {
+    let corrupt = || GroupError::Storage("corrupt group acceptance locator".into());
+    if locator.len() != 40 {
+        return Err(corrupt());
+    }
+    let (sequence, tx_hash) = locator.split_at(8);
+    let sequence = parse_sequence(sequence, "group acceptance locator")?;
+    Ok((sequence, tx_hash.try_into().map_err(|_| corrupt())?))
 }
 
 fn part_prefix(key: &[u8]) -> Vec<u8> {
@@ -1305,7 +1326,7 @@ impl GroupStore {
         &self,
         path_group_id: &str,
         envelope: GroupMessageEnvelope,
-    ) -> Result<Option<StoredGroupMessage>, GroupError> {
+    ) -> Result<Option<GroupAppendOutcome>, GroupError> {
         let (group_id, envelope, digest) = self.local_write(path_group_id, envelope)?;
         self.accepted_message(
             path_group_id,
@@ -1359,11 +1380,8 @@ impl GroupStore {
     ) -> Result<GroupAppendOutcome, GroupError> {
         let (group_id, envelope, digest) = self.local_write(path_group_id, envelope)?;
         let accept_key = acceptance_key(&group_id, &digest);
-        if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
-            return Ok(GroupAppendOutcome {
-                message,
-                appended: false,
-            });
+        if let Some(outcome) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+            return Ok(outcome);
         }
         let authority_key = meta_key(&group_id);
         let authority_snapshot = self
@@ -1375,11 +1393,8 @@ impl GroupStore {
         if envelope.epoch != current_epoch.epoch {
             // The first empty lookup may predate an acceptance followed by this rotation.
             // Recheck after observing authority: an old-epoch acceptance cannot commit later.
-            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
-                return Ok(GroupAppendOutcome {
-                    message,
-                    appended: false,
-                });
+            if let Some(outcome) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+                return Ok(outcome);
             }
             return Err(GroupError::Forbidden(format!(
                 "message epoch {} does not match active group epoch {}",
@@ -1443,11 +1458,8 @@ impl GroupStore {
             Ok(false)
         })?;
         if accepted {
-            if let Some(message) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
-                return Ok(GroupAppendOutcome {
-                    message,
-                    appended: false,
-                });
+            if let Some(outcome) = self.accepted_message(path_group_id, &envelope, &accept_key)? {
+                return Ok(outcome);
             }
         }
         Err(GroupError::Underpaid { required, actual })
@@ -1549,7 +1561,10 @@ impl GroupStore {
                 let record = serde_json::to_vec(&record).map_err(|error| {
                     GroupError::Storage(format!("serialize group payment record: {error}"))
                 })?;
-                tx.set(accept_key, &server_seq.to_be_bytes())?;
+                tx.set(
+                    accept_key,
+                    &acceptance_locator(server_seq, &payment.tx_hash),
+                )?;
                 tx.set(&sequence_key, &server_seq.to_be_bytes())?;
                 tx.set(&pay_key, &record)?;
                 tx.set(&nonce_key, &payment.tx_hash)?;
@@ -1567,16 +1582,14 @@ impl GroupStore {
                     return Ok(GroupAppendOutcome {
                         message,
                         appended: true,
+                        payment_tx_hash: payment.tx_hash,
                     })
                 }
                 Some(Err(refusal)) => return Err(refusal),
                 None => {}
             }
-            if let Some(message) = self.accepted_message(path_group_id, envelope, accept_key)? {
-                return Ok(GroupAppendOutcome {
-                    message,
-                    appended: false,
-                });
+            if let Some(outcome) = self.accepted_message(path_group_id, envelope, accept_key)? {
+                return Ok(outcome);
             }
             if self.get_mirror_state(path_group_id)?.is_some() {
                 return Err(GroupError::Forbidden(
@@ -1597,22 +1610,22 @@ impl GroupStore {
         group_id_hex: &str,
         envelope: &GroupMessageEnvelope,
         accept_key: &[u8],
-    ) -> Result<Option<StoredGroupMessage>, GroupError> {
+    ) -> Result<Option<GroupAppendOutcome>, GroupError> {
         if self.get_mirror_state(group_id_hex)?.is_some() {
             return Err(GroupError::Forbidden(
                 "foreign groups cannot acknowledge local authoritative writes".into(),
             ));
         }
         let group_id = parse_group_id_hex(group_id_hex)?;
-        let Some((sequence, raw)) = self.read(|tx| {
+        let Some((sequence, payment_tx_hash, raw)) = self.read(|tx| {
             let Some(locator) = tx.get(accept_key)? else {
                 return Ok(None);
             };
-            let sequence = parse_sequence(&locator, "group acceptance locator")?;
+            let (sequence, payment_tx_hash) = parse_acceptance_locator(&locator)?;
             let raw = tx.get(&msg_key(&group_id, sequence))?.ok_or_else(|| {
                 GroupError::Storage("group acceptance index references missing receipt".into())
             })?;
-            Ok(Some((sequence, raw)))
+            Ok(Some((sequence, payment_tx_hash, raw)))
         })?
         else {
             return Ok(None);
@@ -1659,7 +1672,11 @@ impl GroupStore {
                 "invalid historical retry write_sig".into(),
             ));
         }
-        Ok(Some(stored))
+        Ok(Some(GroupAppendOutcome {
+            message: stored,
+            appended: false,
+            payment_tx_hash,
+        }))
     }
 
     /// The record of the accepted write `tx_hash` paid for, if any.
@@ -3708,12 +3725,20 @@ mod tests {
         let receipt = store.put_message(&id, envelope.clone()).unwrap().message;
         let group_id = parse_group_id_hex(&id).unwrap();
         let index = acceptance_key(&group_id, &envelope.signing_digest().unwrap());
-        kv.put(&index, &999u64.to_be_bytes()).unwrap();
+        let digest = envelope.signing_digest().unwrap();
+        kv.put(&index, &acceptance_locator(999, &digest)).unwrap();
         assert!(matches!(
             store.put_message(&id, envelope.clone()),
             Err(GroupError::Storage(_))
         ));
+        // A locator without the payment that funded the write is refused, not read.
         kv.put(&index, &receipt.server_seq.to_be_bytes()).unwrap();
+        assert!(matches!(
+            store.put_message(&id, envelope.clone()),
+            Err(GroupError::Storage(_))
+        ));
+        kv.put(&index, &acceptance_locator(receipt.server_seq, &digest))
+            .unwrap();
         let mut corrupt = receipt.clone();
         corrupt.write_sig = "00".repeat(64);
         // A well-formed row whose original signature no longer authenticates the content.

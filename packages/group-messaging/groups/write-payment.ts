@@ -14,8 +14,18 @@
  * 3. the signed bytes are stored on the message, and then that they are being submitted;
  * 4. the write goes to the hosting relay with those bytes; from here they may be out, because
  *    the relay broadcasts them once it has stored the write;
- * 5. only when the relay answers that it holds the write (appended or existing) does the wallet
- *    authorize the set and broadcast all of it in nonce order, and keep reconciling it.
+ * 5. only when the relay answers that it holds the write (appended or existing) with this
+ *    payment recorded as funding it does the wallet authorize the set and broadcast all of it in
+ *    nonce order, and keep reconciling it.
+ *
+ * Every device of an account computes the same operation for a write, but two devices can sign
+ * different sets for it. The relay's receipt names the payment it recorded for the write
+ * (`payment_tx_hash`). When that is another device's payment, this one did not fund the write:
+ * the relay never broadcast it (it broadcasts only the payment of the attempt it accepts, and it
+ * accepts one attempt per write), so the wallet does not either. It reads the chain and gives
+ * the coin back only when the chain shows none of the set; if the chain shows the set after all,
+ * the wallet tracks it as spent. Until one of those, the write is delivered but its payment is
+ * unsettled, and the next retry repeats this step.
  *
  * Until the bytes are first submitted, a change of the host's terms replaces the plan: the
  * claimed coin is given back and the write is planned again. After that the plan is final.
@@ -50,6 +60,7 @@ import {
   assertGroupWritePayment,
   groupWriteOperationId,
   groupWritePaymentPlan,
+  groupWritePaymentTxHash,
   groupWriteSigningDigest,
   storedGroupWritePlan,
   type GroupWritePaymentPlan,
@@ -130,7 +141,13 @@ export class GroupWritePaidRefusalError extends Error {
   }
 }
 
-export interface DeliverPaidGroupWriteParams<Receipt> {
+/** What the hosting relay's answer to a write it holds carries besides the receipt. */
+export interface GroupWriteReceipt {
+  /** `0x`-prefixed lowercase hash of the payment the relay recorded as funding the write. */
+  readonly payment_tx_hash: string
+}
+
+export interface DeliverPaidGroupWriteParams<Receipt extends GroupWriteReceipt> {
   readonly groupIdHex: string
   readonly envelope: SealedGroupMessageEnvelope
   /** The payment already stored on this write's message, if any. */
@@ -256,11 +273,23 @@ function samePlan(
  * (`GroupWritePaymentUnresolvedError`), or a refusal came while the chain shows the payment
  * (`GroupWritePaidRefusalError`).
  */
-export async function deliverPaidGroupWrite<Receipt>(
+export async function deliverPaidGroupWrite<Receipt extends GroupWriteReceipt>(
   params: DeliverPaidGroupWriteParams<Receipt>,
 ): Promise<GroupWriteDelivery<Receipt>> {
   let stored = params.stored
   if (stored?.discarded) return { state: 'discarded' }
+  if (stored?.released && stored.fundedElsewhere) {
+    // Delivered with another device's payment, and this one's coin is already back: only the
+    // receipt is wanted. The relay answers a held write from its receipt before it looks at
+    // the payment, and hands nothing over.
+    if (stored.rawTransaction === undefined)
+      throw new Error('Group write payment bytes missing')
+    const receipt = await params.submit({
+      network: stored.network,
+      raw_transaction: stored.rawTransaction,
+    })
+    return { state: 'delivered', receipt, settled: true }
+  }
   if (stored?.released) return { state: 'refused', outcome: 'released' }
   const wallet = params.wallet
   const payer =
@@ -398,14 +427,50 @@ export async function deliverPaidGroupWrite<Receipt>(
     await persist({ ...stored, releasing: true })
     return finishRefusal(payer, stored, persist, error, prepared)
   }
-  // The relay holds the write: now the wallet authorizes the same bytes, broadcasts them and
-  // keeps reconciling them.
+  // The relay holds the write, funded by another device's payment: this one is never
+  // broadcast, only reconciled against the chain.
+  if (receipt.payment_tx_hash.toLowerCase() !== groupWritePaymentTxHash(wire))
+    return deliverFundedElsewhere(payer, prepared, stored, persist, receipt)
+  // The relay holds the write with this payment: now the wallet authorizes the same bytes,
+  // broadcasts them and keeps reconciling them.
   try {
     await payer.sendTransaction(prepared)
     return { state: 'delivered', receipt, settled: true }
   } catch {
     return { state: 'delivered', receipt, settled: false }
   }
+}
+
+/** The relay holds the write with another payment. None of this payment's attempts was
+ * accepted, so the relay never broadcast it, whatever an earlier attempt's answer was. The
+ * wallet reads the chain for the set first: the coin goes back only when it shows none of it;
+ * when it shows the set after all, the set is authorized and tracked as spent. Otherwise the
+ * payment stays claimed and unsettled, and a retry repeats this. */
+async function deliverFundedElsewhere<Receipt>(
+  payer: Required<GroupWritePayer>,
+  prepared: GroupWritePreparedPayment,
+  stored: StoredGroupWritePayment,
+  persist: (next: StoredGroupWritePayment) => Promise<void>,
+  receipt: Receipt,
+): Promise<GroupWriteDelivery<Receipt>> {
+  if (stored.spent) return { state: 'delivered', receipt, settled: true }
+  if (!stored.fundedElsewhere) {
+    stored = { ...stored, fundedElsewhere: true }
+    await persist(stored)
+  }
+  if (await payer.releaseTransactionSet(stored.operationId)) {
+    await persist({ ...stored, released: true })
+    return { state: 'delivered', receipt, settled: true }
+  }
+  if (!(await payer.observeTransactionSet(stored.operationId)))
+    return { state: 'delivered', receipt, settled: false }
+  try {
+    await payer.sendTransaction(prepared)
+  } catch {
+    return { state: 'delivered', receipt, settled: false }
+  }
+  await persist({ ...stored, spent: true })
+  return { state: 'delivered', receipt, settled: true }
 }
 
 /** Release the coin of a refused write, after the wallet has read the chain; when the chain

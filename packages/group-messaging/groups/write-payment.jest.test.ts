@@ -5,6 +5,7 @@ import {
 } from '@frank/cashweb/groups/group-relay-client'
 import {
   groupWritePaymentPlan,
+  groupWritePaymentTxHash,
   type GroupWritePaymentWire,
   type GroupWritePolicy,
   type StoredGroupWritePayment,
@@ -53,12 +54,15 @@ function record(initial?: StoredGroupWritePayment) {
   }
 }
 
-/** The hosting relay as the writer sees it: it records every submission in `events`. */
+/** The hosting relay as the writer sees it: it records every submission in `events`. A held
+ * write's receipt names the payment it was first accepted with (`recorded`, when another
+ * device's payment funded it before). */
 function relay(
   events: string[],
   answers: Array<
     'ok' | 'timeout' | 'refuse' | 'forbidden' | 'gap' | 'unfunded'
   >,
+  recorded?: string,
 ) {
   const submitted: GroupWritePaymentWire[] = []
   return {
@@ -86,7 +90,8 @@ function relay(
           'group_payment_invalid',
           'underpaid',
         )
-      return { server_seq: 1 }
+      recorded ??= groupWritePaymentTxHash(payment)
+      return { server_seq: 1, payment_tx_hash: recorded }
     },
   }
 }
@@ -94,7 +99,9 @@ function relay(
 function deliver(
   message: ReturnType<typeof record>,
   wallet: GroupWritePayer | undefined,
-  submit: (payment: GroupWritePaymentWire) => Promise<{ server_seq: number }>,
+  submit: (
+    payment: GroupWritePaymentWire,
+  ) => Promise<{ server_seq: number; payment_tx_hash: string }>,
   policy: () => Promise<GroupWritePolicy> = async () => POLICY,
 ) {
   return deliverPaidGroupWrite({
@@ -116,7 +123,10 @@ describe('deliverPaidGroupWrite', () => {
     const delivered = await deliver(message, payer.wallet, host.submit)
     expect(delivered).toEqual({
       state: 'delivered',
-      receipt: { server_seq: 1 },
+      receipt: {
+        server_seq: 1,
+        payment_tx_hash: groupWritePaymentTxHash(host.submitted[0]!),
+      },
       settled: true,
     })
     const plan = groupWritePaymentPlan(POLICY, GROUP, ENVELOPE)
@@ -607,6 +617,65 @@ describe('deliverPaidGroupWrite', () => {
       await deliver(message, payer.wallet, relay(payer.events, ['ok']).submit)
     }
     expect(a.writes[0]!.operationId).toBe(b.writes[0]!.operationId)
+  })
+
+  test("a second device whose write the relay already holds with the first device's payment never broadcasts its own", async () => {
+    const first = groupWriteTestPayer()
+    // The second device signs another set for the same write: another nonce, other bytes.
+    const second = groupWriteTestPayer('monad-testnet', 7)
+    const host = relay(first.events, ['ok', 'ok', 'ok'])
+    const a = record()
+    const b = record()
+    expect(await deliver(a, first.wallet, host.submit)).toMatchObject({
+      state: 'delivered',
+      settled: true,
+    })
+    expect(await deliver(b, second.wallet, host.submit)).toMatchObject({
+      state: 'delivered',
+      receipt: { payment_tx_hash: groupWritePaymentTxHash(host.submitted[0]!) },
+      settled: true,
+    })
+    const operationId = b.stored!.operationId
+    expect(operationId).toBe(a.stored!.operationId)
+    expect(b.stored!.rawTransaction).not.toBe(a.stored!.rawTransaction)
+    // Never authorized nor broadcast; the coin goes back only through the wallet's release,
+    // which reads the chain first.
+    expect(second.events).toEqual(['construct:1', `release:${operationId}`])
+    expect(b.writes.at(-2)).toMatchObject({ fundedElsewhere: true })
+    expect(b.writes.at(-2)!.released).toBeUndefined()
+    expect(b.stored).toMatchObject({ fundedElsewhere: true, released: true })
+    // A restart before the caller recorded the delivery asks the relay for the receipt again
+    // with the same bytes; nothing is signed, released or broadcast again.
+    const again = record(b.stored)
+    expect(await deliver(again, second.wallet, host.submit)).toMatchObject({
+      state: 'delivered',
+      settled: true,
+    })
+    expect(host.submitted.at(-1)).toEqual(host.submitted[1])
+    expect(second.events).toEqual(['construct:1', `release:${operationId}`])
+  })
+
+  test("a second device's payment the chain shows after all is tracked, not given back", async () => {
+    const payer = groupWriteTestPayer()
+    const message = record()
+    const host = relay(payer.events, ['timeout', 'ok'], `0x${'ab'.repeat(32)}`)
+    await expect(deliver(message, payer.wallet, host.submit)).rejects.toThrow(
+      'timeout',
+    )
+    // Someone broadcast the bytes anyway, and the node shows them.
+    payer.seenOnChain.add(message.stored!.operationId)
+    expect(await deliver(message, payer.wallet, host.submit)).toMatchObject({
+      state: 'delivered',
+      settled: true,
+    })
+    const operationId = message.stored!.operationId
+    expect(payer.events.slice(-3)).toEqual([
+      `release:${operationId}`,
+      `observe:${operationId}`,
+      `send:${operationId}`,
+    ])
+    expect(message.stored).toMatchObject({ fundedElsewhere: true, spent: true })
+    expect(message.stored!.released).toBeUndefined()
   })
 
   test('a wallet on another network or without the capability signs nothing', async () => {

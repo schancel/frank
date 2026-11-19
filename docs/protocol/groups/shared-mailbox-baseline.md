@@ -15,8 +15,10 @@ A group message's identity is the member-signed inner digest (`innerDigestHex` f
 ## Idempotent authoritative append and development storage baseline
 
 The hosting `GroupStore` owns each original accepted signed-content receipt. Its `G_accept`
-index maps `(group_id, existing envelope signing digest)` to the original sequence, and is
-committed in the same transaction as the row, sequence and epoch/local-ownership guards.
+index maps `(group_id, existing envelope signing digest)` to the original sequence and the
+hash of the payment that funded the write (`server_seq_be[8] || tx_hash[32]`), and is
+committed in the same transaction as the row, sequence, payment records and
+epoch/local-ownership guards.
 The immutable row owns content, signature, sequence and time; the lookup owns no competing
 financial fact. Matching authenticated retries return that exact row, including after an
 epoch rotation, using its root-signed historical certificate. Equivalent hex/JSON/CBOR and
@@ -37,6 +39,20 @@ Only a newly committed append publishes an ephemeral wake. The HTTP
 `X-Group-Append-Disposition` response (`appended` or `existing`) carries this notification
 hint through the home proxy; it never advances a durable cursor or establishes financial
 acceptance. Ordered reads and persisted authenticated receipts remain authoritative.
+
+The body of a write's `200` answer, `appended` or `existing`, is the receipt (the stored row:
+`group_id`, `server_seq`, `server_time_ms`, `epoch`, `nonce`, `ciphertext`, `write_sig`) plus
+`payment_tx_hash`: the `0x`-prefixed lowercase hex Keccak256 of the signed payment recorded as
+funding the write, read from `G_accept`. It is the same for every answer about one write,
+whatever payment the request carried (also none). A home relay passes the body through
+unchanged. The TypeScript client (`GroupRelayClient.sendGroupMessage`) refuses an answer
+without it. Wire change (2026-11-19, #1862): before it the body was the receipt alone. Every
+consumer moves together: the relay (`cashweb-registry` `http/groups.rs`, `store/groups.rs`),
+`packages/cashweb/groups/group-relay-client.ts`, `packages/group-messaging/groups/write-payment.ts`
+and the app's group send. A group relay store written before it holds locators of the sequence
+alone; a retry of a write accepted then fails visibly as a corrupt acceptance locator (500)
+and is never answered without its payment. New writes are unaffected; the reset path for
+disposable dedicated development group-relay state is the one below.
 
 The dedicated relay store at `registry_db.with_extension("groups-v1")` requires `G_format = group-binary-rows-v1`.
 Message rows are binary CBOR; a ciphertext over 64 KiB is stored in the relay's large-value object
@@ -243,7 +259,7 @@ that already funded another write is refused 402 `group_payment_invalid` with re
 appended. The relay's own failures to reach another relay or node are 502, or 504 for a
 timeout, never a 4xx. A retry of an accepted write may omit `payment` (it is optional in the
 field table): the host answers from its receipt before it looks at the payment. The host hands the payment of a newly appended write to its node after the write
-commits, once; the writer's wallet broadcasts the same bytes either way. The
+commits, once; the writer's wallet broadcasts the same bytes either way, once the receipt names them. The
 pure checks are `backend/cashweb/cashweb-registry/src/group_write_payment.rs`; the writer's
 half is `packages/cashweb/groups/group-write-payment.ts`, checked against the same vectors.
 
@@ -254,10 +270,25 @@ wallet operation `group-write-<write_signing_digest>` are stored on the message;
 its transaction set (`maxRecipientTransactions: 1`: one payment, plus the set's own self-sends in
 random order) and claims its coin, broadcasting nothing; the payment's signed bytes are stored on
 the message, and only they go to the relay; the write goes to the host with those bytes; and
-only when the host answers that it holds the write (`appended` or `existing`) does the wallet
+only when the host answers that it holds the write (`appended` or `existing`) and its receipt's
+`payment_tx_hash` is this payment's own hash does the wallet
 authorize the set, broadcast all of it sorted by (account, nonce) and keep reconciling it. Until that authorization
 succeeds the message stays pending, and the next retry repeats the (existing) write and this
 step.
+
+Two devices of one account derive the same operation for a write but can sign different sets
+for it (each from its own view of the coins). When the receipt names another payment, another
+device's payment funded the write, and this one must not be broadcast: that would pay twice for
+one write. The host never broadcast it either: it accepts one attempt per write and broadcasts
+only the payment it accepted with, so none of this device's attempts, answered or not, put its
+bytes on the chain. The message records `fundedElsewhere`; the wallet's `releaseTransactionSet`
+reads the chain and gives the coin back only when no member was authorized or exposed and the
+node holds none of them (`released`); if the chain shows the set after all, the wallet authorizes
+and tracks it (`spent`). Never on the relay's word alone. Otherwise the payment stays claimed,
+the message is delivered with its payment unsettled, and the next retry repeats this step. A
+restart after the release asks the host for the receipt again with the stored bytes, which the
+host answers before it looks at the payment, and hands nothing over. The app shows no amount
+paid by this device for such a write unless it is `spent`.
 
 The message records `submitted` before the bytes first leave the device. A 503 with a
 `group_payment_*` code is the host saying it checked the payment and stored nothing yet: the

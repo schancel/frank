@@ -14,7 +14,10 @@ const NATIVE_CHAIN_IDS: Record<string, bigint> = {
   'ethereum-sepolia': 11155111n,
 }
 
-export function groupWriteTestPayer(chainIdentifier = 'monad-testnet') {
+export function groupWriteTestPayer(
+  chainIdentifier = 'monad-testnet',
+  firstNonce = 0,
+) {
   const key = new Wallet(`0x${'42'.repeat(32)}`)
   const sets = new Map<string, GroupWritePreparedPayment>()
   const events: string[] = []
@@ -32,7 +35,7 @@ export function groupWriteTestPayer(chainIdentifier = 'monad-testnet') {
       const tx = Transaction.from({
         type: 2,
         chainId: NATIVE_CHAIN_IDS[chainIdentifier]!,
-        nonce: sets.size,
+        nonce: firstNonce + sets.size,
         to: hexlify(request.kdf(0, 0)),
         value: request.amountAtomic,
         data: hexlify(request.calldata!),

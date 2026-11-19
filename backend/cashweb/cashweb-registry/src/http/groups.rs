@@ -41,7 +41,8 @@ use serde::{Deserialize, Serialize};
 use crate::{
     http::server::RegistryServer,
     store::groups::{
-        parse_group_id_hex, GroupEpochFrame, GroupError, GroupStore, StoredGroupMessage,
+        parse_group_id_hex, GroupAppendOutcome, GroupEpochFrame, GroupError, GroupStore,
+        StoredGroupMessage,
     },
 };
 
@@ -1037,7 +1038,7 @@ async fn put_group_message_impl(
         .await
     };
     match receipt {
-        Ok(Some(message)) => return local_write_response(false, message),
+        Ok(Some(outcome)) => return local_write_response(outcome),
         Ok(None) => {}
         Err(e) => return group_error_response(e),
     }
@@ -1078,7 +1079,7 @@ async fn put_group_message_impl(
                 .await
             };
             return match refused {
-                Ok(outcome) => local_write_response(false, outcome.message),
+                Ok(outcome) => local_write_response(outcome),
                 Err(e) => group_error_response(e),
             };
         }
@@ -1109,10 +1110,26 @@ async fn put_group_message_impl(
     if outcome.appended {
         writes.broadcast(&group_id, &verified).await;
     }
-    local_write_response(outcome.appended, outcome.message)
+    local_write_response(outcome)
 }
 
-fn local_write_response(appended: bool, message: StoredGroupMessage) -> Response {
+/// The answer to a write the host holds: its original receipt and the payment that funded it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupWriteReceipt {
+    #[serde(flatten)]
+    pub message: StoredGroupMessage,
+    /// `0x`-prefixed lowercase hex Keccak256 of the signed transaction recorded as this write's
+    /// payment. A writer whose own payment has another hash did not fund the write: the host
+    /// never broadcasts that payment, and neither must the writer.
+    pub payment_tx_hash: String,
+}
+
+fn local_write_response(outcome: GroupAppendOutcome) -> Response {
+    let GroupAppendOutcome {
+        message,
+        appended,
+        payment_tx_hash,
+    } = outcome;
     (
         StatusCode::OK,
         [
@@ -1125,7 +1142,10 @@ fn local_write_response(appended: bool, message: StoredGroupMessage) -> Response
                 HeaderValue::from_static(if appended { "appended" } else { "existing" }),
             ),
         ],
-        Json(message),
+        Json(GroupWriteReceipt {
+            message,
+            payment_tx_hash: format!("0x{}", hex::encode(payment_tx_hash)),
+        }),
     )
         .into_response()
 }
@@ -2569,6 +2589,74 @@ mod tests {
             row
         );
         assert_eq!(store.list_messages(&id, 0, 10).unwrap(), vec![row]);
+        task.abort();
+    }
+
+    /// Two devices of one account sign different payments for one write. The receipt names the
+    /// payment that funded it, so the second device learns its own payment did not.
+    #[tokio::test]
+    async fn every_receipt_names_the_payment_recorded_for_the_write() {
+        use sha3::{Digest, Keccak256};
+        let tx_hash = |payment: &GroupWritePaymentWire| {
+            format!(
+                "0x{}",
+                hex::encode(Keccak256::digest(
+                    hex::decode(&payment.raw_transaction).unwrap()
+                ))
+            )
+        };
+        let store = GroupStore::new_temporary();
+        let (id, write_sk) = hosted_group(&store, 7);
+        let (host, task) = spawn_group_router(store.clone()).await;
+        let url = format!("{host}/groups/{id}/messages");
+        let message = sealed(&id, &write_sk, 1);
+        let first = paid_for(&host, &message);
+        // The other device's payment for the same write: other bytes, so another hash.
+        let second = GroupWriteRequest {
+            envelope: message.clone(),
+            payment: Some(payment_tx(
+                10143,
+                TEST_PAYEE,
+                TEST_PRICE + 1,
+                "monad-testnet",
+                &canonical(&host),
+                &message,
+            )),
+        };
+        let first_hash = tx_hash(first.payment.as_ref().unwrap());
+        assert_ne!(first_hash, tx_hash(second.payment.as_ref().unwrap()));
+        let receipt = |body: &[u8]| serde_json::from_slice::<GroupWriteReceipt>(body).unwrap();
+
+        let accepted = put_json(url.clone(), None, &first).await;
+        assert_eq!(accepted.headers()[HEADER_GROUP_APPEND], "appended");
+        let accepted = receipt(&accepted.bytes().await.unwrap());
+        assert_eq!(accepted.payment_tx_hash, first_hash);
+        // The second device's write is answered with the original receipt and the first
+        // device's payment, whatever it presented; a retry without a payment gets the same.
+        for request in [
+            second,
+            first,
+            GroupWriteRequest {
+                envelope: message.clone(),
+                payment: None,
+            },
+        ] {
+            let retry = put_json(url.clone(), None, &request).await;
+            assert_eq!(retry.status(), StatusCode::OK);
+            assert_eq!(retry.headers()[HEADER_GROUP_APPEND], "existing");
+            assert_eq!(receipt(&retry.bytes().await.unwrap()), accepted);
+        }
+        // The payment record agrees with the receipt.
+        let recorded = store
+            .payment_record(
+                &hex::decode(first_hash.trim_start_matches("0x"))
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(recorded.server_seq, accepted.message.server_seq);
         task.abort();
     }
 

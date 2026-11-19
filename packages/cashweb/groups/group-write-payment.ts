@@ -22,7 +22,7 @@
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha256.js'
 import { concatBytes } from '@noble/hashes/utils.js'
-import { Transaction, getAddress } from 'ethers'
+import { Transaction, getAddress, keccak256 } from 'ethers'
 import { isCanonicalChainIdentifier } from '../message-items/chain-identifiers'
 import {
   bytesToHex,
@@ -405,6 +405,12 @@ export function assertGroupWritePayment(
   return { network: plan.network, raw_transaction: bytesToHex(rawTransaction) }
 }
 
+/** The hash the hosting relay names a write's payment by (`payment_tx_hash` of its receipt):
+ * `0x`-prefixed lowercase Keccak256 of the signed bytes. */
+export function groupWritePaymentTxHash(payment: GroupWritePaymentWire): string {
+  return keccak256(`0x${payment.raw_transaction}`)
+}
+
 /** What the writer keeps of one write's payment. The plan and the wallet operation that pays it
  * are stored before anything is signed; the signed bytes are stored before they go to the relay.
  * Every attempt of the write replays this, so a retry never pays again. */
@@ -438,6 +444,11 @@ export interface StoredGroupWritePayment {
    * has authorized the set and tracks it as spent. The coin is never released, and the write
    * is retried with the same bytes until a relay holds it. */
   readonly spent?: true
+  /** The relay holds the write, funded by another payment: another device of the account
+   * delivered the same write first with its own payment. This payment is never broadcast; the
+   * wallet gives its coin back (`released`) once the chain shows none of its set, or tracks it
+   * (`spent`) if the chain shows it after all. */
+  readonly fundedElsewhere?: true
   /** The user asked to discard the write and the wallet is reading the chain before it gives
    * the coin back; a restart finishes the discard instead of sending the write. */
   readonly discarding?: true

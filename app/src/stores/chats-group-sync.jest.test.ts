@@ -37,6 +37,7 @@ import {
 import { fetchContactProfile } from '../utils/directory-peer'
 import { createPinia, setActivePinia } from 'pinia'
 import type { AxiosInstance } from 'axios'
+import { keccak256 } from 'ethers'
 import {
   GroupRelayClient,
   GroupWriteDeferredError,
@@ -194,6 +195,7 @@ function createSharedMockGroupRelay() {
           return {
             data: {
               ...row,
+              payment_tx_hash: keccak256(`0x${payment.raw_transaction}`),
             },
           }
         }

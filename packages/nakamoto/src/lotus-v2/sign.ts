@@ -448,6 +448,7 @@ export function signLotusV2Transaction(params: {
     outputs: params.outputs,
   }
   const coins = params.inputs.map(spend => spend.coin)
+  const operands: Uint8Array[] = []
   const inputs: LotusV2Input[] = unsigned.map((input, i) => {
     const spend = params.inputs[i] as LotusV2Spend
     const mode = spend.mode ?? 0
@@ -457,6 +458,7 @@ export function signLotusV2Transaction(params: {
       mode,
     })
     const operand = lotusV2SignatureOperand(spend.signer.sign(message), mode)
+    operands.push(operand)
     const witness: LotusV2BranchWitness = isLegacySpend(spend)
       ? {
           script: new Uint8Array(0),
@@ -471,6 +473,26 @@ export function signLotusV2Transaction(params: {
     return { ...input, witnesses: [witness] }
   })
   const transaction: LotusV2Transaction = { ...draft, inputs }
+  // Every signature is checked against the finished transaction before it is
+  // returned: a signer that produced a wrong signature never yields bytes.
+  params.inputs.forEach((spend, i) => {
+    if (isLegacySpend(spend)) {
+      verifyLotusV2LegacyP2pkh(chain, transaction, coins, i)
+      return
+    }
+    const operand = operands[i] as Uint8Array
+    if (
+      !verifyLotusV2Signature(
+        chain,
+        transaction,
+        coins,
+        { inputIndex: i, witnessIndex: 0 },
+        operand,
+        spend.template.publicKey,
+      )
+    )
+      throw new LotusV2FormatError(`input ${i} signature does not verify`)
+  })
   const ids = lotusV2TransactionIdentities(chain, transaction)
   return {
     transaction,

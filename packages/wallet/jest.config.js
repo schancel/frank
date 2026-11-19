@@ -48,4 +48,6 @@ module.exports = {
   },
   testPathIgnorePatterns: ['/node_modules/'],
   transformIgnorePatterns: ['/node_modules/(?!superjson/|copy-anything/|is-what/)'],
+  // Under FRANK_REQUIRE_NODES=1, fails a run that skipped a test or ran none.
+  ...require('../../scripts/jest/require-nodes-reporter.cjs').requireNodesReporters(),
 }

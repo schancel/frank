@@ -4,9 +4,13 @@
  * unless FRANK_REQUIRE_NODES=1 is set, when it fails. So the suite itself guarantees it ran, and
  * this check only needs every tracked anvil suite (`*.anvil.*.ts`) and regtest suite
  * (`*.regtest.jest.test.ts`) under app/ and packages/ to be:
- *   - named by a workflow step that sets FRANK_REQUIRE_NODES=1 and runs it with
- *     `yarn workspace <package> <script>`, where that package's script runs jest, and
+ *   - named by a workflow step that sets FRANK_REQUIRE_NODES=1, has no `if:`, and runs it with
+ *     `yarn workspace <package> <script>` (not behind a `#`), where that package's script runs
+ *     jest, and
  *   - free of its own NOT RUN skip, so the shared decision is the only one.
+ * What the command line does to the run itself (`-t`, an ignore pattern, a `.skip`) is caught when
+ * it runs: under FRANK_REQUIRE_NODES=1 scripts/jest/require-nodes-reporter.cjs fails a run that
+ * skipped a test or ran none.
  */
 import { execFileSync } from 'child_process'
 import { existsSync, readdirSync, readFileSync } from 'fs'
@@ -30,7 +34,10 @@ for (const dir of ['app', ...readdirSync(join(repo, 'packages')).map(name => `pa
   packages.set(name, { dir, scripts: scripts ?? {} })
 }
 
-/** The steps of every workflow that set FRANK_REQUIRE_NODES=1, each as its own block of lines. */
+/**
+ * The steps of every workflow that set FRANK_REQUIRE_NODES=1, each as its own block of lines. A
+ * block ends where the step does: at the next line indented less than a step (a new job).
+ */
 const requiringSteps = readdirSync(workflowsDir)
   .filter(name => /\.ya?ml$/.test(name))
   .flatMap(name =>
@@ -38,6 +45,7 @@ const requiringSteps = readdirSync(workflowsDir)
       .split(/^\s*- (?=name:|run:|uses:)/m)
       .slice(1),
   )
+  .map(block => block.split(/^(?= {0,5}\S)/m)[0])
   .filter(block => /^\s*FRANK_REQUIRE_NODES: ["']?1["']?\s*$/m.test(block))
 
 const suites = execFileSync(
@@ -60,7 +68,8 @@ const named = new Set<string>()
 for (const block of requiringSteps) {
   for (const line of block.split('\n')) {
     const match = line.match(/yarn workspace ([@\w/-]+) ([\w:-]+)(\s.*)?$/)
-    if (!match) continue
+    // A `#` before the command makes it a comment, which runs nothing.
+    if (!match || line.slice(0, match.index).includes('#')) continue
     const pkg = packages.get(match[1])
     if (!pkg || !/^jest\b/.test(pkg.scripts[match[2]] ?? '')) continue
     // A bare name, or a `--testMatch '<rootDir>/...'` path.
@@ -92,6 +101,10 @@ describe('the suites on a real node that hosted CI runs', () => {
       expect(named.has(suite)).toBe(true)
     },
   )
+
+  it('no step that sets FRANK_REQUIRE_NODES=1 has an `if:`, which could keep it from running', () => {
+    expect(requiringSteps.filter(block => /^\s*if:/m.test(block))).toEqual([])
+  })
 
   it.each(suites)('%s has no NOT RUN skip of its own', suite => {
     expect(readFileSync(join(repo, suite), 'utf8')).not.toMatch(/['"`]NOT RUN/)

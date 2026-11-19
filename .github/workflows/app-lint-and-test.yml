@@ -84,7 +84,7 @@ jobs:
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
-          ANVIL_BIN="$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-parallel-send.anvil.jest.test.ts
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-parallel-send.anvil.jest.test.ts
       # A stealth payment and its stamp stay within the fee the user approved, on a real node.
       - name: Stealth payment fee bound on a real EVM node (anvil)
         env:

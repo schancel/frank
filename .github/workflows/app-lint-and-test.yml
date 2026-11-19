@@ -43,6 +43,15 @@ jobs:
       - run: yarn install
       - run: yarn lint
       - run: yarn test:unit:ci
+      # The app's anvil suite also runs inside test:unit:ci, which finds the hoisted anvil package
+      # on its own; here it is named and handed the binary, and the step fails if the binary is
+      # missing, so the suite can never be silently skipped.
+      - name: Outgoing stealth payments on a real EVM node (anvil)
+        working-directory: .
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace frank test:unit:ci src/utils/outgoing-stealth-payments.anvil.jest.test.ts
 
   wallet-monad-chain:
     runs-on: ubuntu-latest
@@ -55,7 +64,7 @@ jobs:
       # Every name below must be a file that exists: jest treats a name as a filter, so a
       # stale one runs nothing and the job stays green (`ci-payment-suites.jest.test.ts` checks).
       - name: Wallet EVM-chain regression
-        run: yarn workspace @frank/wallet test --ci --runInBand chain/evm-chain.jest.test.ts chain/evm-parallel-send.jest.test.ts chain/outgoing-message-store.jest.test.ts storage/outgoing-message-store-boundary.jest.test.ts chain/evm-recorded-funding-recovery.jest.test.ts chain/evm-shared-canonical-callers.jest.test.ts evm-transaction-set-preparer.jest.test.ts evm-transaction-set-reservations.jest.test.ts evm-wallet-coin-list.jest.test.ts topic-clients.jest.test.ts chain/canonical-dm-message-id.jest.test.ts chain/evm-contract-call-composition.jest.test.ts evm-spend-spacing.jest.test.ts evm-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts ci-payment-suites.jest.test.ts wallet-failure.jest.test.ts wallet-failure-boundary.jest.test.ts evm-rpc-failure.jest.test.ts evm-provider-response-failure.jest.test.ts evm-provider.jest.test.ts evm-transaction-set-runtime.jest.test.ts evm-spend-rule-head.jest.test.ts utxo-wallet.jest.test.ts
+        run: yarn workspace @frank/wallet test --ci --runInBand chain/evm-chain.jest.test.ts chain/evm-parallel-send.jest.test.ts chain/outgoing-message-store.jest.test.ts storage/outgoing-message-store-boundary.jest.test.ts chain/evm-recorded-funding-recovery.jest.test.ts chain/evm-shared-canonical-callers.jest.test.ts evm-transaction-set-preparer.jest.test.ts evm-transaction-set-reservations.jest.test.ts evm-wallet-coin-list.jest.test.ts topic-clients.jest.test.ts chain/canonical-dm-message-id.jest.test.ts chain/evm-contract-call-composition.jest.test.ts evm-spend-spacing.jest.test.ts evm-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts ci-payment-suites.jest.test.ts ci-anvil-suites.jest.test.ts wallet-failure.jest.test.ts wallet-failure-boundary.jest.test.ts evm-rpc-failure.jest.test.ts evm-provider-response-failure.jest.test.ts evm-provider.jest.test.ts evm-transaction-set-runtime.jest.test.ts evm-spend-rule-head.jest.test.ts utxo-wallet.jest.test.ts
       - name: Durable native operation and canonical inclusion regression
         run: yarn workspace @frank/wallet test --ci --runInBand storage/evm-native-operation-journal.jest.test.ts chain/evm-legacy-consolidator.jest.test.ts chain/evm-contract-call.jest.test.ts chain/native-reserve-support.jest.test.ts evm-transaction-set-submission.jest.test.ts chain/evm-refused-resign.jest.test.ts
       # Typed wallet custody and owned balance, the user's reconcile pass, blackjack hands and
@@ -108,9 +117,39 @@ jobs:
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand evm-archived-own-move-recovery.anvil.jest.test.ts evm-exposed-successor-recovery.anvil.jest.test.ts evm-nonce-consumer.anvil.jest.test.ts
+      # Dating sends by their blocks, a native transfer seen while its block is made, a reverted
+      # set member, restoring from a seed, and a received payment on a pruned node.
+      - name: Wallet chain observation on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-block-times.anvil.jest.test.ts chain/evm-native-observe.anvil.jest.test.ts chain/evm-reverted-member.anvil.jest.test.ts chain/evm-seed-restore.anvil.jest.test.ts chain/received-payment-pruned.anvil.jest.test.ts
+
+  # Another device of the same account spending a message's coin at the same moment, and native
+  # stamp payment recovery, on a real EVM node (anvil). Several minutes of anvil play, so its own job beside the others.
+  # Each step fails if the binary is missing, so neither suite can be silently skipped here.
+  wallet-cross-device-recovery:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions/setup-node@v2
+        with:
+          node-version: "26"
+      - run: yarn install
+      - name: Cross-device spend collisions on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/cross-device-collision.anvil.jest.test.ts
+      - name: Native stamp recovery on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/native-stamp-recovery.anvil.jest.test.ts
 
   # GenericHTLC and StateChannel on a real EVM node (anvil), and the wallet's HTLC encoders,
-  # reader, game escrow and table buy-in escrow against the compiled artifact. The step fails
+  # reader, game escrow, table buy-in escrow, and the swap lock resume and expired-swap
+  # cancel paths against the compiled artifact. The step fails
   # if the binary is missing, so no anvil suite can be silently skipped here.
   contracts-and-htlc:
     runs-on: ubuntu-latest
@@ -126,7 +165,7 @@ jobs:
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           export ANVIL_BIN="$PWD/$ANVIL_BIN"
           yarn workspace @frank/contracts test --ci --runInBand
-          yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts table-escrow.anvil.jest.test.ts table-join.jest.test.ts table-preimage.jest.test.ts
+          yarn workspace @frank/wallet test --ci --runInBand swap-escrow.jest.test.ts swap-escrow.anvil.jest.test.ts game-escrow.jest.test.ts table-escrow.anvil.jest.test.ts table-join.jest.test.ts table-preimage.jest.test.ts swap/htlc-lock-resume.anvil.jest.test.ts swap/swap-expired-cancel.anvil.jest.test.ts swap/swap-expired-background-cancel.anvil.jest.test.ts
 
   # Poker and liar's dice buy-ins held in GenericHTLC on a real EVM node (anvil): real player
   # wallets and the real table bots lock, join, play, pay out and refund. Its own job, beside

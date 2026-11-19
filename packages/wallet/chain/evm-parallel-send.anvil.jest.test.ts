@@ -12,12 +12,12 @@
  * the others not at all, so both broadcasters are exercised.
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
+ * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN, or fails
+ * under FRANK_REQUIRE_NODES=1.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
+import { join } from 'path'
 import { JsonRpcProvider, Transaction, Wallet, hexlify } from 'ethers'
 import { toHex } from '@frank/codec'
 import { restoreCanonicalRequest } from '@frank/cashweb/relay/canonical-dm-transport'
@@ -42,6 +42,7 @@ import { nativeMemberSuperseded } from '../storage/evm-native-operation-journal'
 import { EVM_COIN_LIST_NAMESPACE, type StoredEvmListCoin } from '../evm-coin-list'
 import { LevelRecordStore } from '../storage/evm-coin-store'
 import { walletStateLocation, evmWalletStateOwner } from '../storage/wallet-state-location'
+import { anvilBinary, findAnvil, nodeSuiteReady } from '../node-binaries.testutil'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -60,26 +61,6 @@ jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN))
-    return process.env.ANVIL_BIN
-  try {
-    const root = dirname(
-      dirname(require.resolve('@foundry-rs/anvil/package.json')),
-    )
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(
-      root,
-      `anvil-${process.platform}-${arch}`,
-      'bin',
-      'anvil',
-    )
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -105,12 +86,7 @@ const ID = (round: number, n: number) =>
     .padStart(12, '0')}`
 
 const anvilBin = findAnvil()
-if (!anvilBin)
-  // eslint-disable-next-line no-console
-  console.warn(
-    'NOT RUN: monad-parallel-send.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.',
-  )
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('evm-parallel-send.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 
 suite('ten paid messages sent together on a real EVM node (anvil)', () => {
   jest.setTimeout(300_000)

@@ -5,33 +5,18 @@
  *
  * Needs a Chronik-enabled `bitcoind` (FRANK_BITCOIN_ABC_BIN_DIR, or `yarn --cwd packages/bot
  * regtest:fetch`) and an `anvil` (ANVIL_BIN, the `@foundry-rs/anvil` package, or PATH). Without
- * them the suite reports itself as NOT RUN.
+ * them the suite reports itself as NOT RUN, or fails under FRANK_REQUIRE_NODES=1.
  */
-import { execFile, spawnSync } from 'child_process'
-import { existsSync } from 'fs'
-import { dirname, join, resolve } from 'path'
+import { execFile } from 'child_process'
+import { resolve } from 'path'
 
-import { availableBitcoinAbc } from './bitcoin-abc'
+import { anvilBinary, findAnvil, nodeSuiteReady } from '@frank/wallet/node-binaries.testutil'
 
-function anvilAvailable(): boolean {
-  if (process.env.ANVIL_BIN) return existsSync(process.env.ANVIL_BIN)
-  try {
-    const root = dirname(dirname(require.resolve('@foundry-rs/anvil/package.json')))
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    if (existsSync(join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil'))) return true
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0
-}
+import { availableBitcoinAbc, bitcoinAbcBinary } from './bitcoin-abc'
 
-const ready = Boolean(availableBitcoinAbc()) && anvilAvailable()
-if (!ready)
-  // eslint-disable-next-line no-console
-  console.warn(
-    'NOT RUN: htlc-swap.regtest needs a Chronik-enabled bitcoind (FRANK_BITCOIN_ABC_BIN_DIR or `yarn --cwd packages/bot regtest:fetch`) and anvil (ANVIL_BIN).',
-  )
-const suite = ready ? describe : describe.skip
+const suite = nodeSuiteReady('htlc-swap.regtest', [bitcoinAbcBinary(availableBitcoinAbc()), anvilBinary(findAnvil())])
+  ? describe
+  : describe.skip
 
 suite('HTLC swap runner on xec-regtest and anvil', () => {
   it('swaps, refunds, survives restarts without a duplicate spend, and hands over between devices', async () => {

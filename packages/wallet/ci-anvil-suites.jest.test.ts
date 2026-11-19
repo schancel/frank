@@ -1,15 +1,12 @@
 /**
- * A suite on a real node skips itself (prints NOT RUN and passes) when it finds no node binary,
- * so a suite that hosted CI does not name, or names in a step that has no binary, is silently
- * gone. Every tracked anvil suite (`*.anvil.*.ts`) and regtest suite (`*.regtest.jest.test.ts`)
- * under app/ and packages/ must be named by a workflow step that:
- *   - finds each binary the suite needs and fails if it is missing
- *     (`test -x "$ANVIL_BIN" || { ...; exit 1; }`, and for a Chronik bitcoind
- *     `test -x "$BITCOIND" || { ...; exit 1; }`),
- *   - hands it to the command (ANVIL_BIN, FRANK_BITCOIN_ABC_BIN_DIR), and
- *   - runs it with `yarn workspace <package> <script>`, where that package's script runs jest.
- * A suite needs anvil if it is an anvil suite or reads ANVIL_BIN, and a bitcoind if it uses
- * `availableBitcoinAbc`.
+ * A suite on a real node (anvil, a Chronik bitcoind) decides whether it can run through
+ * `nodeSuiteReady` (node-binaries.testutil.ts): without its binary it reports NOT RUN and skips,
+ * unless FRANK_REQUIRE_NODES=1 is set, when it fails. So the suite itself guarantees it ran, and
+ * this check only needs every tracked anvil suite (`*.anvil.*.ts`) and regtest suite
+ * (`*.regtest.jest.test.ts`) under app/ and packages/ to be:
+ *   - named by a workflow step that sets FRANK_REQUIRE_NODES=1 and runs it with
+ *     `yarn workspace <package> <script>`, where that package's script runs jest, and
+ *   - free of its own NOT RUN skip, so the shared decision is the only one.
  */
 import { execFileSync } from 'child_process'
 import { existsSync, readdirSync, readFileSync } from 'fs'
@@ -33,14 +30,15 @@ for (const dir of ['app', ...readdirSync(join(repo, 'packages')).map(name => `pa
   packages.set(name, { dir, scripts: scripts ?? {} })
 }
 
-/** The steps of every workflow, each as its own block of lines. */
-const steps = readdirSync(workflowsDir)
+/** The steps of every workflow that set FRANK_REQUIRE_NODES=1, each as its own block of lines. */
+const requiringSteps = readdirSync(workflowsDir)
   .filter(name => /\.ya?ml$/.test(name))
   .flatMap(name =>
     readFileSync(join(workflowsDir, name), 'utf8')
       .split(/^\s*- (?=name:|run:|uses:)/m)
       .slice(1),
   )
+  .filter(block => /^\s*FRANK_REQUIRE_NODES: ["']?1["']?\s*$/m.test(block))
 
 const suites = execFileSync(
   'git',
@@ -57,72 +55,45 @@ const suites = execFileSync(
   .split('\0')
   .filter(Boolean)
 
-function needs(suite: string): { anvil: boolean; bitcoind: boolean } {
-  const source = readFileSync(join(repo, suite), 'utf8')
-  return {
-    anvil: /\.anvil\./.test(suite) || source.includes('ANVIL_BIN'),
-    bitcoind: source.includes('availableBitcoinAbc'),
-  }
-}
-
-/** The check fails the step: `test -x "$X" || { ... exit 1; }`, not `|| true`. */
-const failingCheck = (block: string, variable: string) =>
-  new RegExp(`test -x "\\$${variable}" \\|\\| \\{[^}]*\\bexit 1;? *\\}`).test(block)
-
-/** The binary reaches the command: set on its line, or exported earlier in the step. */
-const handed = (block: string, line: string, variable: string) =>
-  new RegExp(`\\b${variable}=\\S`).test(line) || new RegExp(`export ${variable}=`).test(block)
-
-/** Each suite, with the requirements of the steps that name it. */
-const coverage = new Map<string, { anvil: boolean; bitcoind: boolean }[]>()
-for (const block of steps) {
-  const anvil = failingCheck(block, 'ANVIL_BIN')
-  const bitcoind = failingCheck(block, 'BITCOIND')
+/** The suites a `yarn workspace <package> <jest script> ...` line in a requiring step names. */
+const named = new Set<string>()
+for (const block of requiringSteps) {
   for (const line of block.split('\n')) {
     const match = line.match(/yarn workspace ([@\w/-]+) ([\w:-]+)(\s.*)?$/)
     if (!match) continue
     const pkg = packages.get(match[1])
     if (!pkg || !/^jest\b/.test(pkg.scripts[match[2]] ?? '')) continue
-    const names = (match[3] ?? '').match(/[\w./-]+\.(anvil|regtest)\.[\w.]+\.ts/g) ?? []
+    // A bare name, or a `--testMatch '<rootDir>/...'` path.
+    const names = ((match[3] ?? '').match(/[\w./-]+\.(anvil|regtest)\.[\w.]+\.ts/g) ?? []).map(name =>
+      name.replace(/^\//, ''),
+    )
     for (const suite of suites) {
       if (!suite.startsWith(`${pkg.dir}/`)) continue
       const inPackage = relative(pkg.dir, suite)
-      const named = names.some(name => {
-        const bare = name.replace(/^\//, '')
-        return inPackage === bare || inPackage.endsWith(`/${bare}`)
-      })
-      if (!named) continue
-      coverage.set(suite, [
-        ...(coverage.get(suite) ?? []),
-        {
-          anvil: anvil && handed(block, line, 'ANVIL_BIN'),
-          bitcoind: bitcoind && handed(block, line, 'FRANK_BITCOIN_ABC_BIN_DIR'),
-        },
-      ])
+      if (names.some(name => inPackage === name || inPackage.endsWith(`/${name}`))) named.add(suite)
     }
   }
 }
 
 describe('the suites on a real node that hosted CI runs', () => {
-  it('finds the tracked suites', () => {
+  it('finds the tracked suites and the steps that require nodes', () => {
     expect(suites.length).toBeGreaterThan(5)
+    expect(requiringSteps.length).toBeGreaterThan(0)
   })
 
   it.each(Object.keys(NOT_IN_CI))('%s, listed as not run in CI, exists and is unnamed', suite => {
     expect(suites).toContain(suite)
-    expect(coverage.has(suite)).toBe(false)
+    expect(named.has(suite)).toBe(false)
   })
 
   it.each(suites.filter(suite => !(suite in NOT_IN_CI)))(
-    '%s is named by a step that requires every binary it needs',
+    '%s is named by a step that sets FRANK_REQUIRE_NODES=1',
     suite => {
-      const need = needs(suite)
-      const steps = coverage.get(suite) ?? []
-      expect(steps.length).toBeGreaterThan(0)
-      for (const step of steps) {
-        if (need.anvil) expect(step.anvil).toBe(true)
-        if (need.bitcoind) expect(step.bitcoind).toBe(true)
-      }
+      expect(named.has(suite)).toBe(true)
     },
   )
+
+  it.each(suites)('%s has no NOT RUN skip of its own', suite => {
+    expect(readFileSync(join(repo, suite), 'utf8')).not.toMatch(/['"`]NOT RUN/)
+  })
 })

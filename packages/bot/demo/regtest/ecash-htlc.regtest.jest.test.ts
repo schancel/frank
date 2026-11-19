@@ -4,20 +4,18 @@
  * that file holds every check and its own description.
  *
  * Needs a Chronik-enabled `bitcoind`: FRANK_BITCOIN_ABC_BIN_DIR, or the verified release fetched
- * by `yarn --cwd packages/bot regtest:fetch`. Without one the suite reports itself as NOT RUN.
+ * by `yarn --cwd packages/bot regtest:fetch`. Without one the suite reports itself as NOT RUN,
+ * or fails under FRANK_REQUIRE_NODES=1.
  */
 import { execFile } from 'child_process'
 import { resolve } from 'path'
 
-import { availableBitcoinAbc } from './bitcoin-abc'
+import { nodeSuiteReady } from '@frank/wallet/node-binaries.testutil'
+
+import { availableBitcoinAbc, bitcoinAbcBinary } from './bitcoin-abc'
 
 const bitcoind = availableBitcoinAbc()
-if (!bitcoind)
-  // eslint-disable-next-line no-console
-  console.warn(
-    'NOT RUN: ecash-htlc.regtest needs a Chronik-enabled bitcoind (set FRANK_BITCOIN_ABC_BIN_DIR or run `yarn --cwd packages/bot regtest:fetch`).',
-  )
-const suite = bitcoind ? describe : describe.skip
+const suite = nodeSuiteReady('ecash-htlc.regtest', [bitcoinAbcBinary(bitcoind)]) ? describe : describe.skip
 
 suite('eCash HTLC on a real xec-regtest node', () => {
   it('funds through the native-operation path, claims, refuses bad preimages, refunds after T_A, and reveals via Chronik', async () => {

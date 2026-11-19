@@ -16,12 +16,12 @@
  * call, at the deployment's router address) and the relay (offline stand-in).
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
+ * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN, or fails
+ * under FRANK_REQUIRE_NODES=1.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
+import { join } from 'path'
 import { JsonRpcProvider, Transaction, Wallet } from 'ethers'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
 import {
@@ -47,6 +47,7 @@ import {
   summarizeEvmNativeOperation,
 } from '../chain/evm-native-operation-status'
 import type { WalletSyncItem } from '@frank/cashweb/types/messages'
+import { anvilBinary, findAnvil, nodeSuiteReady } from '../node-binaries.testutil'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -64,21 +65,6 @@ jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('../chain/canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN))
-    return process.env.ANVIL_BIN
-  try {
-    const root = dirname(
-      dirname(require.resolve('@foundry-rs/anvil/package.json')),
-    )
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil')
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -100,12 +86,7 @@ const USDC = findToken(deployment, 'USDC')!
 const route = routesFor(deployment, MON, USDC)[0]!
 
 const anvilBin = findAnvil()
-if (!anvilBin)
-  // eslint-disable-next-line no-console
-  console.warn(
-    'NOT RUN: swap-expired-background-cancel.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.',
-  )
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('swap-expired-background-cancel.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 
 suite('the wallet’s own background pass cancels a swap past its deadline instead of re-sending it (anvil)', () => {
   jest.setTimeout(300_000)

@@ -45,9 +45,13 @@ jobs:
       - run: yarn test:unit:ci
       # The app's anvil suite also runs inside test:unit:ci, which finds the hoisted anvil package
       # on its own; here it is named and handed the binary, and the step fails if the binary is
-      # missing, so the suite can never be silently skipped.
+      # missing, so the suite can never be silently skipped. Every step that runs a suite on a real
+      # node sets FRANK_REQUIRE_NODES=1: a suite that cannot find its node then fails instead of
+      # reporting NOT RUN (`ci-anvil-suites.jest.test.ts` checks every such suite is in one).
       - name: Outgoing stealth payments on a real EVM node (anvil)
         working-directory: .
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -64,7 +68,7 @@ jobs:
       # Every name below must be a file that exists: jest treats a name as a filter, so a
       # stale one runs nothing and the job stays green (`ci-payment-suites.jest.test.ts` checks).
       - name: Wallet EVM-chain regression
-        run: yarn workspace @frank/wallet test --ci --runInBand chain/evm-chain.jest.test.ts chain/evm-parallel-send.jest.test.ts chain/outgoing-message-store.jest.test.ts storage/outgoing-message-store-boundary.jest.test.ts chain/evm-recorded-funding-recovery.jest.test.ts chain/evm-shared-canonical-callers.jest.test.ts evm-transaction-set-preparer.jest.test.ts evm-transaction-set-reservations.jest.test.ts evm-wallet-coin-list.jest.test.ts topic-clients.jest.test.ts chain/canonical-dm-message-id.jest.test.ts chain/evm-contract-call-composition.jest.test.ts evm-spend-spacing.jest.test.ts evm-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts ci-payment-suites.jest.test.ts ci-anvil-suites.jest.test.ts wallet-failure.jest.test.ts wallet-failure-boundary.jest.test.ts evm-rpc-failure.jest.test.ts evm-provider-response-failure.jest.test.ts evm-provider.jest.test.ts evm-transaction-set-runtime.jest.test.ts evm-spend-rule-head.jest.test.ts utxo-wallet.jest.test.ts
+        run: yarn workspace @frank/wallet test --ci --runInBand chain/evm-chain.jest.test.ts chain/evm-parallel-send.jest.test.ts chain/outgoing-message-store.jest.test.ts storage/outgoing-message-store-boundary.jest.test.ts chain/evm-recorded-funding-recovery.jest.test.ts chain/evm-shared-canonical-callers.jest.test.ts evm-transaction-set-preparer.jest.test.ts evm-transaction-set-reservations.jest.test.ts evm-wallet-coin-list.jest.test.ts topic-clients.jest.test.ts chain/canonical-dm-message-id.jest.test.ts chain/evm-contract-call-composition.jest.test.ts evm-spend-spacing.jest.test.ts evm-stamp-client.jest.test.ts storage/stamp-attempt-journal.jest.test.ts level-declaration.jest.test.ts ci-payment-suites.jest.test.ts ci-anvil-suites.jest.test.ts node-binaries.jest.test.ts wallet-failure.jest.test.ts wallet-failure-boundary.jest.test.ts evm-rpc-failure.jest.test.ts evm-provider-response-failure.jest.test.ts evm-provider.jest.test.ts evm-transaction-set-runtime.jest.test.ts evm-spend-rule-head.jest.test.ts utxo-wallet.jest.test.ts
       - name: Durable native operation and canonical inclusion regression
         run: yarn workspace @frank/wallet test --ci --runInBand storage/evm-native-operation-journal.jest.test.ts chain/evm-legacy-consolidator.jest.test.ts chain/evm-contract-call.jest.test.ts chain/native-reserve-support.jest.test.ts evm-transaction-set-submission.jest.test.ts chain/evm-refused-resign.jest.test.ts
       # Typed wallet custody and owned balance, the user's reconcile pass, blackjack hands and
@@ -75,12 +79,16 @@ jobs:
       # contracts workspace installs). The step fails if the binary is missing, so the suite
       # can never be silently skipped here.
       - name: Parallel sends on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           ANVIL_BIN="$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/evm-parallel-send.anvil.jest.test.ts
       # A stealth payment and its stamp stay within the fee the user approved, on a real node.
       - name: Stealth payment fee bound on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -99,6 +107,8 @@ jobs:
           node-version: "26"
       - run: yarn install
       - name: Received payments on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -106,6 +116,8 @@ jobs:
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand --testMatch '<rootDir>/chain/received-payments.anvil.integration.ts'
       # Deposits from outside Frank, found by reading the node: History's "Received from 0x…".
       - name: Deposits from outside Frank on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -113,6 +125,8 @@ jobs:
       # Payment recovery on a real node: an archived own move whose signed bytes still land, an
       # exposed same-account successor, and which of two signed transactions used a nonce.
       - name: Payment recovery on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -120,6 +134,8 @@ jobs:
       # Dating sends by their blocks, a native transfer seen while its block is made, a reverted
       # set member, restoring from a seed, and a received payment on a pruned node.
       - name: Wallet chain observation on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -137,11 +153,15 @@ jobs:
           node-version: "26"
       - run: yarn install
       - name: Cross-device spend collisions on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand chain/cross-device-collision.anvil.jest.test.ts
       - name: Native stamp recovery on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -160,6 +180,8 @@ jobs:
           node-version: "26"
       - run: yarn install
       - name: Contracts and wallet HTLC suites on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -180,6 +202,8 @@ jobs:
           node-version: "26"
       - run: yarn install
       - name: Table buy-in escrow bots on a real EVM node (anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
@@ -215,6 +239,8 @@ jobs:
           path: .regtest-cache
           key: ${{ runner.os }}-bitcoin-abc-${{ hashFiles('packages/bot/demo/regtest/bitcoin-abc.ts') }}
       - name: eCash and HTLC swap regtest suites on real nodes (bitcoind with Chronik, anvil)
+        env:
+          FRANK_REQUIRE_NODES: "1"
         run: |
           BITCOIND="$(cd packages/bot && node --import tsx demo/regtest/bitcoin-abc.ts)"
           test -x "$BITCOIND" || { echo "no Chronik bitcoind from regtest:fetch" >&2; exit 1; }

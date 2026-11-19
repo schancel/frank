@@ -2,11 +2,11 @@
  * execute after a later independent top-up. Real isolated Anvil and durable Level stores.
  * No fabricated exposure, relay, Solonet, funded custody, or product implementation changes.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { readFileSync, existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
+import { readFileSync } from 'fs'
 import { mkdtemp, rm } from 'fs/promises'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
+import { join } from 'path'
 import { tmpdir } from 'os'
 import {
   JsonRpcProvider,
@@ -31,26 +31,7 @@ import {
   EVM_TRANSACTION_SET_SOURCE_ORDER,
   type EvmTransactionSetPolicy,
 } from './evm-transaction-set-types'
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN))
-    return process.env.ANVIL_BIN
-  try {
-    const root = dirname(
-      dirname(require.resolve('@foundry-rs/anvil/package.json'))
-    )
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(
-      root,
-      `anvil-${process.platform}-${arch}`,
-      'bin',
-      'anvil'
-    )
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
+import { anvilBinary, findAnvil, nodeSuiteReady } from './node-binaries.testutil'
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -68,11 +49,7 @@ const signer = (n: number) =>
 const PRICE = 1_000_000_000n
 const FEE = 21_000n * PRICE
 const anvilBin = findAnvil()
-if (!anvilBin)
-  console.warn(
-    'NOT RUN: evm-archived-own-move-recovery.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.',
-  )
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('evm-archived-own-move-recovery.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 suite(
   'archived exposed own move remains executable after independent topup',
   () => {

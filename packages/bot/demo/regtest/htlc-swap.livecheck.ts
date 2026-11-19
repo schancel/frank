@@ -35,11 +35,11 @@
  *      the other for B, which B claims when it is back.
  */
 import assert from 'assert/strict'
-import { fork, spawn, spawnSync, type ChildProcess } from 'child_process'
+import { fork, spawn, type ChildProcess } from 'child_process'
 import { randomBytes } from 'crypto'
-import { existsSync, mkdtempSync, rmSync } from 'fs'
+import { mkdtempSync, rmSync } from 'fs'
 import { tmpdir } from 'os'
-import { dirname, join } from 'path'
+import { join } from 'path'
 
 import { sha256 } from '@noble/hashes/sha256'
 import { ChronikClient } from 'chronik-client'
@@ -63,6 +63,7 @@ import type { HtlcSwapView } from '@frank/swap-protocol/src/htlc-swap-runner'
 import type { DeviceConfig, DeviceInfo } from './htlc-swap.device'
 import { startEcashRegtest, type EcashRegtest } from './ecash-regtest'
 import { freePort, sleep } from './regtest-chain'
+import { findAnvil } from '@frank/wallet/node-binaries.testutil'
 
 const EVM_CHAIN_ID = 20143
 /** monad-regtest's registry minimum gas price (docs/protocol/chains/v1.json). */
@@ -77,19 +78,6 @@ const ETHER = 10n ** 18n
 
 const hex = (value: Uint8Array) => Buffer.from(value).toString('hex')
 const fromHex = (value: string) => new Uint8Array(Buffer.from(value.replace(/^0x/, ''), 'hex'))
-
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN
-  try {
-    const root = dirname(dirname(require.resolve('@foundry-rs/anvil/package.json')))
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil')
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 
 interface Device extends DeviceInfo {
   readonly name: string

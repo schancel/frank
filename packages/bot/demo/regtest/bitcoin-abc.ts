@@ -59,7 +59,7 @@ function checkRuns(bitcoind: string): void {
 /**
  * The `bitcoind` that `ensureBitcoinAbc` would run without downloading anything (an own build in
  * FRANK_BITCOIN_ABC_BIN_DIR, or the verified release already in the cache), or undefined. Test
- * suites use it to report NOT RUN instead of fetching a node.
+ * suites pass it to `nodeSuiteReady` (`bitcoinAbcBinary`) instead of fetching a node.
  */
 export function availableBitcoinAbc(env: Record<string, string | undefined> = process.env): string | undefined {
   if (env.FRANK_BITCOIN_ABC_BIN_DIR) {
@@ -74,6 +74,13 @@ export function availableBitcoinAbc(env: Record<string, string | undefined> = pr
   if (!existsSync(marker) || readFileSync(marker, 'utf8').trim() !== archive.sha256) return undefined
   return join(home, 'bin', 'bitcoind')
 }
+
+/** What `availableBitcoinAbc` returned, as a binary for `nodeSuiteReady` (@frank/wallet/node-binaries.testutil). */
+export const bitcoinAbcBinary = (path: string | undefined) => ({
+  name: 'a Chronik-enabled bitcoind',
+  found: path !== undefined,
+  hint: 'set FRANK_BITCOIN_ABC_BIN_DIR, or run `yarn --cwd packages/bot regtest:fetch`',
+})
 
 /** Returns the path of a runnable `bitcoind`, downloading and verifying the release if needed. */
 export async function ensureBitcoinAbc(

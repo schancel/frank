@@ -9,12 +9,11 @@
  * journal holds nothing for the payment, as on a second device.
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
+ * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN, or fails
+ * under FRANK_REQUIRE_NODES=1.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
 import { JsonRpcProvider, Wallet, keccak256 } from 'ethers'
 import {
   outgoingStealthPayments,
@@ -22,27 +21,12 @@ import {
   type StealthPaymentOwner,
 } from './outgoing-stealth-payments'
 import { sentStealthAssetDetail } from './stealth-transaction-details'
+import {
+  anvilBinary,
+  findAnvil,
+  nodeSuiteReady,
+} from '@frank/wallet/node-binaries.testutil'
 
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN))
-    return process.env.ANVIL_BIN
-  try {
-    const root = dirname(
-      dirname(require.resolve('@foundry-rs/anvil/package.json')),
-    )
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(
-      root,
-      `anvil-${process.platform}-${arch}`,
-      'bin',
-      'anvil',
-    )
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -57,12 +41,11 @@ const DEV_KEY =
 const DIGEST = 'f6'.repeat(32)
 
 const anvilBin = findAnvil()
-if (!anvilBin)
-  // eslint-disable-next-line no-console
-  console.warn(
-    'NOT RUN: outgoing-stealth-payments.anvil needs an anvil binary (set ANVIL_BIN).',
-  )
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('outgoing-stealth-payments.anvil', [
+  anvilBinary(anvilBin),
+])
+  ? describe
+  : describe.skip
 
 suite('a sent payment card on the device that did not send it (anvil)', () => {
   jest.setTimeout(60_000)

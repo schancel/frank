@@ -16,12 +16,11 @@
  * `canonical-two-wallets.testutil`, and the sender submits its payments to the real node itself.
  *
  * Needs an `anvil` binary: `ANVIL_BIN=/path/to/anvil`, or the `@foundry-rs/anvil` package
- * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN.
+ * installed, or `anvil` on PATH. Without one the suite reports itself as NOT RUN, or fails
+ * under FRANK_REQUIRE_NODES=1.
  */
-import { spawn, spawnSync, type ChildProcess } from 'child_process'
-import { existsSync } from 'fs'
+import { spawn, type ChildProcess } from 'child_process'
 import { createServer } from 'net'
-import { dirname, join } from 'path'
 import { JsonRpcProvider, Wallet } from 'ethers'
 import { toHex } from '@frank/codec'
 import type { EvmChainWalletHandle } from '../evm-wallet-handle'
@@ -33,6 +32,7 @@ import { recipientAssetPaymentFromPrepared } from '../message-item-plugins/steal
 import { MonadStampPendingAttemptError } from '../evm-stamp-client'
 import { PAYMENT_NOT_RECEIVED_AFTER_MS } from '../storage/evm-coin-store'
 import type { StealthPaymentIntent } from '../stealth-payment'
+import { anvilBinary, findAnvil, nodeSuiteReady } from '../node-binaries.testutil'
 
 const mockNode = { url: '' }
 jest.mock('../evm-provider', () => {
@@ -47,18 +47,6 @@ jest.mock('@frank/cashweb/relay/mailbox-client', () =>
   require('./canonical-two-wallets.testutil').offlineMailboxModule(),
 )
 
-function findAnvil(): string | undefined {
-  if (process.env.ANVIL_BIN && existsSync(process.env.ANVIL_BIN)) return process.env.ANVIL_BIN
-  try {
-    const root = dirname(dirname(require.resolve('@foundry-rs/anvil/package.json')))
-    const arch = process.arch === 'x64' ? 'amd64' : process.arch
-    const packaged = join(root, `anvil-${process.platform}-${arch}`, 'bin', 'anvil')
-    if (existsSync(packaged)) return packaged
-  } catch {
-    // Not installed as a package.
-  }
-  return spawnSync('anvil', ['--version']).status === 0 ? 'anvil' : undefined
-}
 const freePort = () =>
   new Promise<number>((resolve, reject) => {
     const server = createServer()
@@ -80,10 +68,7 @@ const AMOUNT = 10n ** 18n
 const STAMP = 10n ** 15n
 
 const anvilBin = findAnvil()
-if (!anvilBin)
-  // eslint-disable-next-line no-console
-  console.warn('NOT RUN: received-payment-pruned.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.')
-const suite = anvilBin ? describe : describe.skip
+const suite = nodeSuiteReady('received-payment-pruned.anvil', [anvilBinary(anvilBin)]) ? describe : describe.skip
 
 suite('a verified received payment on a node that no longer serves its blocks (anvil)', () => {
   jest.setTimeout(300_000)

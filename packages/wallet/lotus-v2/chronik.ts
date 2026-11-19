@@ -14,7 +14,7 @@
  */
 import { ChronikClient } from "chronik-client";
 
-import { rpcTxid } from "./native";
+import { rpcTxid } from "./network";
 
 export interface LotusV2IndexedCoin {
   /** Wire-order txid. */

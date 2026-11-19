@@ -42,6 +42,7 @@ import {
   lotusV2PublicKeyTemplate,
   lotusV2SignatureMessage,
   lotusV2TaggedHash,
+  lotusV2TemplatePaymentSize,
   lotusV2TransactionIdentities,
   signLotusV2Transaction,
   verifyLotusV2Signature,
@@ -472,6 +473,25 @@ describe('Lotus v2 transaction building', () => {
         ),
       ).toBe(true)
     })
+  })
+
+  test('the planned size of a keyhash payment is its signed size', () => {
+    const template = lotusV2KeyhashTemplate(xOnly(1))
+    // 16-byte prefix, 181-byte FULL keyhash input, 45-byte output.
+    expect(lotusV2TemplatePaymentSize(template, 1, 1)).toBe(16 + 181 + 45)
+    expect(lotusV2TemplatePaymentSize(template, 1, 1, 1)).toBe(16 + 182 + 45)
+    const signed = signLotusV2Transaction({
+      chain,
+      inputs: [1, 2, 3].map(i => ({
+        prevTxid: new Uint8Array(32).fill(i),
+        prevIndex: 0,
+        coin: keyhashCoin(1, 1000n),
+        template,
+        signer: schnorrSigner(1),
+      })),
+      outputs: [keyhashCoin(2, 100n), keyhashCoin(3, 100n)],
+    })
+    expect(signed.raw.length).toBe(lotusV2TemplatePaymentSize(template, 3, 2))
   })
 
   test('a coin the template cannot spend is refused before signing', () => {

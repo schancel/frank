@@ -71,6 +71,7 @@ export {
   lotusV2OwnInputHash,
   lotusV2SignatureMessage,
   lotusV2SignatureOperand,
+  lotusV2TemplatePaymentSize,
   signLotusV2Transaction,
   verifyLotusV2Signature,
 } from './lotus-v2/sign.js'

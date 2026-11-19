@@ -318,3 +318,39 @@ export function signLotusV2Transaction(params: {
     txhash: ids.txhash,
   }
 }
+
+/**
+ * Exact signed size of a transaction spending `inputCount` one-branch coins
+ * with `template` (no proof siblings) to `outputCount` native one-branch,
+ * one-path outputs. Signatures have a fixed length per mode, so the size is
+ * known before signing.
+ */
+export function lotusV2TemplatePaymentSize(
+  template: LotusV2SignatureTemplate,
+  inputCount: number,
+  outputCount: number,
+  mode: LotusV2SigningMode = 0,
+): number {
+  const input = encodeLotusV2Input({
+    kind: 'spend',
+    prevTxid: new Uint8Array(32),
+    prevIndex: 0,
+    sequence: LOTUS_V2_SEQUENCE_FINAL,
+    pathIndex: 0,
+    witnesses: [
+      {
+        script: template.script,
+        siblings: [],
+        arguments: template.arguments(
+          lotusV2SignatureOperand(new Uint8Array(64), mode),
+        ),
+      },
+    ],
+  }).length
+  const output = encodeLotusV2Output({
+    value: 0n,
+    branches: [new Uint8Array(32)],
+    paths: [[0]],
+  }).length
+  return 16 + inputCount * input + outputCount * output
+}

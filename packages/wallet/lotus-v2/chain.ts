@@ -7,7 +7,7 @@ import { formatBaseUnit, parseBaseUnit } from "../chain/base-unit";
 import type { ChainTransaction, NativeWalletHandle } from "../chain/chain-wallet";
 import { getChainRegistryEntry } from "../chain/chains-registry";
 import type { LotusV2Indexer } from "./chronik";
-import { decodeAddress } from "./native";
+import { lotusV2AddressRoot } from "./network";
 import { LotusV2Wallet, lotusV2NetworkOf, type LotusV2WalletStore } from "./wallet";
 
 export interface LotusV2ChainConfig {
@@ -37,7 +37,7 @@ export function createLotusV2Chain(config: LotusV2ChainConfig): LotusV2Chain {
   const parse = (input: string) => {
     try {
       const text = input.trim().toLowerCase();
-      decodeAddress(network, text);
+      lotusV2AddressRoot(network, text);
       return { raw: text };
     } catch {
       return undefined;

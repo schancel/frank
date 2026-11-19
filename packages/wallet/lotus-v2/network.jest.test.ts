@@ -1,16 +1,13 @@
 import {
-  branchLeaf,
-  decodeAddress,
-  encodeKeyhashAddress,
-  keyhashOf,
-  keyhashProgram,
+  keyhashPaymentSize,
+  lotusV2AddressRoot,
+  lotusV2KeyhashDestination,
   LotusV2UnsupportedNetworkError,
-  nativeTransactionSize,
+  lotusV2XOnlyKey,
   requireLotusV2Network,
-  signNativeTransaction,
+  signKeyhashPayment,
   toHex,
-  xOnlyPublicKey,
-} from "./native";
+} from "./network";
 import {
   LOTUS_V2_DUST_ATOMS,
   type LotusV2Coin,
@@ -39,50 +36,40 @@ const scalar = (n: number) => {
   return secret;
 };
 
-describe("Lotus v2 native codec", () => {
+describe("Lotus v2 wallet boundary over @frank/nakamoto", () => {
   it("reproduces the type-1 address vector of docs/lotus-v2/addresses.md (public scalar 1)", () => {
-    const xOnly = xOnlyPublicKey(scalar(1));
+    const xOnly = lotusV2XOnlyKey(scalar(1));
     expect(toHex(xOnly)).toBe("79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798");
-    const keyhash = keyhashOf(xOnly);
-    expect(toHex(keyhash)).toBe("f9f2a0b353f482f415281da3a00929d08a7d9a6498054f5ef6623b5580e607f7");
-    expect(toHex(branchLeaf(keyhashProgram(keyhash)))).toBe(
-      "84f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb"
-    );
-    const address = encodeKeyhashAddress("regtest", keyhash);
-    expect(address).toBe("rxpi1pl8e2pv6n7jp0g9fgrk36qzff6z98mxnynqz57hhkvga4tq8xqlmsq2859j5u");
-    expect(decodeAddress("regtest", address)).toEqual({
-      type: 1,
-      keyhash: toHex(keyhash),
-      root: "84f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb",
-    });
-    expect(decodeAddress("regtest", address.toUpperCase()).root).toBe(
-      "84f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb"
-    );
+    const destination = lotusV2KeyhashDestination("regtest", xOnly);
+    expect(destination.root).toBe("84f3ac422780d391bc9210fa6e19dc8d0fd2bb1acd390e065c6a0acda9f667bb");
+    expect(destination.address).toBe("rxpi1pl8e2pv6n7jp0g9fgrk36qzff6z98mxnynqz57hhkvga4tq8xqlmsq2859j5u");
+    expect(lotusV2AddressRoot("regtest", destination.address)).toBe(destination.root);
+    expect(lotusV2AddressRoot("regtest", destination.address.toUpperCase())).toBe(destination.root);
   });
 
   it("rejects malformed addresses with the reference reasons", () => {
     const good = "rxpi1pl8e2pv6n7jp0g9fgrk36qzff6z98mxnynqz57hhkvga4tq8xqlmsq2859j5u";
-    expect(() => decodeAddress("regtest", good.slice(0, 10) + good.slice(10).toUpperCase())).toThrow("mixed case");
-    expect(() => decodeAddress("regtest", "ecregtest:qq")).toThrow("unknown prefix");
-    expect(() => decodeAddress("regtest", good.slice(0, -1))).toThrow("bad length");
+    expect(() => lotusV2AddressRoot("regtest", good.slice(0, 10) + good.slice(10).toUpperCase())).toThrow("mixed case");
+    expect(() => lotusV2AddressRoot("regtest", "ecregtest:qq")).toThrow("unknown prefix");
+    expect(() => lotusV2AddressRoot("regtest", good.slice(0, -1))).toThrow("bad length");
     const flipped = good.slice(0, 20) + (good[20] === "q" ? "p" : "q") + good.slice(21);
-    expect(() => decodeAddress("regtest", flipped)).toThrow("bad checksum");
+    expect(() => lotusV2AddressRoot("regtest", flipped)).toThrow("bad checksum");
   });
 
   it("the signed size is exactly what the fee is computed from", () => {
-    const destination = decodeAddress("regtest", encodeKeyhashAddress("regtest", keyhashOf(xOnlyPublicKey(scalar(2)))));
-    const tx = signNativeTransaction({
+    const root = lotusV2KeyhashDestination("regtest", lotusV2XOnlyKey(scalar(2))).root;
+    const tx = signKeyhashPayment({
       network: "regtest",
       inputs: [
         { txid: "11".repeat(32), outIdx: 0, value: 10_000_000n, secret: scalar(1) },
         { txid: "22".repeat(32), outIdx: 3, value: 5_000_000n, secret: scalar(3) },
       ],
       outputs: [
-        { value: 12_000_000n, root: destination.root },
-        { value: 2_999_000n, root: destination.root },
+        { value: 12_000_000n, root },
+        { value: 2_999_000n, root },
       ],
     });
-    expect(tx.size).toBe(nativeTransactionSize(2, 2));
+    expect(tx.size).toBe(keyhashPaymentSize(2, 2));
     expect(tx.raw.length / 2).toBe(tx.size);
   });
 });
@@ -92,13 +79,13 @@ describe("Lotus v2 is regtest-only (owner rule 2026-11-19)", () => {
     for (const network of ["mainnet", "testnet", "devnet", ""]) {
       expect(() => requireLotusV2Network(network)).toThrow(LotusV2UnsupportedNetworkError);
       expect(() =>
-        signNativeTransaction({
+        signKeyhashPayment({
           network: network as "regtest",
           inputs: [{ txid: "11".repeat(32), outIdx: 0, value: 1_000_000n, secret: scalar(1) }],
           outputs: [{ value: 900_000n, root: "22".repeat(32) }],
         })
       ).toThrow(LotusV2UnsupportedNetworkError);
-      expect(() => encodeKeyhashAddress(network as "regtest", new Uint8Array(32))).toThrow(
+      expect(() => lotusV2KeyhashDestination(network as "regtest", lotusV2XOnlyKey(scalar(1)))).toThrow(
         LotusV2UnsupportedNetworkError
       );
     }
@@ -107,14 +94,14 @@ describe("Lotus v2 is regtest-only (owner rule 2026-11-19)", () => {
   it("a well-formed mainnet or testnet address is unsupported; a malformed one is malformed", () => {
     // Mainnet type-0 example from addresses.md.
     const mainnet = "xpi1q80z6tf5zlwd794z4dpe28fehp3qdt2lg8q3jz3mzacmrqw20vseq37xlywnx";
-    expect(() => decodeAddress("regtest", mainnet)).toThrow(LotusV2UnsupportedNetworkError);
+    expect(() => lotusV2AddressRoot("regtest", mainnet)).toThrow(LotusV2UnsupportedNetworkError);
     // The testnet address of the scalar-1 key: the regtest vector's body under the testnet
     // checksum constant (the checksum is the data polymod XOR the prefix's constant).
     const testnet = withPrefix("rxpi1pl8e2pv6n7jp0g9fgrk36qzff6z98mxnynqz57hhkvga4tq8xqlmsq2859j5u", "txpi");
-    expect(() => decodeAddress("regtest", testnet)).toThrow(LotusV2UnsupportedNetworkError);
+    expect(() => lotusV2AddressRoot("regtest", testnet)).toThrow(LotusV2UnsupportedNetworkError);
     // Bodies whose checksum does not hold are malformed whatever their prefix.
-    expect(() => decodeAddress("regtest", "txpi1" + "q".repeat(61))).toThrow("bad checksum");
-    expect(() => decodeAddress("regtest", mainnet.slice(0, -1) + (mainnet.endsWith("x") ? "q" : "x"))).toThrow(
+    expect(() => lotusV2AddressRoot("regtest", "txpi1" + "q".repeat(61))).toThrow("bad checksum");
+    expect(() => lotusV2AddressRoot("regtest", mainnet.slice(0, -1) + (mainnet.endsWith("x") ? "q" : "x"))).toThrow(
       "bad checksum"
     );
   });
@@ -154,7 +141,7 @@ describe("planLotusV2Send", () => {
     state,
     secret: scalar(1),
   });
-  const fee = (inputs: number, outputs: number) => BigInt(nativeTransactionSize(inputs, outputs));
+  const fee = (inputs: number, outputs: number) => BigInt(keyhashPaymentSize(inputs, outputs));
   const value = 1_000_000n;
 
   it("pays change when the remainder is at least dust", () => {

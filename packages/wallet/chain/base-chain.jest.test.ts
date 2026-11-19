@@ -1,4 +1,4 @@
-import { LotusV2UnsupportedNetworkError } from "../lotus-v2/native";
+import { LotusV2UnsupportedNetworkError } from "../lotus-v2/network";
 import { resolveBaseChain, UnsupportedBaseChainError } from "./base-chain";
 import { openRelayUtxoChain } from "./utxo-family";
 

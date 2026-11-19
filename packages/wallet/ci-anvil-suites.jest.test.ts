@@ -25,6 +25,8 @@ const workflowsDir = join(repo, '.github', 'workflows')
 const NOT_IN_CI: Record<string, string> = {
   'app/src/components/wallet/wallet-history.devices.regtest.jest.test.ts':
     'needs solonet (monad-regtest) and a cashwebd relay build; runs only with FRANK_REGTEST_LIVE=1',
+  'packages/wallet/lotus-v2/wallet.regtest.jest.test.ts':
+    'needs a lotusd built from the Lotus repository v2 series (LOTUSD_BIN); Lotus v2 publishes no release a hosted job can fetch',
 }
 
 /** Package name (`@frank/wallet`) to its directory and scripts. */

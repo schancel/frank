@@ -74,4 +74,12 @@ describe('the wallet suites hosted CI names', () => {
   ])('the escrow suite %s is run', name => {
     expect(named).toContain(name)
   })
+  // Payment recovery suites on a real node.
+  it.each([
+    'evm-archived-own-move-recovery.anvil.jest.test.ts',
+    'evm-exposed-successor-recovery.anvil.jest.test.ts',
+    'evm-nonce-consumer.anvil.jest.test.ts',
+  ])('the recovery suite %s is run', name => {
+    expect(named).toContain(name)
+  })
 })

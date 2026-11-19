@@ -101,6 +101,13 @@ jobs:
           ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
           test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
           ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand evm-deposit-scan.anvil.jest.test.ts
+      # Payment recovery on a real node: an archived own move whose signed bytes still land, an
+      # exposed same-account successor, and which of two signed transactions used a nonce.
+      - name: Payment recovery on a real EVM node (anvil)
+        run: |
+          ANVIL_BIN="$(find node_modules packages/*/node_modules -path '*@foundry-rs/anvil-linux-*' -name anvil -type f 2>/dev/null | head -1)"
+          test -x "$ANVIL_BIN" || { echo "no anvil binary under node_modules/@foundry-rs" >&2; exit 1; }
+          ANVIL_BIN="$PWD/$ANVIL_BIN" yarn workspace @frank/wallet test --ci --runInBand evm-archived-own-move-recovery.anvil.jest.test.ts evm-exposed-successor-recovery.anvil.jest.test.ts evm-nonce-consumer.anvil.jest.test.ts
 
   # GenericHTLC and StateChannel on a real EVM node (anvil), and the wallet's HTLC encoders,
   # reader, game escrow and table buy-in escrow against the compiled artifact. The step fails

@@ -1262,6 +1262,81 @@ describe('outgoing direct messages (#269, #270)', () => {
       }
     })
 
+    // The relay refused it before anything of it left the wallet (#1744 N3): nothing can land,
+    // so the user's Retry pays the same message afresh instead of re-checking the dead attempt.
+    it('a Retry of an attempt the relay refused before anything of it left the wallet sends it again, once, under the same message ID', async () => {
+      const send = sendJournalsThenPending()
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      const message = only(chats)[0]
+      const firstId = send.mock.calls[0][0].messageId
+      await chats.setOutgoingState(PEER, message.payloadDigest, 'error', {
+        attemptDigest: HASH,
+        failureReason: 'rejected',
+      })
+      reconcileReturns({ [HASH]: 'dead' })
+      const endOf = jest.fn(async () => ({
+        reason: 'refused-unpaid' as const,
+        relayReason: 'stale_nonce',
+      }))
+      const previousMessaging = activeChain.directMessages
+      Object.assign(activeChain, {
+        directMessages: { ...previousMessaging, endOf },
+      })
+      const fresh = 'cd'.repeat(32)
+      send.mockReset().mockImplementation(async params => {
+        await params.onAttemptCreated?.(fresh)
+        return okResult(fresh)
+      })
+      try {
+        const result = await chats.retryOutgoing({
+          wallet,
+          address: PEER,
+          payloadDigest: message.payloadDigest,
+        })
+        expect(result).toMatchObject({ state: 'sent' })
+        expect(endOf).toHaveBeenCalledWith({ wallet, payloadDigest: HASH })
+        expect(send).toHaveBeenCalledTimes(1)
+        expect(send.mock.calls[0][0].messageId).toBe(firstId)
+        expect(only(chats)[0].status).toBe('confirmed')
+      } finally {
+        Object.assign(activeChain, { directMessages: previousMessaging })
+      }
+    })
+
+    // Only the user's click pays again: the background pass shows it failed and sends nothing.
+    it('reconcileOutgoing never pays again an attempt the relay refused before anything of it left the wallet', async () => {
+      const send = jest.spyOn(activeChain.directMessages, 'send')
+      send.mockImplementationOnce(async params => {
+        await params.onAttemptCreated?.(HASH)
+        throw new Error('relay connection refused')
+      })
+      const chats = useChatStore()
+      await chats.sendMessage({ wallet, address: PEER, items: TEXT })
+      reconcileReturns({ [HASH]: 'dead' })
+      const endOf = jest.fn(async () => ({
+        reason: 'refused-unpaid' as const,
+        relayReason: 'insufficient_total',
+      }))
+      const previousMessaging = activeChain.directMessages
+      Object.assign(activeChain, {
+        directMessages: { ...previousMessaging, endOf },
+      })
+      try {
+        await chats.reconcileOutgoing({ wallet })
+        expect(only(chats)[0].delivery).toMatchObject({
+          attemptDigest: HASH,
+          failureReason: 'refused-unpaid',
+        })
+        await chats.reconcileOutgoing({ wallet })
+        expect(send).toHaveBeenCalledTimes(1)
+        expect(only(chats)[0].status).toBe('error')
+        expect(only(chats)[0].delivery?.attemptDigest).toBe(HASH)
+      } finally {
+        Object.assign(activeChain, { directMessages: previousMessaging })
+      }
+    })
+
     it('reconcileOutgoing shows an attempt the wallet ended for funds tied up as that, with the amount, and does not send it again', async () => {
       const send = jest.spyOn(activeChain.directMessages, 'send')
       send.mockImplementationOnce(async params => {

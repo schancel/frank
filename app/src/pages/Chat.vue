@@ -1653,9 +1653,12 @@ export default defineComponent({
           errorNotify(new Error(text), { safeMessage: text })
         } else if (outcome && (outcome as any).state === 'failed') {
           const reason = (outcome as any).reason
-          // Only the two reasons this app words are shown; any other reason stays generic.
+          // Only the reasons this app words are shown; any other reason stays generic.
           const text =
-            reason === 'insufficient-funds'
+            reason === 'blocked'
+              ? // An earlier stuck message holds the funds: the words a chat bubble shows.
+                this.$t('outgoing.reasonBlocked')
+              : reason === 'insufficient-funds'
               ? this.$t('chatInput.emailSendInsufficientFunds', {
                   unit: activeChain.unit,
                 })

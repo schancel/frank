@@ -21,6 +21,7 @@ function failureOfEnd(
   if (end?.reason === 'discarded') return 'error'
   if (end?.reason === 'funds-tied-up') return 'funds-in-pending-send'
   if (end?.reason === 'payment-taken') return 'payment-taken'
+  if (end?.reason === 'refused-unpaid') return 'refused-unpaid'
   return 'rejected'
 }
 

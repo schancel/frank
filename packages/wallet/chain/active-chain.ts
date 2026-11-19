@@ -353,6 +353,12 @@ export type DirectMessageEnd =
    * payment to a contact with its stamp), so it is not paid again by itself. Nothing was paid
    * for it and nothing of it stays held; the user sends it again. */
   | { readonly reason: "payment-taken" }
+  /** The relay refused its first handoff before storing or broadcasting anything, because a
+   * payment of it could never land (`relayReason`: `stale_nonce` or `insufficient_total`), and
+   * its signed payments never left the wallet: nothing was paid, nothing of it can land, and its
+   * coins are free. A message with a stamp of its own: sending it again under the same message
+   * ID pays it afresh from the coins there are now. */
+  | { readonly reason: "refused-unpaid"; readonly relayReason: string }
   | { readonly reason: "relay"; readonly relayReason?: string };
 
 /** Set by the wallet on the error of a refused `DirectMessageClient.send` call; read it only

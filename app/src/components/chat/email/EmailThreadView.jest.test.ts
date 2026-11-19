@@ -1652,6 +1652,46 @@ describe('EmailThreadView', () => {
         )
       })
 
+      // Held by an earlier stuck message: its own short label, and the full blocked reason
+      // the chat bubble shows, not just "Failed to send".
+      it('a card blocked by an earlier message says so', async () => {
+        const blocked: ChatMessage = {
+          outbound: true,
+          status: 'error',
+          delivery: { failureReason: 'blocked', detail: 'digest-x' },
+          receivedTime: 3000,
+          serverTime: 3000,
+          items: [
+            {
+              type: 'email',
+              messageId: '<frank_3000_b10cced@frank.org>',
+              from: { address: 'me@frank.org', name: 'Me' },
+              to: [{ address: 'bob@example.com', name: 'Bob Jones' }],
+              subject: 'Re: Project Kickoff',
+              textBody: 'Blocked reply text',
+            } as EmailItem,
+          ],
+          outpoints: [],
+          senderAddress: '0x1111111111111111111111111111111111111111',
+          payloadDigest: 'digest-blocked',
+        }
+        const threadMessages = [...messages, blocked]
+        const wrapper = mountView({
+          messages: threadMessages,
+          conversation: { ...conversation, messages: threadMessages },
+        })
+        const vm = wrapper.vm as any
+        await wrapper.vm.$nextTick()
+        const card = vm.parsedEmails.find(
+          (c: any) => c.payloadDigest === 'digest-blocked',
+        )
+        const badge = vm.cardDeliveryBadge(card)
+        expect(badge?.label).toBe('Not sent: waits for an earlier message')
+        expect(badge?.detail).toMatch(
+          /^An earlier message whose payment is stuck holds the funds this one needs\./,
+        )
+      })
+
       it('renders specific insufficient-funds badge and supports Retry, Discard, and Cancel on outbound cards', async () => {
         const { useChatStore } = await import('src/stores/chats')
         const chatStore = useChatStore()

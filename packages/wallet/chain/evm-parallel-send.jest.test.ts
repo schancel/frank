@@ -1228,11 +1228,17 @@ describe('parallel paid messages', () => {
     await reopen()
     expect(alice.transactionSetPreparer!.isSourceReserved(held.address)).toBe(false)
     expect(graphBytes()).toEqual([])
-    await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+    // Only the user's own send of the same message pays it afresh (#1744 N3): nothing of the
+    // refused attempt left the wallet, so nothing of it can land.
     relay.answer = undefined
     offlineChain.broadcastDown = false
-    await send(2)
+    await send(1)
+    expect(handed).toHaveLength(2)
     expect(bobMailbox).toHaveLength(1)
+    // Paid now: never a second payment for it.
+    await expect(send(1)).rejects.toBeInstanceOf(DirectMessageAlreadyAttemptedError)
+    await send(2)
+    expect(bobMailbox).toHaveLength(2)
   })
 
   it('the refusals taken as before exposure are exactly those the relay answers before it stores anything', () => {

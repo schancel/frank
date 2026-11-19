@@ -80,7 +80,16 @@ suite('another device of the account spends a message coin at the same moment (a
   const written = new Map<string, StoredMessage[]>()
   /** What the relay stand-in does with the next request: store it (default) or refuse it. */
   let beforeJudge: (() => Promise<void>) | undefined
-  let relay: { stored: number; payments: Transaction[][]; precheck: boolean }
+  let relay: {
+    stored: number
+    payments: Transaction[][]
+    precheck: boolean
+    /** Answers the next request with this refusal, before storing anything (as `judge`). */
+    refuse?: string
+    /** Fails the next request in transport, its answer unknown to the wallet. */
+    fail?: boolean
+    requests: number
+  }
   const mine = (blocks = 1) => chain.send('anvil_mine', [`0x${blocks.toString(16)}`])
 
   beforeEach(async () => {
@@ -107,7 +116,7 @@ suite('another device of the account spends a message coin at the same moment (a
     mailboxes.clear()
     written.clear()
     beforeJudge = undefined
-    relay = { stored: 0, payments: [], precheck: true }
+    relay = { stored: 0, payments: [], precheck: true, requests: 0 }
     const put = LevelOutgoingMessageStore.prototype.put
     jest.spyOn(LevelOutgoingMessageStore.prototype, 'put').mockImplementation(async function (this: LevelOutgoingMessageStore, row) {
       await put.call(this, row)
@@ -128,6 +137,16 @@ suite('another device of the account spends a message coin at the same moment (a
           contentType: init.headers['Content-Type'],
         })
         const payments = restored.parts.transactions.map(raw => Transaction.from(hexlify(raw)))
+        relay.requests++
+        if (relay.fail) {
+          relay.fail = false
+          throw new Error('connection reset')
+        }
+        if (relay.refuse) {
+          const reason = relay.refuse
+          relay.refuse = undefined
+          return refusal(url, restored.identity, reason)
+        }
         // The relay's own check before it stores anything (`judge_payments`): a payment whose
         // nonce another transaction used, or a sender that cannot cover its payments.
         if (beforeJudge) {
@@ -998,5 +1017,113 @@ suite('another device of the account spends a message coin at the same moment (a
     expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(false)
     expect(await chain.getBalance(prepared.recipientAddress)).toBe(0n)
     await laterSendGoesThrough(2, 5n * 10n ** 16n)
+  })
+
+  // #1744 N3: the relay refuses a message's first handoff before storing or broadcasting anything
+  // (`stale_nonce` / `insufficient_total`, the coin list disagreeing with the node) while the chain
+  // shows no other transaction on its coins. The resend pass ends it, nothing paid; the user's
+  // Retry (a send of the same message ID) pays the same message afresh from the coins there are
+  // now, once.
+  it.each(['stale_nonce', 'insufficient_total'])(
+    'a resend the relay refused (%s) before anything left the wallet is paid afresh by the user\'s send of the same message, once',
+    async reason => {
+      jest.spyOn(Math, 'random').mockReturnValue(0.99)
+      const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+      await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
+      await mine(5)
+      const send = () =>
+        f.chain.directMessages.send({
+          wallet: alice,
+          recipient: f.bob.identity.address,
+          items: [{ type: 'text', text: 'paid afresh' }],
+          stampValue: STAMP,
+          messageId: ID(1),
+        })
+      // Cut off before anything of it is handed out: the resend pass makes its first handoff.
+      let digest = ''
+      await expect(
+        f.chain.directMessages.send({
+          wallet: alice,
+          recipient: f.bob.identity.address,
+          items: [{ type: 'text', text: 'paid afresh' }],
+          stampValue: STAMP,
+          messageId: ID(1),
+          onAttemptCreated: async d => {
+            digest = d
+            throw new Error('interrupted before exposure')
+          },
+        }),
+      ).rejects.toThrow('interrupted before exposure')
+      expect(relay.requests).toBe(0)
+      const stampId = rowOf(digest).transactionSetOperationId!
+      const refusedHashes = [...rowOf(digest).payments, ...rowOf(digest).otherTransactions]
+        .map(payment => Transaction.from(payment.rawTx).hash!)
+      expect(refusedHashes.length).toBeGreaterThan(0)
+      relay.refuse = reason
+      const ended = await reconcileUntil(digest, row => row.outcome === 'dead')
+      expect(ended.reason).toBe(reason)
+      expect(ended.payments).toEqual([])
+      expect((await operationOf(stampId))!.cancelled).toBe(true)
+      expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: digest }))
+        .toEqual({ reason: 'refused-unpaid', relayReason: reason })
+      // Ended, nothing paid: the resend pass leaves it alone.
+      await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [digest], maxPutAttempts: 2 })
+      expect(relay.requests).toBe(1)
+      expect(await f.chain.directMessages.unattributedAttempts({ wallet: alice, knownDigests: [] })).toEqual([])
+
+      // The user's Retry: the same message ID, paid from the coins there are now.
+      const again = await send()
+      expect(bobMailbox).toHaveLength(1)
+      expect(relay.stored).toBe(1)
+      const row = await reconcileUntil(again.payloadDigest, settled)
+      expect(row.transactionSetOperationId).toBe(`${stampId}-r1`)
+      expect(row.replacedOperationIds).toEqual([stampId])
+      expect(await paidOnChain(row.payments)).toBe(STAMP)
+      // The refused set never reached the node.
+      for (const hash of refusedHashes) expect(await chain.getTransaction(hash)).toBeNull()
+      expect(alice.transactionSetPreparer!.isSourceReserved(main)).toBe(false)
+      // Paid now: a further send of the same message ID is never a second payment.
+      await expect(send()).rejects.toThrow(/already made an attempt/)
+      expect(relay.stored).toBe(1)
+    },
+  )
+
+  it('a refusal after a handoff whose answer was lost, or for an unreachable mailbox, is never paid again by a send of the same message', async () => {
+    jest.spyOn(Math, 'random').mockReturnValue(0.99)
+    const main = (await alice.getReceiveAddress()).raw.toLowerCase()
+    await (await dev.sendTransaction({ to: main, value: 10n ** 18n })).wait()
+    await mine(5)
+    const send = (n: number, onAttemptCreated?: (digest: string) => Promise<void>) =>
+      f.chain.directMessages.send({
+        wallet: alice,
+        recipient: f.bob.identity.address,
+        items: [{ type: 'text', text: `message ${n}` }],
+        stampValue: STAMP,
+        messageId: ID(n),
+        ...(onAttemptCreated ? { onAttemptCreated } : {}),
+      })
+    // Refused because the recipient's mailbox is not on this relay: ended, nothing paid, but not
+    // paid again by a send of the same message (the same refusal would follow).
+    relay.refuse = 'undeliverable'
+    await expect(send(2)).rejects.toThrow()
+    const undeliverable = [...written.values()].map(rows => rows.at(-1)!)
+      .find(row => row.consumerId.endsWith(ID(2).replace(/-/g, '')))!
+    expect(undeliverable.outcome).toBe('dead')
+    expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: undeliverable.digest }))
+      .toEqual({ reason: 'relay', relayReason: 'undeliverable' })
+    const before = relay.requests
+    await expect(send(2)).rejects.toThrow(/already made an attempt/)
+    expect(relay.requests).toBe(before)
+    // The first handoff's answer is lost: the relay may hold these bytes, so a later refusal
+    // proves nothing. The message stays the wallet's to settle, never paid a second time.
+    relay.fail = true
+    let digest = ''
+    await expect(send(1, async d => void (digest = d))).rejects.toThrow()
+    relay.refuse = 'stale_nonce'
+    await f.chain.directMessages.reconcileAttempts({ wallet: alice, payloadDigests: [digest], maxPutAttempts: 2 })
+    expect(rowOf(digest).outcome).toBeUndefined()
+    expect(rowOf(digest).reason).toBe('stale_nonce')
+    expect(await f.chain.directMessages.endOf!({ wallet: alice, payloadDigest: digest })).toBeUndefined()
+    await expect(send(1)).rejects.toThrow(/already made an attempt/)
   })
 })

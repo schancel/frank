@@ -548,6 +548,15 @@ describe('nextAction, A (offerer, XEC depositor, secret holder)', () => {
       'xecLockPending/none',
     ],
     [
+      'conflicted, a foreign output at the script, past the cutoff: abandons',
+      {
+        op: 'conflicted',
+        now: fundBy + 1,
+        xec: xecObs([output({ valueSats: 999n })]),
+      },
+      'abandoned/none',
+    ],
+    [
       'prepared, a foreign output at the script: does not fund',
       { op: 'prepared', xec: xecObs([output({ valueSats: 999n })]) },
       'xecLockPending/none',

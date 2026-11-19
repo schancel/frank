@@ -203,6 +203,10 @@ export function createEcashChain(config: EcashChainConfig): EcashChain {
             `Expected eCash network ${canonicalNetwork}, got ${wallet.networkId}`
           );
         }
+        // A transaction of one of the wallet's own operations that can never land (another
+        // device's final spend took a coin of it) is "failed", not "unknown" forever.
+        if (wallet instanceof EcashWallet)
+          return wallet.getNativeTransactionStatus(transaction);
         return getEcashTransactionStatus(config, transaction);
       },
       async estimateLegacyFee({ wallet, recipient, value }) {

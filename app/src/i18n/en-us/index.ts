@@ -1695,6 +1695,23 @@ export const rawEnUS = {
     unableCopyAddress: 'Unable to copy the Monad address',
   },
   walletHistory: {
+    ecashSend: {
+      to: 'Sent to',
+      status: {
+        pending: 'Pending',
+        sent: 'Sent',
+        confirmed: 'Confirmed',
+        conflicted: "Didn't go through",
+      },
+      conflicted:
+        "Didn't go through: another of your devices spent the same coins. Nothing was paid.",
+      retry: 'Retry',
+      retryNote:
+        'Sends it again to the same address, for the same amount, from other coins.',
+      retryUnconfirmed:
+        "Sent again, but the network hasn't accepted it yet. It may still go through, so don't send it again.",
+      retryFailed: 'The send could not be retried just now.',
+    },
     transfers: 'Transfers',
     to: 'To',
     contract: 'Contract',

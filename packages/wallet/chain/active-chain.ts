@@ -820,9 +820,11 @@ export interface ActiveNativeTransferClient extends NativeTransferClient {
      * milliseconds, having signed nothing. Wallets with no such account ignore it. */
     mainAccountWaitMs?: number;
   }): Promise<ChainTransaction>;
-  /** What the node says about a transaction hash: mined ok (`confirmed`), mined but reverted
-   * (`failed`), known but not mined (`pending`), or not known to the node (`unknown`; only
-   * meaningful as "not paid" after enough time has passed and the caller says so). */
+  /** What the node says about a transaction hash: mined ok (`confirmed`); `failed`: mined but
+   * reverted, or (UTXO) it can never land because another final transaction spent one of its
+   * inputs, so it paid nothing; known but not mined (`pending`); or not known to the node
+   * (`unknown`; only meaningful as "not paid" after enough time has passed and the caller says
+   * so). */
   getTransactionStatus(params: {
     wallet: NativeWalletHandle;
     transaction: ChainTransaction;

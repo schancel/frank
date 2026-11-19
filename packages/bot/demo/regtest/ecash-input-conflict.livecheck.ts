@@ -22,6 +22,10 @@
  *   4. Device 2 restarted keeps the conflicted state and never broadcasts those bytes again.
  *   5. Device 2 retries the same intent with fresh inputs (its other coin among them); it lands.
  *      The payee got each payment exactly once; the conflicted bytes never reached the chain.
+ *   6. A plain send (`sendNative`, random id) loses the same race (issue 2106): the ordinary
+ *      balance refresh finds it conflicted without a restart or an explicit reconcile, its dead
+ *      txid reads "failed", and the send list shows it so. Two Retry clicks at once send it once
+ *      more, the same intent; the next balance refresh confirms it; the payee got it once.
  */
 import assert from 'assert/strict'
 import { randomBytes } from 'crypto'
@@ -33,7 +37,7 @@ import { ChronikClient } from 'chronik-client'
 import { Address } from 'ecash-lib/dist/address/address'
 import { InMemoryNativeTransactionAttemptStore, NativeTransactionSubmissionError } from '@frank/wallet/chain/chain-wallet'
 import { InMemoryEcashOperationStore } from '@frank/wallet/ecash-operation-store'
-import { EcashWallet } from '@frank/wallet/ecash-wallet'
+import { EcashWallet, ecashSendsOf } from '@frank/wallet/ecash-wallet'
 
 import { ECASH_REGTEST_CHAIN, startEcashRegtest, type EcashRegtest } from './ecash-regtest'
 import { sleep } from './regtest-chain'
@@ -171,6 +175,70 @@ export async function ecashInputConflictCheck(xec: EcashRegtest): Promise<string
   )
   await balanceOf(restarted, 2n * COIN - FIRST - SECOND - BigInt(first.fee) - BigInt(retried.fee), 'device 2 after the retry')
   step('device 2 retried the same intent from fresh inputs; the payee got each payment exactly once')
+
+  // 6. A plain send loses the same race and is found by the ordinary balance refresh.
+  const plainRoot = new Uint8Array(randomBytes(32))
+  const plain1 = (await open(plainRoot)).wallet
+  const plain2 = (await open(plainRoot)).wallet
+  const plainPayee = (await (await open(new Uint8Array(randomBytes(32)))).wallet.getReceiveAddress()).raw
+  const plainAddress = (await plain1.getReceiveAddress()).raw
+  await xec.fund(plainAddress, COIN)
+  await xec.fund(plainAddress, COIN)
+  await balanceOf(plain1, 2n * COIN, 'plain device 1 sees both coins')
+  await balanceOf(plain2, 2n * COIN, 'plain device 2 sees both coins')
+  const winner = await plain1.prepareNativeOperation({ operationId: 'plain:winner', recipient: { raw: plainPayee }, value: FIRST })
+  let winnerTxid = ''
+  // Device 1's payment reaches the network after device 2 signed its send, before device 2's
+  // broadcast: device 2's is refused.
+  await assert.rejects(
+    plain2.sendNative({
+      recipient: { raw: plainPayee },
+      value: SECOND,
+      onSigned: async () => {
+        winnerTxid = (await plain1.submitNativeOperation(winner.operationId)).txHash
+      },
+    }),
+    NativeTransactionSubmissionError,
+  )
+  const sends = ecashSendsOf(plain2)!
+  const [lost] = sends.sends()
+  assert.equal(lost.state, 'pending')
+  assert.ok(lost.operationId !== 'plain:winner')
+  const dead = { txHash: lost.txid }
+  assert.equal(await plain2.getNativeTransactionStatus(dead), 'unknown', 'a refused broadcast alone proves nothing')
+  await xec.mine(1)
+  assert.ok((await onChain(winnerTxid))?.block, 'device 1 payment is mined')
+  // Only the balance refresh, as the app polls it: no restart, no explicit reconcile.
+  await waitFor('the balance refresh finds the send conflicted', async () => {
+    await plain2.getBalance()
+    return sends.sends()[0].state === 'conflicted' ? true : undefined
+  })
+  assert.equal(await plain2.getNativeTransactionStatus(dead), 'failed')
+  step('a plain send that lost the race is found conflicted by the balance refresh; its txid reads failed')
+
+  const plainBroadcasts = broadcasts
+  const [click1, click2] = await Promise.all([sends.retry(lost.operationId), sends.retry(lost.operationId)])
+  assert.equal(click1.txid, click2.txid, 'two clicks, one retry')
+  assert.notEqual(click1.txid, dead.txHash)
+  assert.deepEqual(click1.conflictedTxids, [dead.txHash])
+  assert.ok(broadcasts - plainBroadcasts <= 2, 'at most the same retry bytes, offered twice')
+  await xec.mine(1)
+  await waitFor('the balance refresh confirms the retry', async () => {
+    await plain2.getBalance()
+    return sends.sends()[0].state === 'confirmed' ? true : undefined
+  })
+  assert.equal(await onChain(dead.txHash), undefined, 'the conflicted send never reached the chain')
+  assert.equal(await plain2.getNativeTransactionStatus(dead), 'failed')
+  const plainReceived = (await chronik.script('p2pkh', Address.fromCashAddress(plainPayee).hash).utxos()).utxos
+  assert.deepEqual(
+    plainReceived.map(utxo => [utxo.outpoint.txid, utxo.sats]).sort(),
+    [
+      [winnerTxid, FIRST],
+      [click1.txid, SECOND],
+    ].sort(),
+    'the payee got each payment exactly once',
+  )
+  step('two Retry clicks sent the plain send once more, the same intent; the payee got it exactly once')
   return steps
 }
 

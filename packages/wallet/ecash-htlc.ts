@@ -238,6 +238,11 @@ export function xecHtlcLockOperationId(swapId: string): string {
   return `swap:${swapId}:xec-lock`;
 }
 
+/** Whether an eCash operation id is a swap's lock (`xecHtlcLockOperationId`). */
+export function isXecHtlcLockOperationId(operationId: string): boolean {
+  return /^swap:[0-9a-f]{64}:xec-lock$/.test(operationId);
+}
+
 /**
  * Builds the claim or refund spend. `sign` receives the BIP143/FORKID sighash digest (32 bytes)
  * and returns a DER ECDSA signature without the hash-type byte. The signature is checked against

@@ -482,3 +482,120 @@ it(
 `),
   35_000
 );
+
+it(
+  "finds a plain send conflicted on the ordinary balance refresh, reports its txid failed, and retries it once as the same send",
+  () =>
+    run(`
+  const { ecashSendsOf } = require('./ecash-wallet.ts');
+  const store = new InMemoryEcashOperationStore();
+  const spenders = new Map();
+  const spender = async ({ txid, vout }) => spenders.get(txid + ':' + vout);
+  let refuse = true;
+  const device1 = await make({ spender });
+  const device2 = await make({ store, spender, transport: async () => { if (refuse) throw new Error('missing inputs'); } });
+  const first = await device1.wallet.prepareNativeOperation(params('device-1'));
+  // A plain send (random id) whose broadcast the network refused: signed, exposed, unresolved.
+  await assert.rejects(device2.wallet.sendNative({ recipient, value: 15000n, maxFee: 1000n }), /submission/i);
+  const [sent] = device2.wallet.getEcashOperations();
+  assert.equal(sent.state, 'exposed');
+  const sends = ecashSendsOf(device2.wallet);
+  assert.equal(sends.chainIdentifier, 'xec-mainnet');
+  assert.deepEqual(sends.sends().map(s => s.state), ['pending']);
+  const dead = { txHash: sent.transactions[0].txid };
+  assert.equal(await device2.wallet.getNativeTransactionStatus(dead), 'unknown');
+  await assert.rejects(sends.retry(sent.operationId), /Only a conflicted/, 'an unresolved send is never retried');
+  // Another device's spend of a shared coin goes final. The next balance refresh finds it.
+  const shared = sent.inputs.find(input => input.txid === first.inputs[0].txid && input.vout === first.inputs[0].vout);
+  assert.ok(shared);
+  spenders.set(shared.txid + ':' + shared.vout, { txid: first.transactions[0].txid, final: true });
+  device2.chronik.coins.splice(device2.chronik.coins.findIndex(coin => coin.outpoint.txid === shared.txid && coin.outpoint.outIdx === shared.vout), 1);
+  await device2.wallet.getBalance();
+  assert.equal(device2.wallet.getEcashOperations()[0].state, 'conflicted', 'reconciled by the balance refresh, without a restart');
+  const [row] = sends.sends();
+  assert.equal(row.state, 'conflicted');
+  assert.equal(row.valueSats, '15000');
+  assert.equal(row.recipient, sent.intent.recipient);
+  assert.equal(await device2.wallet.getNativeTransactionStatus(dead), 'failed');
+  // Swap locks are not plain sends.
+  await device2.wallet.prepareNativeOperation({ ...params('swap:' + 'ab'.repeat(32) + ':xec-lock') });
+  assert.equal(sends.sends().length, 1);
+  await assert.rejects(sends.retry('swap:' + 'ab'.repeat(32) + ':xec-lock'), /Unknown eCash send/);
+  // Two clicks at once: one retry, one new transaction, same intent.
+  refuse = false;
+  const sentBefore = device2.sent.length;
+  const [a, b] = await Promise.all([sends.retry(sent.operationId), sends.retry(sent.operationId)]);
+  assert.equal(a.txid, b.txid);
+  assert.notEqual(a.txid, dead.txHash);
+  assert.deepEqual(a.conflictedTxids, [dead.txHash]);
+  assert.equal(a.state, 'sent');
+  const retried = device2.wallet.getEcashOperations().find(op => op.operationId === sent.operationId);
+  assert.deepEqual(retried.intent, sent.intent);
+  assert.ok(new Set(device2.sent.slice(sentBefore).flat()).size === 1, 'only the one retried transaction was broadcast');
+  // A later click hands the same retry over again; it never signs another payment.
+  assert.equal((await sends.retry(sent.operationId)).txid, a.txid);
+  // The dead attempt's txid stays failed after the retry.
+  assert.equal(await device2.wallet.getNativeTransactionStatus(dead), 'failed');
+`),
+  35_000
+);
+
+it(
+  "backs off reconciling a stuck send on the balance refresh and keeps a failed read observable",
+  () =>
+    run(`
+  let lookups = 0;
+  let fail = false;
+  const spender = async () => { lookups++; if (fail) throw new Error('indexer down'); return undefined; };
+  const device = await make({ spender, transport: async () => { throw new Error('missing inputs'); } });
+  await assert.rejects(device.wallet.sendNative({ recipient, value: 1000n, maxFee: 1000n }), /submission/i);
+  const [op] = device.wallet.getEcashOperations();
+  assert.equal(op.inputs.length, 1);
+  lookups = 0;
+  const checked = [];
+  for (let refresh = 1; refresh <= 8; refresh++) {
+    const before = lookups;
+    await device.wallet.getBalance();
+    if (lookups > before) checked.push(refresh);
+  }
+  // Nothing new each time: checked on refreshes 1, 2, 4 and 8, not on every poll.
+  assert.deepEqual(checked, [1, 2, 4, 8]);
+  assert.deepEqual(device.wallet.getReconcileFailures(), []);
+  // A failed read is logged once and readable until the operation reconciles again.
+  const warnings = [];
+  const warn = console.warn;
+  console.warn = (...args) => warnings.push(args);
+  try {
+    fail = true;
+    for (let refresh = 0; refresh < 40; refresh++) await device.wallet.getBalance();
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepEqual(device.wallet.getReconcileFailures(), [{ operationId: op.operationId, message: 'indexer down' }]);
+  assert.equal(warnings.length, 1);
+  assert.equal(warnings[0][0], 'ecash-reconcile-failed');
+  assert.ok(lookups < 10, 'failed reads back off too');
+  fail = false;
+  for (let refresh = 0; refresh < 20; refresh++) await device.wallet.getBalance();
+  assert.deepEqual(device.wallet.getReconcileFailures(), []);
+  // A send the chain knows (in the mempool) is read on every refresh, never backed off, and
+  // shows confirmed on the first refresh after its block.
+  let mined = false;
+  let statusReads = 0;
+  const known = await make({ spender, status: async () => { statusReads++; return mined ? 'confirmed' : 'pending'; } });
+  await known.wallet.sendNative({ recipient, value: 1000n, maxFee: 1000n });
+  const [pending] = known.wallet.getEcashOperations();
+  assert.equal(pending.state, 'submitted');
+  lookups = 0;
+  for (let refresh = 1; refresh <= 6; refresh++) {
+    const before = statusReads;
+    await known.wallet.getBalance();
+    assert.ok(statusReads > before, 'read on refresh ' + refresh);
+  }
+  assert.equal(lookups, 0, 'a known send never scans its inputs');
+  mined = true;
+  await known.wallet.getBalance();
+  assert.equal(known.wallet.getEcashOperations()[0].state, 'confirmed');
+`),
+  35_000
+);

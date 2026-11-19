@@ -671,10 +671,23 @@
                   class="q-pa-none"
                   data-testid="wallet-history-panel"
                 >
+                  <ecash-send-history
+                    v-if="ecashSends"
+                    :chain-identifier="ecashSends.chainIdentifier"
+                    :sends="ecashSends.sends"
+                    :show-empty="!historyGroups.length"
+                    :native-unit="nativeUnit"
+                    :native-amount="nativeAmount"
+                    :transaction-explorer-link="transactionExplorerLink"
+                    :retry="retryEcashSend"
+                  />
                   <wallet-history
+                    v-if="!ecashSends || historyGroups.length"
                     :chain-identifier="historyChainIdentifier"
                     :groups="historyGroups"
-                    :inspection-status="nativeOperations.status"
+                    :inspection-status="
+                      ecashSends ? 'available' : nativeOperations.status
+                    "
                     :deposits-unread="
                       nativeOperations.status === 'available' &&
                       nativeOperations.depositsUnread
@@ -749,6 +762,7 @@ import {
   activeChain,
   onActiveChainChange,
   getChainRegistryEntry,
+  NativeTransactionSubmissionError,
 } from '@frank/wallet/chain'
 import {
   resolveChainAdapter,
@@ -762,6 +776,12 @@ import { displayAmountText } from 'src/utils/chain-amount'
 import { MAIN_WALLET_ID, WALLET_CONFIGS } from 'src/utils/wallet-configs'
 import { nativeSendChainIdentifier } from 'src/utils/native-transfer'
 import WalletHistory from 'src/components/wallet/WalletHistory.vue'
+import EcashSendHistory from 'src/components/wallet/EcashSendHistory.vue'
+import {
+  ecashSendsOf,
+  type EcashSend,
+  type EcashSends,
+} from '@frank/wallet/ecash-wallet'
 import TempoPathUsdPanel from 'src/components/wallet/TempoPathUsdPanel.vue'
 import DappBridgePanel from 'src/components/panels/DappBridgePanel.vue'
 import ExtensionPopoutBtn from 'src/components/navigation/ExtensionPopoutBtn.vue'
@@ -794,6 +814,7 @@ export default defineComponent({
     HeldContactPayments,
     BalanceBreakdown,
     WalletHistory,
+    EcashSendHistory,
     TempoPathUsdPanel,
     DappBridgePanel,
     ExtensionPopoutBtn,
@@ -1078,6 +1099,35 @@ export default defineComponent({
     const networkName = (chainIdentifier: string) =>
       getChainRegistryEntry(chainIdentifier)?.name ?? ''
 
+    // This device's plain eCash sends on an eCash network (its operation journal), with the
+    // capability that retries one; unset on any other network.
+    const ecashSends = shallowRef<
+      | {
+          chainIdentifier: string
+          capability: EcashSends
+          sends: readonly EcashSend[]
+        }
+      | undefined
+    >()
+    // Only on the user's click: the same send again (same address, amount and fee ceiling),
+    // from other coins. A second click while it runs, or a later one, never pays twice.
+    const retryEcashSend = async (operationId: string) => {
+      const held = ecashSends.value
+      if (!held) return
+      try {
+        await held.capability.retry(operationId)
+      } catch (err) {
+        // Signed again, and only handing it to the network failed: it may still land.
+        errorNotify(err, {
+          fallbackKey:
+            err instanceof NativeTransactionSubmissionError
+              ? 'walletHistory.ecashSend.retryUnconfirmed'
+              : 'walletHistory.ecashSend.retryFailed',
+        })
+      }
+      reloadHistory?.()
+    }
+
     const nativePresentation = shallowRef({
       unit: '',
       toDisplayAmount: (value: bigint) => value.toString(),
@@ -1108,6 +1158,7 @@ export default defineComponent({
         const isMainChain = chain === MAIN_WALLET_ID
         addressAvailability.value = 'loading'
         reloadHistory = undefined
+        ecashSends.value = undefined
         nativeOperations.value = {
           status: isMainChain ? 'unavailable' : 'unsupported',
         }
@@ -1180,7 +1231,25 @@ export default defineComponent({
             }
             reload()
           } else if (rotatesAddress) {
-            const { wallet } = await openUtxoWallet(capability.entry.id)
+            const { wallet, chain: utxoChain } = await openUtxoWallet(
+              capability.entry.id,
+            )
+            const sends = ecashSendsOf(wallet)
+            if (current && sends?.chainIdentifier === capability.entry.id) {
+              nativePresentation.value = utxoChain
+              // Read from the journal each time History is read; the balance refresh is what
+              // asks the network about open sends.
+              const read = () => {
+                if (current)
+                  ecashSends.value = {
+                    chainIdentifier: sends.chainIdentifier,
+                    capability: sends,
+                    sends: sends.sends(),
+                  }
+              }
+              reloadHistory = read
+              read()
+            }
             // The lead address is derived here. Show it before the indexer confirms it is unused.
             const local = wallet.localReceiveAddress?.()
             if (current && local) displayAddress.value = local.raw
@@ -1212,6 +1281,8 @@ export default defineComponent({
     return {
       myDrawerOpen,
       nativeOperations,
+      ecashSends,
+      retryEcashSend,
       historyGroups,
       historyChainIdentifier,
       networkName,

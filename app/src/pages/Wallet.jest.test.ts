@@ -53,6 +53,11 @@ const mockOpenUtxoWallet = jest.fn(async (chainIdentifier: string) => ({
     }),
   },
 }))
+const mockEcashSendsOf = jest.fn((_wallet: unknown): unknown => undefined)
+jest.mock('@frank/wallet/ecash-wallet', () => ({
+  ...jest.requireActual('@frank/wallet/ecash-wallet'),
+  ecashSendsOf: (wallet: unknown) => mockEcashSendsOf(wallet),
+}))
 jest.mock('src/accounts/utxo-wallets', () => ({
   openUtxoWallet: (chainIdentifier: string) =>
     mockOpenUtxoWallet(chainIdentifier),
@@ -811,6 +816,114 @@ describe('Wallet detail page (#570)', () => {
     expect(errorNotify).not.toHaveBeenCalled()
     wrapper.unmount()
     spy.mockRestore()
+  })
+
+  it("shows an eCash network's sends in History, and retries a conflicted one once per click", async () => {
+    let sends = [
+      {
+        operationId: 'op-1',
+        recipient: 'ectest:qrecipient',
+        valueSats: '15000',
+        feeSats: '226',
+        txid: 'aa'.repeat(32),
+        state: 'conflicted',
+        conflictedTxids: [],
+      },
+    ]
+    const retry = jest.fn(async (operationId: string) => {
+      sends = sends.map(send =>
+        send.operationId === operationId
+          ? {
+              ...send,
+              state: 'sent',
+              txid: 'bb'.repeat(32),
+              conflictedTxids: [send.txid],
+            }
+          : send,
+      )
+      return sends[0]
+    })
+    mockEcashSendsOf.mockImplementation(() => ({
+      chainIdentifier: 'xec-testnet',
+      sends: () => sends,
+      retry,
+    }))
+    try {
+      mockRoute.value = { query: { chain: 'ecash' }, path: '/wallet' }
+      const wrapper = mountWallet()
+      await flush()
+      const history = wrapper.getComponent({ name: 'EcashSendHistory' })
+      expect(history.props('chainIdentifier')).toBe('xec-testnet')
+      expect(history.props('sends')).toEqual(sends)
+      // No retry happens without the click.
+      expect(retry).not.toHaveBeenCalled()
+      await (history.props('retry') as (id: string) => Promise<void>)('op-1')
+      await flush()
+      expect(retry).toHaveBeenCalledTimes(1)
+      expect(retry).toHaveBeenCalledWith('op-1')
+      // History is read again: the send now shows as sent.
+      expect(
+        (
+          wrapper.getComponent({ name: 'EcashSendHistory' }).props('sends') as {
+            state: string
+          }[]
+        )[0]!.state,
+      ).toBe('sent')
+      expect(errorNotify).not.toHaveBeenCalled()
+      wrapper.unmount()
+    } finally {
+      mockEcashSendsOf.mockReset()
+      mockEcashSendsOf.mockImplementation(() => undefined)
+    }
+  })
+
+  it('says a retried eCash send may still land when only handing it to the network failed', async () => {
+    const { NativeTransactionSubmissionError } = jest.requireActual(
+      '@frank/wallet/chain',
+    )
+    const conflicted = {
+      operationId: 'op-1',
+      recipient: 'ectest:qrecipient',
+      valueSats: '15000',
+      feeSats: '226',
+      txid: 'aa'.repeat(32),
+      state: 'conflicted',
+      conflictedTxids: [],
+    }
+    const retry = jest
+      .fn()
+      .mockRejectedValueOnce(
+        new NativeTransactionSubmissionError({
+          transaction: { txHash: 'bb'.repeat(32) },
+          reason: new Error('refused'),
+        }),
+      )
+      .mockRejectedValueOnce(new Error('fee rose'))
+    mockEcashSendsOf.mockImplementation(() => ({
+      chainIdentifier: 'xec-testnet',
+      sends: () => [conflicted],
+      retry,
+    }))
+    try {
+      mockRoute.value = { query: { chain: 'ecash' }, path: '/wallet' }
+      const wrapper = mountWallet()
+      await flush()
+      const run = wrapper
+        .getComponent({ name: 'EcashSendHistory' })
+        .props('retry') as (id: string) => Promise<void>
+      await run('op-1')
+      expect(jest.mocked(errorNotify).mock.calls.at(-1)?.[1]).toEqual({
+        fallbackKey: 'walletHistory.ecashSend.retryUnconfirmed',
+      })
+      await run('op-1')
+      expect(jest.mocked(errorNotify).mock.calls.at(-1)?.[1]).toEqual({
+        fallbackKey: 'walletHistory.ecashSend.retryFailed',
+      })
+      wrapper.unmount()
+    } finally {
+      mockEcashSendsOf.mockReset()
+      mockEcashSendsOf.mockImplementation(() => undefined)
+    }
   })
 
   it('renders eCash wallet details and address when selected', async () => {

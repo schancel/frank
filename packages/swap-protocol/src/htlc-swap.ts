@@ -865,8 +865,14 @@ export function nextAction(input: HtlcSwapDecisionInput): HtlcSwapDecision {
         (op === undefined || op === 'prepared' || op === 'conflicted')
       ) {
         warnings.push('xec-foreign-output')
-        if (op === 'prepared' && now > cut.xecFundBy)
-          return decide('abandoned', { kind: 'release-xec-lock' }, warnings)
+        // Past the cutoff a lock that never landed (never exposed, or conflicted) is given up,
+        // as without the foreign output; only a prepared one has inputs to release.
+        if ((op === 'prepared' || op === 'conflicted') && now > cut.xecFundBy)
+          return decide(
+            'abandoned',
+            op === 'prepared' ? { kind: 'release-xec-lock' } : NONE,
+            warnings,
+          )
         return decide(
           op === undefined ? 'accepted' : 'xecLockPending',
           NONE,

@@ -1301,6 +1301,8 @@ export const rawEnUS = {
       warnings: {
         'claim-gas-low':
           'Your {evm} main account holds less than the claim fee. Add {evm} to your main account (your deposit address) so the claim can go out in time.',
+        'lock-funds-low':
+          'Your main account needs {amount} {evm} more to lock this swap by {by}. Add {evm} to your main account (your deposit address); otherwise the swap stops and nothing of yours is locked.',
         'xec-double-funded':
           'The {xec} lock was funded more than once. The extra is refunded after the lock expires.',
         'xec-foreign-output':

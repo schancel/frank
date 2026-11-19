@@ -63,7 +63,13 @@ const {
   fixtureAccept,
   fixtureOfferFields,
 } = require('@frank/swap-protocol/src/negotiation-fixtures.testutil')
-const { htlcSwapTermsOf } = require('@frank/swap-protocol/src/htlc-swap')
+const {
+  htlcSwapTermsOf,
+  htlcSwapCutoffs,
+} = require('@frank/swap-protocol/src/htlc-swap')
+const {
+  formatNegotiationAmount,
+} = require('@frank/swap-protocol/src/outgoing-negotiation')
 const {
   MemoryHtlcSwapRecordStore,
 } = require('@frank/swap-protocol/src/htlc-swap-runner')
@@ -544,6 +550,62 @@ describe('session HTLC swap runner and card', () => {
     ).toBe(true)
     expect(card.findAll('button')).toHaveLength(0)
     expect(log).toEqual([])
+  })
+
+  test('the card tells B how much more MON its main account needs to lock, and by when; nothing is moved', async () => {
+    const { journal, offerHex } = await acceptedNegotiation('B')
+    mockSnapshot = { state: 'ready', coverage: 1, journals: [journal] }
+    const terms = htlcSwapTermsOf(journal)
+    const log: string[] = []
+    const callCostWei = 10n ** 15n
+    const chain: any = {
+      now: E + 60,
+      xec: { tipMedianTime: E, outputs: [] },
+      evm: {
+        latest: null,
+        final: null,
+        blockTimestamp: E + 60,
+        owedWei: 0n,
+        // Short by exactly 0.5 MON of the lock amount plus one call's gas.
+        mainBalanceWei: terms.evm.terms.amount + callCostWei - 5n * 10n ** 17n,
+        callCostWei,
+      },
+    }
+    const { execution } = load(
+      'B',
+      journal,
+      new MemoryHtlcSwapRecordStore(),
+      chain,
+      log,
+    )
+    await settle()
+    const card = mountCard('B', offerHex)
+    await settle()
+    expect(card.find('[data-testid="swap-execution-phase"]').text()).toBe(
+      phaseText('awaitXecLock'),
+    )
+    const lockBy = htlcSwapCutoffs(terms).evmLockBy
+    const warning = card.find('[data-testid="swap-warning-lock-funds-low"]')
+    expect(warning.text()).toBe(
+      translate('signedSwap.execution.warnings.lock-funds-low', {
+        ...units,
+        amount: formatNegotiationAmount(5n * 10n ** 17n, 18),
+        by: new Date(lockBy * 1000).toLocaleString(undefined, {
+          timeZoneName: 'short',
+        }),
+      }),
+    )
+    expect(warning.text()).toContain('0.5 MONT')
+    expect(card.findAll('button')).toHaveLength(0)
+    expect(log).toEqual([])
+
+    // Funded: the warning goes away on the next pass.
+    chain.evm = { ...chain.evm, mainBalanceWei: 10n ** 19n }
+    execution.poke()
+    await settle()
+    expect(
+      card.find('[data-testid="swap-warning-lock-funds-low"]').exists(),
+    ).toBe(false)
   })
 
   test('retired execution records stop the runner with their reset named on the card', async () => {

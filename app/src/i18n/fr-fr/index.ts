@@ -1337,6 +1337,8 @@ export const rawFrFR = {
       warnings: {
         'claim-gas-low':
           'Votre compte principal {evm} détient moins que les frais de réclamation. Ajoutez des {evm} à votre compte principal (votre adresse de dépôt) pour que la réclamation parte à temps.',
+        'lock-funds-low':
+          'Votre compte principal a besoin de {amount} {evm} de plus pour verrouiller cet échange avant le {by}. Ajoutez des {evm} à votre compte principal (votre adresse de dépôt) ; sinon l’échange s’arrête et rien de vos fonds n’est verrouillé.',
         'xec-double-funded':
           'Le verrouillage {xec} a été financé plusieurs fois. L’excédent est remboursé à la fin du verrouillage.',
         'xec-foreign-output':

@@ -136,7 +136,8 @@ const evmObs = (
   final: null,
   blockTimestamp: E,
   owedWei: 0n,
-  mainBalanceWei: 10n ** 18n,
+  /** Enough for B's lock (fixture amount 1e18 + 1 wei) plus one call's gas. */
+  mainBalanceWei: 2n * 10n ** 18n,
   callCostWei: 10n ** 15n,
   ...overrides,
 })
@@ -1371,6 +1372,115 @@ describe('nextAction, B (MON depositor)', () => {
       branch: 'claim',
       funding: FUNDING,
       preimage: new Uint8Array(FIXTURE_PREIMAGE),
+    })
+  })
+
+  describe('lock-funds-low: the main account cannot pay the MON lock (#2092)', () => {
+    /** The lock amount plus one HTLC call's gas, from the fixture terms. */
+    const need = () => terms.evm.terms.amount + 10n ** 15n
+    const short = (c: Case = {}) =>
+      run('B', { ...c, evm: { mainBalanceWei: need() - 7n, ...c.evm } })
+    const cases: [string, Case, boolean][] = [
+      ['before A’s lock arrives', {}, true],
+      [
+        'while A’s lock is not final',
+        { xec: xecObs([output({ final: false })]) },
+        true,
+      ],
+      ['while the lock is due', { xec: xecObs([output()]) }, true],
+      ['at the lock cutoff', { now: lockBy, xec: xecObs([output()]) }, true],
+      [
+        'after one reverted lock',
+        { xec: xecObs([output()]), calls: [call('lock', 'reverted')] },
+        true,
+      ],
+      [
+        'on an inactive device (it only shows)',
+        { active: false, xec: xecObs([output()]) },
+        true,
+      ],
+      [
+        'past the cutoff (abandoned)',
+        { now: lockBy + 1, xec: xecObs([output()]) },
+        false,
+      ],
+      [
+        'past the cutoff by the EVM clock',
+        { evm: { blockTimestamp: lockBy + 1 }, xec: xecObs([output()]) },
+        false,
+      ],
+      [
+        'lock pending',
+        { xec: xecObs([output()]), calls: [call('lock', 'pending')] },
+        false,
+      ],
+      [
+        'lock landed',
+        { xec: xecObs([output()]), calls: [call('lock', 'landed')] },
+        false,
+      ],
+      [
+        'lock open on chain',
+        { xec: xecObs([output()]), evm: both('open') },
+        false,
+      ],
+      [
+        'reverts exhausted: no lock is sent any more',
+        {
+          xec: xecObs([output()]),
+          calls: [call('lock', 'reverted'), call('lock', 'reverted')],
+        },
+        false,
+      ],
+      [
+        'A’s lock already refunded',
+        {
+          xec: xecObs([
+            output({
+              spentBy: {
+                txid: 'ee'.repeat(32),
+                branch: 'refund',
+                final: false,
+              },
+            }),
+          ]),
+        },
+        false,
+      ],
+    ]
+    it.each(cases)('%s', (_, c, shown) => {
+      const d = short(c)
+      expect(d.warnings.includes('lock-funds-low')).toBe(shown)
+      expect(d.lockFunds).toEqual(
+        shown ? { shortfallWei: 7n, lockBy } : undefined,
+      )
+    })
+
+    it('still sends the lock (warn, never block or fund)', () => {
+      expect(summary(short({ xec: xecObs([output()]) }))).toBe(
+        'locking/lock-evm',
+      )
+      expect(summary(short())).toBe('awaitXecLock/none')
+    })
+
+    it('clears once the main account holds the amount plus gas', () => {
+      const funded = run('B', {
+        xec: xecObs([output()]),
+        evm: { mainBalanceWei: need() },
+      })
+      expect(funded.warnings).toEqual([])
+      expect(funded.lockFunds).toBeUndefined()
+    })
+
+    it('counts the gas, not only the amount', () => {
+      const d = run('B', { evm: { mainBalanceWei: terms.evm.terms.amount } })
+      expect(d.lockFunds?.shortfallWei).toBe(10n ** 15n)
+    })
+
+    it('A never gets it', () => {
+      expect(
+        run('A', { evm: { mainBalanceWei: 10n ** 16n } }).warnings,
+      ).toEqual([])
     })
   })
 })

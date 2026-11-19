@@ -17,12 +17,11 @@ import {
   type NetworkFeeEstimate,
   type SwapChainReader,
 } from './evm-swap'
+import type { EncodedCall, ReceiptLog } from './evm-swap-call'
 import {
   readSwapOutcome,
   universalRouterInterface,
-  type EncodedCall,
   type PoolRoute,
-  type ReceiptLog,
   type SwapRevertReason,
 } from './uniswap-v4'
 

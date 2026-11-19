@@ -7,7 +7,10 @@ import {
 import { useSwapHistory } from 'src/composables/useSwapHistory'
 import { exactTokenAmount, readableTokenAmount } from './amounts'
 import { swapAssetSymbol } from './asset-symbol'
-import { evmSwapVenues, openEvmSwapSession } from './evm-swap-session'
+import {
+  evmRecordedSwapVenues,
+  openRecordedEvmSwapSession,
+} from './evm-swap-session'
 
 export interface SwapActivityRow {
   id: string
@@ -52,10 +55,10 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
     try {
       // Each chain family says whose swaps its network's are.
       const solana = solanaSwapActivity(chain)
-      if (!solana && evmSwapVenues(chain).length === 0) return
+      if (!solana && evmRecordedSwapVenues(chain).length === 0) return
       const own = solana
         ? await solana.account()
-        : (await openEvmSwapSession(chain)).account
+        : (await openRecordedEvmSwapSession(chain)).account
       if (mine === accountFor) account.value = own
     } catch {
       /* No wallet for this chain now: nothing to list. */
@@ -91,7 +94,7 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
       toAsset: swapAssetSymbol(record.chainIdentifier, record.assetOut),
       route:
         solanaSwapActivity(record.chainIdentifier)?.venueName(record.venueId) ??
-        evmSwapVenues(record.chainIdentifier).find(
+        evmRecordedSwapVenues(record.chainIdentifier).find(
           venue => venue.id === record.venueId,
         )?.displayName ??
         record.venueId,
@@ -154,7 +157,10 @@ export function useSwapActivity(chainIdentifier: Ref<string | undefined>) {
               )
             continue
           }
-          const session = await openEvmSwapSession(chain, record.venueId)
+          const session = await openRecordedEvmSwapSession(
+            chain,
+            record.venueId,
+          )
           const result = await session.dex.observe({
             transactionId: record.txHash,
             account: record.account,

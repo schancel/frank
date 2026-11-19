@@ -17,7 +17,7 @@
  *     reverts with "too little received" when one more unit is demanded.
  */
 import { Contract, JsonRpcProvider, formatUnits, parseUnits } from 'ethers'
-import { getEvmDexDeployment } from '../chain/dex-deployments'
+import { getUniswapV4Deployment } from '../chain/dex-deployments'
 import { estimateCallFee, fetchSwapQuote, swapRevertReasonOf } from './evm-swap'
 import { encodeSwap, findToken, poolId, stateViewInterface } from './uniswap-v4'
 
@@ -32,7 +32,7 @@ async function main(): Promise<void> {
   const url =
     process.env.SWAP_LIVECHECK_RPC_URL ?? process.env.MONAD_TESTNET_HTTP_RPC_URL
   if (!url) throw new Error('Set MONAD_TESTNET_HTTP_RPC_URL')
-  const deployment = getEvmDexDeployment(chainIdentifier)
+  const deployment = getUniswapV4Deployment(chainIdentifier)
   if (!deployment) throw new Error(`No swap deployment for ${chainIdentifier}`)
   const provider = new JsonRpcProvider(url, undefined, { batchMaxCount: 1 })
   console.log(

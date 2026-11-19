@@ -37,7 +37,7 @@ import {
   reconcileSwap,
   type SwapOutcomeReader,
 } from './swap-execution'
-import { minimumOutput, type EncodedCall } from './uniswap-v4'
+import { minimumOutput, type EncodedCall } from './evm-swap-call'
 
 /** A Uniswap v2 pair's fee: 0.3% of the input, taken by the pair. */
 const V2_LP_FEE_PPM = 3000
@@ -451,7 +451,19 @@ export class HyperSwapV2Dex implements Dex {
         swap.data,
       )
       if (calls.length !== 1) throw new SwapRecordMismatchError()
-      swapRouterInterface.decodeFunctionData('swapExactTokensForTokens', calls[0])
+      const [amountIn, , path, to] = swapRouterInterface.decodeFunctionData(
+        'swapExactTokensForTokens',
+        calls[0],
+      )
+      // The recorded call is this route's swap, paid in as its value, to this account.
+      if (
+        BigInt(amountIn) !== swap.value ||
+        path.length !== 2 ||
+        !same(path[0], route.path[0]) ||
+        !same(path[1], route.path[1]) ||
+        !same(to, input.account)
+      )
+        throw new SwapRecordMismatchError()
       if (BigInt(value) <= BigInt(Number.MAX_SAFE_INTEGER))
         deadline = Number(value)
     } catch {

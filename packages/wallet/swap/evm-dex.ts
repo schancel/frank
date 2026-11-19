@@ -34,7 +34,7 @@ import type {
   SwapTiming,
   SwapWallet,
 } from './swap-execution'
-import type { EncodedCall } from './uniswap-v4'
+import type { EncodedCall } from './evm-swap-call'
 
 /** What a quote says, whatever the exchange. `route` is the exchange's own, opaque to callers. */
 export interface EvmDexQuote {

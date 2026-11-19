@@ -8,6 +8,7 @@
  */
 
 import { AbiCoder, getAddress, Interface, keccak256 } from 'ethers'
+import type { EncodedCall, ReceiptLog } from './evm-swap-call'
 import {
   assertInterfaceFee,
   NATIVE_CURRENCY,
@@ -63,8 +64,6 @@ export const poolManagerInterface = new Interface([
 const Q192 = 1n << 192n
 const UINT128_MAX = (1n << 128n) - 1n
 const UINT160_MAX = (1n << 160n) - 1n
-/** Slippage the form accepts, in basis points. Above 50% a "minimum" protects nothing. */
-export const MAX_SLIPPAGE_BPS = 5000
 
 export function currencyOf(token: EvmDexToken): string {
   return token.address === null ? NATIVE_CURRENCY : getAddress(token.address)
@@ -184,25 +183,6 @@ export function priceImpactPpm(params: {
   )
   if (ideal <= 0n || params.amountOut >= ideal) return 0
   return Number(((ideal - params.amountOut) * 1_000_000n) / ideal)
-}
-
-/** The least output the swap may deliver before it reverts. Rounds down, never to zero output. */
-export function minimumOutput(amountOut: bigint, slippageBps: number): bigint {
-  if (
-    !Number.isInteger(slippageBps) ||
-    slippageBps < 0 ||
-    slippageBps > MAX_SLIPPAGE_BPS
-  )
-    throw new RangeError('Slippage must be between 0% and 50%')
-  if (amountOut <= 0n) throw new RangeError('Quoted output must be positive')
-  const minimum = (amountOut * BigInt(10_000 - slippageBps)) / 10_000n
-  return minimum > 0n ? minimum : 1n
-}
-
-export interface EncodedCall {
-  readonly to: string
-  readonly data: string
-  readonly value: bigint
 }
 
 /** The interface fee on an output amount: whole basis points, rounded down as the router does. */
@@ -353,11 +333,6 @@ export function approvalSteps(params: {
   return steps
 }
 
-export interface ReceiptLog {
-  readonly address: string
-  readonly topics: readonly string[]
-  readonly data: string
-}
 
 /**
  * What a confirmed swap paid and delivered, from the transaction's own logs.

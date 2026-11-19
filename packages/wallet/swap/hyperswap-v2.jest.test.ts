@@ -460,17 +460,20 @@ describe('observe and reconcile', () => {
     pair: pair.address,
     path: [entry.wrappedNative, PURR.address!],
   }
-  const call = (deadline: number) => ({
+  const call = (
+    deadline: number,
+    inner: { path?: string[]; to?: string; amountIn?: bigint } = {},
+  ) => ({
     to: entry.swapRouter,
     value: '1000',
     data: swapRouter.encodeFunctionData('multicall', [
       deadline,
       [
         swapRouter.encodeFunctionData('swapExactTokensForTokens', [
-          1000n,
+          inner.amountIn ?? 1000n,
           1n,
-          [...route.path],
-          account,
+          inner.path ?? [...route.path],
+          inner.to ?? account,
         ]),
       ],
     ]),
@@ -556,6 +559,11 @@ describe('observe and reconcile', () => {
     for (const bad of [
       { ...call(1), to: stranger },
       { ...call(1), to: entry.router },
+      // The inner swap must be the route's path, paid in as the call value, to this account.
+      call(1, { to: stranger }),
+      call(1, { path: [PURR.address!, entry.wrappedNative] }),
+      call(1, { path: [entry.wrappedNative, stranger] }),
+      call(1, { amountIn: 999n }),
       { ...call(1), data: '0x1234' },
     ])
       await expect(

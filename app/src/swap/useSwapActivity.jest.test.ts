@@ -12,8 +12,8 @@ const mockOpen = jest.fn(async () => ({
   account: '0xMAIN',
 }))
 jest.mock('./evm-swap-session', () => ({
-  evmSwapVenues: () => [{ id: 'uniswap-v4', displayName: 'Uniswap v4' }],
-  openEvmSwapSession: (...args: unknown[]) => mockOpen(...(args as [])),
+  evmRecordedSwapVenues: () => [{ id: 'uniswap-v4', displayName: 'Uniswap v4' }],
+  openRecordedEvmSwapSession: (...args: unknown[]) => mockOpen(...(args as [])),
 }))
 
 const mockSolanaObserve = jest.fn()

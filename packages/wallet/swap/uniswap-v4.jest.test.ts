@@ -26,7 +26,6 @@ import {
   encodeSwap,
   findToken,
   interfaceFeeAmount,
-  minimumOutput,
   outputAtMidPrice,
   PERMIT2_ALLOWANCE_SECONDS,
   permit2Interface,
@@ -36,6 +35,7 @@ import {
   routesFor,
   universalRouterInterface,
 } from './uniswap-v4'
+import { minimumOutput } from './evm-swap-call'
 import {
   callRevert,
   cannedNode,

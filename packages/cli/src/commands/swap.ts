@@ -22,7 +22,8 @@ import {
   planSwap,
   type SwapChainReader,
 } from "@frank/wallet/swap/evm-swap";
-import { findToken, minimumOutput } from "@frank/wallet/swap/uniswap-v4";
+import { findToken } from "@frank/wallet/swap/uniswap-v4";
+import { minimumOutput } from "@frank/wallet/swap/evm-swap-call";
 
 import { outputError, outputResult } from "../util";
 

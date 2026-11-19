@@ -48,8 +48,14 @@ jest.mock('src/accounts/session', () => ({
   accountSession: mockSession,
 }))
 // The account's own wallet is the Monad testnet one: `openEvmWallet` hands back that wallet.
+const mockOpenedWallets: unknown[] = []
 jest.mock('src/accounts/evm-wallets', () => ({
-  openEvmWallet: async () => ({ wallet: await mockSession.getWallet() }),
+  openEvmWallet: async () => {
+    const open = { wallet: await mockSession.getWallet() }
+    mockOpenedWallets.push(open)
+    return open
+  },
+  peekOpenedEvmWallets: () => mockOpenedWallets,
 }))
 jest.mock('@frank/wallet/chain/dex-deployments', () => {
   const actual = jest.requireActual('@frank/wallet/chain/dex-deployments')

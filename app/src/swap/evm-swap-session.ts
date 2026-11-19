@@ -9,6 +9,7 @@
  */
 import {
   getEvmDexDeployment,
+  listEnabledEvmDexEntries,
   listEvmSwapVenues,
   type EvmDexEntry,
 } from '@frank/wallet/chain/dex-deployments'
@@ -21,7 +22,7 @@ import { swapRecordItemOf } from '@frank/wallet/chain/evm-legacy-consolidator'
 import type { SwapRecordItem } from '@frank/cashweb/types/messages'
 import { Transaction } from 'ethers'
 import { accountSession } from 'src/accounts/session'
-import { openEvmWallet } from 'src/accounts/evm-wallets'
+import { openEvmWallet, peekOpenedEvmWallets } from 'src/accounts/evm-wallets'
 
 /** Adapter key (a dex entry's `adapter`) to the class that speaks to that exchange. */
 function evmDexFor(
@@ -75,25 +76,71 @@ export class EvmSwapUnavailableError extends Error {
   }
 }
 
-/** The enabled dex entries of a chain's EVM wallet, in order; empty when it has none. */
+/**
+ * The venues a new swap may be quoted on, in order; empty when the chain has none. A venue that
+ * cannot carry a configured interface fee is not among them.
+ */
 export function evmSwapVenues(
   chainIdentifier: string | undefined,
 ): readonly EvmDexEntry[] {
   return chainIdentifier ? listEvmSwapVenues(chainIdentifier) : []
 }
 
-export async function openEvmSwapSession(
+/**
+ * Every enabled venue of a chain, whatever fee is configured: what the account's existing swaps
+ * were made on and what its token balances are of. Each one as offered (with any fee) when it
+ * is offered; otherwise as configured.
+ */
+export function evmRecordedSwapVenues(
+  chainIdentifier: string | undefined,
+): readonly EvmDexEntry[] {
+  if (!chainIdentifier) return []
+  const offered = listEvmSwapVenues(chainIdentifier)
+  return listEnabledEvmDexEntries(chainIdentifier).map(
+    entry => offered.find(venue => venue.id === entry.id) ?? entry,
+  )
+}
+
+/** A session to quote and make a new swap on one of the chain's offered venues. */
+export function openEvmSwapSession(
   chainIdentifier: string,
   venueId?: string,
 ): Promise<EvmSwapSession> {
-  const entry = getEvmDexDeployment(chainIdentifier, venueId)
+  return openSession(
+    chainIdentifier,
+    getEvmDexDeployment(chainIdentifier, venueId),
+  )
+}
+
+/**
+ * A session to read, observe or reconcile what the account already did on a venue (and read
+ * its token balances), offered for new swaps or not. Never used to quote a new swap.
+ */
+export function openRecordedEvmSwapSession(
+  chainIdentifier: string,
+  venueId?: string,
+): Promise<EvmSwapSession> {
+  const venues = evmRecordedSwapVenues(chainIdentifier)
+  return openSession(
+    chainIdentifier,
+    venueId === undefined
+      ? venues[0]
+      : venues.find(venue => venue.id === venueId),
+  )
+}
+
+async function openSession(
+  chainIdentifier: string,
+  entry: EvmDexEntry | undefined,
+): Promise<EvmSwapSession> {
   if (!entry) throw new EvmSwapUnavailableError('no-deployment')
   // Opens the account (if it is not yet) before its state is read.
   await accountSession.getWallet()
   const { account: signedIn, revision } = accountSession.state
   // The account's configured EVM owner for exactly this network: the account's own wallet when
   // that is the network, otherwise the wallet `openEvmWallet` opens for it. Never another one.
-  const { wallet } = await openEvmWallet(chainIdentifier)
+  const open = await openEvmWallet(chainIdentifier)
+  const { wallet } = open
   if (wallet.family !== 'evm' || wallet.chainIdentifier !== chainIdentifier)
     throw new EvmSwapUnavailableError('wrong-network')
   const reader = wallet.evmReader
@@ -163,6 +210,8 @@ export async function openEvmSwapSession(
     isCurrent: () =>
       accountSession.state.status === 'ready' &&
       accountSession.state.account === signedIn &&
-      accountSession.state.revision === revision,
+      accountSession.state.revision === revision &&
+      // The wallet it was opened with is still this account's open wallet for the chain.
+      peekOpenedEvmWallets().includes(open),
   }
 }

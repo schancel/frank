@@ -9,8 +9,8 @@ jest.mock('@frank/wallet/swap/evm-swap', () => ({
   readTokenBalance: () => mockReads(),
 }))
 jest.mock('src/swap/evm-swap-session', () => ({
-  evmSwapVenues: (id: string) => (id === 'monad-testnet' ? [{}] : []),
-  openEvmSwapSession: async () => ({
+  evmRecordedSwapVenues: (id: string) => (id === 'monad-testnet' ? [{}] : []),
+  openRecordedEvmSwapSession: async () => ({
     reader: {},
     account: '0x0000000000000000000000000000000000000001',
     dex: {

@@ -68,7 +68,10 @@ const signer = (n: number) =>
 const PRICE = 1_000_000_000n
 const FEE = 21_000n * PRICE
 const anvilBin = findAnvil()
-if (!anvilBin) console.warn('NOT RUN: exposed-successor-recovery needs Anvil')
+if (!anvilBin)
+  console.warn(
+    'NOT RUN: evm-archived-own-move-recovery.anvil needs an anvil binary (set ANVIL_BIN). Nothing here was exercised.',
+  )
 const suite = anvilBin ? describe : describe.skip
 suite(
   'archived exposed own move remains executable after independent topup',

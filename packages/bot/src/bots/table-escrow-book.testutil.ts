@@ -69,7 +69,7 @@ export function seatingEscrowBook(game: TableGame, options: { forgetOnSettle?: b
     async recover() {
       return [];
     },
-    stop() {},
+    async stop() {},
   };
   return { book, settlements };
 }

@@ -289,7 +289,7 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     tableJoinSignerOf(player.wallet)!.signTableJoin({ contract: htlc, game: type, tableId, lockId, joiner });
 
   it("poker: two players lock and are seated; the settled hand pays the pot out by chip stack", async () => {
-    const poker = new PokerBot();
+    const poker = started(new PokerBot());
     const ctx = botCtx();
     const created = tableItem<PokerItem>(await say(poker, ctx, alice, [{ type: "text", text: "/poker create" }]), "poker");
     expect(created.escrow!.arbiter.toLowerCase()).toBe(bot.main.toLowerCase());
@@ -339,7 +339,7 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
   });
 
   it("liars-dice: a text join, a missing lock, other terms or a wrong lock id seat nobody; the right lock does", async () => {
-    const dice = new LiarsDiceBot();
+    const dice = started(new LiarsDiceBot());
     const ctx = botCtx();
     const created = tableItem<LiarsDiceItem>(await say(dice, ctx, alice, [{ type: "text", text: "/table create 0.1" }]), "liars-dice");
     const terms = termsOf(created.escrow!, created.buyInWei!);
@@ -425,7 +425,7 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
   });
 
   it("a table the bot never settles: each player refunds its own lock from the deadline on, not before", async () => {
-    const dice = new LiarsDiceBot();
+    const dice = started(new LiarsDiceBot());
     const ctx = botCtx();
     const created = tableItem<LiarsDiceItem>(await say(dice, ctx, alice, [{ type: "text", text: "/table create 0.1" }]), "liars-dice");
     const { item, lockId } = await lockAndJoinItem(alice, "liars-dice", created);
@@ -703,6 +703,59 @@ suite("game table buy-in escrow on GenericHTLC v2, real wallets on a real EVM no
     expect(await state.get(`table-escrow:${created.tableId}`)).toBeUndefined();
     expect(sends).toHaveLength(3);
     expect(text(await say(dice, ctx, alice, [{ type: "text", text: "/start" }]))).toContain("has ended");
+  });
+
+  it("a stopped bot cancels its pending retry and finishes the running one before its store and provider close; nothing runs after", async () => {
+    const dice = new LiarsDiceBot({ escrows: new TableEscrows("liars-dice", { retryBaseMs: 100 }) });
+    const ctx = botCtx();
+    const { created, locks } = await seatedTable(dice, ctx);
+    const real = ctx.contractCalls!;
+    let sends = 0;
+    let hold: Promise<void> | undefined;
+    let held!: () => void;
+    let release!: () => void;
+    const flaky = {
+      ...ctx,
+      contractCalls: {
+        ...real,
+        send: async () => {
+          sends++;
+          if (hold) {
+            held();
+            await hold;
+          }
+          throw new Error("node unreachable");
+        },
+      },
+    } as BotContext;
+    const game = (dice as unknown as { tables: Map<string, { players: Array<{ diceCount: number }> }> }).tables.get(created.tableId)!;
+    for (const p of game.players) p.diceCount = 1;
+    await say(dice, flaky, alice, [{ type: "text", text: "/start" }]);
+    await say(dice, flaky, alice, [{ type: "text", text: "/bid 1 2" }]);
+    expect(text(await say(dice, flaky, bob, [{ type: "text", text: "/liar" }]))).toContain("not sent yet");
+    await until(() => sends >= 2, "the failed settlement is retried");
+
+    // The next retry is running (its send held) when the bot stops.
+    const running = new Promise<void>(resolve => (held = resolve));
+    hold = new Promise<void>(resolve => (release = resolve));
+    await running;
+    const warn = jest.spyOn(console, "warn");
+    let stopped = false;
+    const stopping = dice.onStop().then(() => (stopped = true));
+    await new Promise(resolve => setTimeout(resolve, 300));
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    const atStop = sends;
+    const warnedAtStop = warn.mock.calls.length;
+
+    // Then the store and provider close, as the host does: no retry runs against them.
+    await state.close();
+    await new Promise(resolve => setTimeout(resolve, 1_000));
+    expect(sends).toBe(atStop);
+    expect(warn.mock.calls.length).toBe(warnedAtStop);
+    warn.mockRestore();
+    for (const id of locks) expect((await readHtlcLock(chain, htlc, id))!.state).toBe("open");
   });
 
   it("after a restart, one table's failed recovery neither blocks startup nor the other tables, and is retried", async () => {

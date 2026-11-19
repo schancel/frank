@@ -145,8 +145,10 @@ export interface TableEscrowBook {
   /** After a restart: settles every kept table that `live` does not know, each on its own.
    * Never rejects; a table that fails is retried in the background. */
   recover(ctx: BotContext, live: (tableId: string) => boolean): Promise<TableSettlementResult[]>;
-  /** Stops background retries and watching (the bot is stopping). */
-  stop(): void;
+  /** Stops background retries and watching (the bot is stopping): no retry runs or is scheduled
+   * from now on, and a step already running is finished before this resolves, so the bot's state
+   * store and provider can then be closed. */
+  stop(): Promise<void>;
 }
 
 export function tableEscrowItemTerms(record: Readonly<TableEscrowRecord>): TableEscrowItemTerms {
@@ -506,8 +508,13 @@ export class TableEscrows implements TableEscrowBook {
     }
   }
 
+  /** Stopped by `stop`, or the host is stopping: nothing new is started in the background. */
+  private stopping(ctx: BotContext): boolean {
+    return this.stopped || ctx.stopping?.aborted === true;
+  }
+
   private scheduleRetry(ctx: BotContext, tableId: string, gameGone: boolean): void {
-    if (this.stopped) return;
+    if (this.stopping(ctx)) return;
     const entry = this.retries.get(tableId) ?? { attempt: 0, gameGone };
     if (entry.timer) clearTimeout(entry.timer);
     const delay = Math.min(this.retryBaseMs * 2 ** entry.attempt, this.retryMaxMs);
@@ -515,6 +522,7 @@ export class TableEscrows implements TableEscrowBook {
     entry.gameGone = entry.gameGone || gameGone;
     entry.timer = setTimeout(() => {
       entry.timer = undefined;
+      if (this.stopping(ctx)) return;
       void this.lane(tableId, () => this.reconcileSafely(ctx, tableId, entry.gameGone));
     }, delay);
     entry.timer.unref?.();
@@ -527,10 +535,13 @@ export class TableEscrows implements TableEscrowBook {
     this.retries.delete(tableId);
   }
 
-  stop(): void {
+  async stop(): Promise<void> {
     this.stopped = true;
     for (const entry of this.retries.values()) if (entry.timer) clearTimeout(entry.timer);
     this.retries.clear();
+    // A step already running (a retry, a recovery, a settlement) uses the state store and the
+    // provider: it finishes before they close. Once stopped, it schedules nothing after itself.
+    while (this.lanes.size) await Promise.allSettled([...this.lanes.values()]);
   }
 
   async recover(ctx: BotContext, live: (tableId: string) => boolean): Promise<TableSettlementResult[]> {
@@ -543,6 +554,7 @@ export class TableEscrows implements TableEscrowBook {
       return results;
     }
     for (const tableId of index) {
+      if (this.stopping(ctx)) break;
       if (!TABLE_ID_PATTERN.test(tableId)) continue;
       try {
         const raw = await ctx.state.get(recordKey(tableId));
@@ -554,7 +566,7 @@ export class TableEscrows implements TableEscrowBook {
         console.warn(`[table-escrow] table ${tableId}: unreadable record (${reasonOf(error)}); skipped`);
         continue;
       }
-      if (live(tableId)) continue;
+      if (live(tableId) || this.stopping(ctx)) continue;
       results.push(await this.lane(tableId, () => this.reconcileSafely(ctx, tableId, true)));
     }
     return results;

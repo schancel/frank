@@ -109,7 +109,10 @@ export class PokerBot implements FrankBotDefinition {
 
   async onStop(): Promise<void> {
     for (const tableId of [...this.timers.keys()]) this.clearTableTimer(tableId);
-    this.escrows.stop();
+    // Before the host closes the state store and provider: retries cancelled, a running step
+    // and the restart recovery finished.
+    await this.escrows.stop();
+    await this.recovery;
   }
 
   /**

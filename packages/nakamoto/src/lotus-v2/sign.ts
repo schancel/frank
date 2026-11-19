@@ -25,11 +25,21 @@ import {
   lotusV2IndexedTreeRoot,
   lotusV2TaggedHash,
 } from './hash.js'
+import {
+  encodeLotusV2CoinOutput,
+  isLotusV2LegacyCoin,
+  type LotusV2Coin,
+  type LotusV2LegacyCoin,
+  lotusV2LegacyBridgeLeaf,
+  lotusV2LegacyBridgeWitness,
+  lotusV2LegacyP2pkhKey,
+} from './legacy.js'
 import type { LotusV2SignatureTemplate } from './template.js'
 import {
   encodeLotusV2Input,
   encodeLotusV2Output,
   encodeLotusV2Transaction,
+  type LotusV2BranchWitness,
   LOTUS_V2_NO_LOCK,
   LOTUS_V2_SEQUENCE_FINAL,
   LotusV2FormatError,
@@ -47,7 +57,7 @@ export type LotusV2SigningMode = 0 | 1 | 2
 type SpendInput = Extract<LotusV2Input, { kind: 'spend' }>
 
 /** The resolved coin of each input in order; `undefined` for a mint input. */
-export type LotusV2ResolvedCoins = readonly (LotusV2Output | undefined)[]
+export type LotusV2ResolvedCoins = readonly (LotusV2Coin | undefined)[]
 
 function resolvedFor(
   tx: LotusV2Transaction,
@@ -59,14 +69,17 @@ function resolvedFor(
     const coin = coins[i]
     if (input.kind === 'coinbase')
       throw new LotusV2FormatError('unsupported input kind for signing')
-    if (input.kind === 'spend' && (!coin || coin.burn))
+    if (
+      input.kind === 'spend' &&
+      (!coin || (!isLotusV2LegacyCoin(coin) && coin.burn))
+    )
       throw new LotusV2FormatError('spend resolved coin')
     if (input.kind === 'mint' && coin)
       throw new LotusV2FormatError('mint resolved coin')
   })
 }
 
-/** `CoinsRoot = IndexedTreeRoot(H_coinentry(Bytes(Output(coin_i))))`; a mint's entry is `Bytes(empty)`. */
+/** `CoinsRoot = IndexedTreeRoot(H_coinentry(Bytes(CoinOutput(coin_i))))`; a mint's entry is `Bytes(empty)`. */
 export function lotusV2CoinsRoot(
   chain: LotusV2ChainDescriptor,
   tx: LotusV2Transaction,
@@ -79,24 +92,26 @@ export function lotusV2CoinsRoot(
       lotusV2TaggedHash(
         chain,
         'coinentry',
-        lengthPrefixed(coin ? encodeLotusV2Output(coin) : new Uint8Array(0)),
+        lengthPrefixed(
+          coin ? encodeLotusV2CoinOutput(coin) : new Uint8Array(0),
+        ),
       ),
     ),
   )
 }
 
-/** `OwnInputHash(i) = H_owninput(InputCore(i) || Bytes(Output(resolved_coin_i)))`. */
+/** `OwnInputHash(i) = H_owninput(InputCore(i) || Bytes(CoinOutput(resolved_coin_i)))`. */
 export function lotusV2OwnInputHash(
   chain: LotusV2ChainDescriptor,
   input: LotusV2Input,
-  coin: LotusV2Output,
+  coin: LotusV2Coin,
 ): Uint8Array {
   return lotusV2TaggedHash(
     chain,
     'owninput',
     concatBytes([
       encodeLotusV2Input(input, true),
-      lengthPrefixed(encodeLotusV2Output(coin)),
+      lengthPrefixed(encodeLotusV2CoinOutput(coin)),
     ]),
   )
 }
@@ -115,7 +130,11 @@ export interface LotusV2SignatureTarget {
   readonly mode: LotusV2SigningMode
 }
 
-/** The 32 bytes a CHECKSIG in witness `j` of input `i` verifies. */
+/**
+ * The 32 bytes a CHECKSIG in witness `j` of input `i` verifies. For a
+ * legacy-bridge input (a spend of a legacy coin) the only invocation is
+ * witness 0, branch 0, and the selector carries the bridge leaf.
+ */
 export function lotusV2SignatureMessage(
   chain: LotusV2ChainDescriptor,
   tx: LotusV2Transaction,
@@ -133,18 +152,29 @@ export function lotusV2SignatureMessage(
   if (input.kind !== 'spend')
     throw new LotusV2FormatError('unsupported input kind for signing')
   resolvedFor(tx, coins)
-  const coin = coins[i] as LotusV2Output
-  const path = coin.paths[input.pathIndex]
-  if (path === undefined) throw new LotusV2FormatError('path index')
-  const branchIndex = path[j]
-  const witness = input.witnesses[j]
-  if (branchIndex === undefined || witness === undefined)
-    throw new LotusV2FormatError('witness index')
+  const coin = coins[i] as LotusV2Coin
+  let branchIndex: number
+  let leaf: Uint8Array
+  if (isLotusV2LegacyCoin(coin)) {
+    const { witness } = lotusV2LegacyBridgeWitness(input, coin)
+    if (j !== 0) throw new LotusV2FormatError('witness index')
+    branchIndex = 0
+    leaf = lotusV2LegacyBridgeLeaf(chain, coin.scriptPubKey, witness.script)
+  } else {
+    const path = coin.paths[input.pathIndex]
+    if (path === undefined) throw new LotusV2FormatError('path index')
+    const index = path[j]
+    const witness = input.witnesses[j]
+    if (index === undefined || witness === undefined)
+      throw new LotusV2FormatError('witness index')
+    branchIndex = index
+    leaf = lotusV2BranchLeaf(chain, witness.script)
+  }
   const selector = new ByteWriter()
     .writeUInt8(1)
     .writeUInt32LE(i)
     .writeUInt32LE(branchIndex)
-    .write(lotusV2BranchLeaf(chain, witness.script))
+    .write(leaf)
     .finish()
   const chainId = lotusV2ChainIdBytes(chain)
   const ids = lotusV2TransactionIdentities(chain, tx)
@@ -216,6 +246,57 @@ function validXOnly(key: Uint8Array): boolean {
   }
 }
 
+/** 64 bytes: mode 00; 65 bytes ending 01 or 02: that mode; anything else is malformed. */
+function operandMode(operand: Uint8Array): LotusV2SigningMode | undefined {
+  if (operand.length === 64) return 0
+  if (operand.length === 65 && (operand[64] === 1 || operand[64] === 2))
+    return operand[64] as 1 | 2
+  return undefined
+}
+
+/**
+ * Verify legacy-bridge input `i`, whose coin is a legacy P2PKH coin (P01
+ * "Spending a legacy coin", P2PKH): the arguments are exactly
+ * `[signature, compressed key]`, the key hashes to the coin, the signature is
+ * a CHECKSIG operand, and it verifies under `public_key[1..33]`. Any failure,
+ * an invalid signature included, rejects the transaction: there is no false
+ * result. A P2SH legacy coin runs the legacy interpreter, which nakamoto does
+ * not implement ({@link LotusV2UnsupportedError}).
+ */
+export function verifyLotusV2LegacyP2pkh(
+  chain: LotusV2ChainDescriptor,
+  tx: LotusV2Transaction,
+  coins: LotusV2ResolvedCoins,
+  inputIndex: number,
+): void {
+  const input = tx.inputs[inputIndex]
+  const coin = coins[inputIndex]
+  if (
+    input?.kind !== 'spend' ||
+    coin === undefined ||
+    !isLotusV2LegacyCoin(coin)
+  )
+    throw new LotusV2FormatError('legacy coin witness')
+  const { template, witness } = lotusV2LegacyBridgeWitness(input, coin)
+  if (template.kind === 'p2sh')
+    throw new LotusV2UnsupportedError('P2SH legacy-bridge script evaluation')
+  const [operand, key, ...rest] = witness.arguments
+  if (operand === undefined || key === undefined || rest.length > 0)
+    throw new LotusV2FormatError('legacy p2pkh arguments')
+  const xOnly = lotusV2LegacyP2pkhKey(coin, key)
+  const mode = operandMode(operand)
+  if (mode === undefined || (mode === 2 && inputIndex >= tx.outputs.length))
+    throw new LotusV2ScriptError('legacy p2pkh signature')
+  const message = lotusV2SignatureMessage(chain, tx, coins, {
+    inputIndex,
+    witnessIndex: 0,
+    mode,
+  })
+  const verified = verifySchnorr(operand.subarray(0, 64), message, xOnly)
+  if (!verified.ok || !verified.value)
+    throw new LotusV2ScriptError('legacy p2pkh signature')
+}
+
 /**
  * CHECKSIG of witness `j` of input `i`, as P01 defines it: the operand's
  * length selects the mode (64 bytes: 00; 65 bytes: 64 then 01 or 02). Any other
@@ -234,13 +315,16 @@ export function verifyLotusV2Signature(
 ): boolean {
   if (!validXOnly(xOnlyPublicKey))
     throw new LotusV2ScriptError('CHECKSIG wire encoding')
-  let mode: LotusV2SigningMode
-  if (operand.length === 64) mode = 0
-  else if (operand.length === 65 && (operand[64] === 1 || operand[64] === 2))
-    mode = operand[64] as 1 | 2
-  else throw new LotusV2ScriptError('CHECKSIG wire encoding')
-  if (mode === 2 && target.inputIndex >= tx.outputs.length)
+  const mode = operandMode(operand)
+  if (
+    mode === undefined ||
+    (mode === 2 && target.inputIndex >= tx.outputs.length)
+  )
     throw new LotusV2ScriptError('CHECKSIG wire encoding')
+  const coin = coins[target.inputIndex]
+  if (coin !== undefined && isLotusV2LegacyCoin(coin))
+    // A legacy-bridge input runs no V2 script.
+    throw new LotusV2FormatError('legacy coin witness')
   const message = lotusV2SignatureMessage(chain, tx, coins, {
     ...target,
     mode,
@@ -268,6 +352,25 @@ export interface LotusV2TemplateSpend {
   readonly mode?: LotusV2SigningMode
 }
 
+/** A legacy P2PKH coin spent through the legacy bridge. */
+export interface LotusV2LegacyP2pkhSpend {
+  readonly prevTxid: Uint8Array
+  readonly prevIndex: number
+  readonly sequence?: number
+  readonly coin: LotusV2LegacyCoin
+  /** The 33-byte compressed key the coin's hash commits to. */
+  readonly publicKey: Uint8Array
+  /** A BIP340 key whose x-only key is `publicKey[1..33]`. */
+  readonly signer: SigningKey
+  readonly mode?: LotusV2SigningMode
+}
+
+export type LotusV2Spend = LotusV2TemplateSpend | LotusV2LegacyP2pkhSpend
+
+function isLegacySpend(spend: LotusV2Spend): spend is LotusV2LegacyP2pkhSpend {
+  return isLotusV2LegacyCoin(spend.coin)
+}
+
 export interface LotusV2SignedTransaction {
   readonly transaction: LotusV2Transaction
   readonly raw: Uint8Array
@@ -280,19 +383,37 @@ function equal(a: Uint8Array, b: Uint8Array): boolean {
 }
 
 /**
- * Build and sign a transaction whose every input is a template spend of a
- * one-branch path (`paths[p] = [b]`, the template's leaf proven in
- * `branches[b]`). Outputs are taken as given; the fee is whatever the inputs
- * leave. Signatures never enter the TxID, so all inputs sign one TxID.
+ * Build and sign a transaction whose every input is either a template spend
+ * of a one-branch path (`paths[p] = [b]`, the template's leaf proven in
+ * `branches[b]`) or a legacy P2PKH coin spent through the bridge. Outputs are
+ * taken as given; the fee is whatever the inputs leave. Signatures never
+ * enter the TxID, so all inputs sign one TxID.
  */
 export function signLotusV2Transaction(params: {
   readonly chain: LotusV2ChainDescriptor
-  readonly inputs: readonly LotusV2TemplateSpend[]
+  readonly inputs: readonly LotusV2Spend[]
   readonly outputs: readonly LotusV2Output[]
   readonly lock?: LotusV2Lock
 }): LotusV2SignedTransaction {
   const { chain } = params
   const unsigned: SpendInput[] = params.inputs.map(spend => {
+    if (spend.signer.publicKey.length !== 32)
+      throw new LotusV2FormatError('the signer is not an x-only BIP340 key')
+    if (isLegacySpend(spend)) {
+      const xOnly = lotusV2LegacyP2pkhKey(spend.coin, spend.publicKey)
+      if (!equal(spend.signer.publicKey, xOnly))
+        throw new LotusV2FormatError(
+          "the signer's key is not the key the coin commits to",
+        )
+      return {
+        kind: 'spend',
+        prevTxid: spend.prevTxid,
+        prevIndex: spend.prevIndex,
+        sequence: spend.sequence ?? LOTUS_V2_SEQUENCE_FINAL,
+        pathIndex: 0,
+        witnesses: [{ script: new Uint8Array(0), siblings: [], arguments: [] }],
+      }
+    }
     const siblings = spend.siblings ?? []
     const root = lotusV2BranchProofRoot(
       chain,
@@ -308,8 +429,6 @@ export function signLotusV2Transaction(params: {
       throw new LotusV2FormatError(
         'the template is not a one-branch path of the coin',
       )
-    if (spend.signer.publicKey.length !== 32)
-      throw new LotusV2FormatError('the signer is not an x-only BIP340 key')
     if (!equal(spend.signer.publicKey, spend.template.publicKey))
       throw new LotusV2FormatError(
         "the signer's key is not the key the template checks",
@@ -330,7 +449,7 @@ export function signLotusV2Transaction(params: {
   }
   const coins = params.inputs.map(spend => spend.coin)
   const inputs: LotusV2Input[] = unsigned.map((input, i) => {
-    const spend = params.inputs[i] as LotusV2TemplateSpend
+    const spend = params.inputs[i] as LotusV2Spend
     const mode = spend.mode ?? 0
     const message = lotusV2SignatureMessage(chain, draft, coins, {
       inputIndex: i,
@@ -338,11 +457,17 @@ export function signLotusV2Transaction(params: {
       mode,
     })
     const operand = lotusV2SignatureOperand(spend.signer.sign(message), mode)
-    const witness = {
-      script: spend.template.script,
-      siblings: spend.siblings ?? [],
-      arguments: spend.template.arguments(operand),
-    }
+    const witness: LotusV2BranchWitness = isLegacySpend(spend)
+      ? {
+          script: new Uint8Array(0),
+          siblings: [],
+          arguments: [operand, Uint8Array.from(spend.publicKey)],
+        }
+      : {
+          script: spend.template.script,
+          siblings: spend.siblings ?? [],
+          arguments: spend.template.arguments(operand),
+        }
     return { ...input, witnesses: [witness] }
   })
   const transaction: LotusV2Transaction = { ...draft, inputs }

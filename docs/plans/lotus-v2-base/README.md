@@ -73,6 +73,14 @@ ruling above); that refusal stays in the wallet, not in nakamoto.
 - Signature messages for modes 00/01/02 on spend invocations; a mint invocation's message
   (needs the accounting delta) is an explicit `unsupported` result. BIP340 signing via nakamoto
   `SigningKey`; verification of a spend witness's signature.
+- Legacy coins (P01 "Spending a legacy coin"): the `LegacyCoinOutput` wire (`80 || value ||
+  Bytes(scriptPubKey)`, value in `MoneyRange`, script at most 10,000 bytes) wherever a coin's
+  output wire is used (`CoinsRoot`, `OwnInputHash`); `decodeLotusV2CoinOutput` tells the two
+  encodings apart by the first byte. Legacy-bridge signing messages (`LegacyBridgeLeaf` in
+  `SpendSelector`, branch 0) for P2PKH and P2SH; building and verifying P2PKH bridge spends
+  (BIP340 under `public_key[1..33]`, an invalid signature rejects). P2SH script evaluation (the
+  legacy interpreter with ECDSA/legacy Schnorr) is an explicit `unsupported` result: only its
+  signing messages are checked, against the lotusd vectors.
 - Not implemented (explicit, not silent): VM execution, accounting and fee rules (the fee rule
   is wallet policy and is changing upstream, see below), UTXO/state commitments, block headers.
 
@@ -128,8 +136,12 @@ not the spec"):
    **Ruling:** real rules, being added to P01/C05. Nakamoto follows the node.
 4. The node has legacy coin entries (leading byte `0x80`) and a legacy-bridge leaf
    (`H_branch(03 || …)`) not in P01/P02. **Ruling:** consensus; v7 can spend a legacy-output coin.
-   A spec section and Python-reference vector are being written; nakamoto skips them until the
-   Lotus session gives their location (follow-up).
+   The spec now has it (P01 "Spending a legacy coin", uncommitted in the Lotus checkout on
+   2026-11-19; worked example = lotusd `src/test/data/v2_legacy_bridge.json` "P2PKH bridge").
+   Implemented as above; all nine `v2_legacy_bridge.json` messages and the worked example's
+   coin wire, bridge leaf, CoinLeaf, OwnInputHash and TxID are nakamoto test vectors. The node's
+   `DecodeCoinOutput` does not check `MoneyRange` on a legacy coin's value (import does, in
+   `legacy_coin.h`); nakamoto follows P01 and checks it in the codec.
 5. Address decode order. **Ruling:** prefix, length, alphabet, checksum, version, padding, with
    the spec's reason strings; "wrong network" is a caller-side check after a successful decode
    against the string's own prefix, and a corrupted string with a known prefix is `bad checksum`.
@@ -137,14 +149,45 @@ not the spec"):
    give the same reasons decoded as mainnet or as regtest, and the wallet surfaces exactly
    `bad checksum`.
 
+Second batch of rulings (lotus-86 spec update, relayed by the coordinator, 2026-11-19;
+"implement the spec, not the node"):
+
+6. Output flags: valid flags are `00`–`05` only (no `HAS_STATE` with `IS_BURN`); a present
+   `state_root` is nonzero; coinbase outputs need `(flags & 05) == 0`. Nakamoto's parser already
+   enforces all three; regression tests cover each.
+7. Hash display: digest order everywhere, input and output. Frank's only reversal is still the
+   one switch for the node's JSON-RPC (item 1); nothing else reverses.
+8. CHECKSIG (validation.md "Signature-operand cases"): an empty operand with a valid key is a
+   script error, as are 63-, 66- and `00`-terminated 65-byte operands; a correctly sized but
+   invalid signature pushes false. The node instead pushes false on empty and throws NULLFAIL on
+   an invalid signature (fixes pending). Nakamoto implements the spec; tests cover every case.
+9. Token output amounts take the full u64 range; the node rejects amounts above `INT64_MAX`
+   (bug). Nakamoto's codec accepts the full range. No regtest case relies on it, since it would
+   fail on the current node. The native `MoneyRange` limit for spendable outputs (C16a, `2^62`,
+   "awaiting owner sign-off") is a validation rule nakamoto does not apply to V2 outputs yet;
+   it applies only where P01 states it in the codec (a legacy coin's value).
+
+Review follow-ups (independent review, 2026-11-19): an address checksum constant is checked
+against `addresses.md`'s prefix table (a descriptor that disagrees throws instead of silently
+encoding another network's checksum); `signLotusV2Transaction` refuses a signer whose x-only key
+is not the template's (templates now carry `publicKey`); strict-parse rejections have regression
+tests.
+
 The Coin record's 17-byte lifespan suffix (P02, fixed in the reference model this week) is not
 in any signature message (`CoinEntry` is `Bytes(Output)` only) and Frank does not encode Coin
 records, so nothing here depends on it.
 
-To rerun on `daemon/.build/v2-current` when it exists (`LOTUSD_BIN=…/v2-current/lotusd
-FRANK_REQUIRE_NODES=1`, regtest only): `packages/wallet/lotus-v2/wallet.regtest.jest.test.ts`,
-`chain-objects.regtest.jest.test.ts`, and `relay.regtest.jest.test.ts` (with `CASHWEBD_BIN`).
-The fee rule (1 atom/byte) is the one most likely to change there.
+Current node build: `/Users/shammah/repos/lotus/daemon/.build/v2-current/lotusd`,
+v0.34.1-ea95b1631f2c (branch `scratch/v2fix/audit` at ea95b1631f, kept by ref
+`keep/v2-current-ea95b1631f`; BUILD-INFO: RelWithDebInfo, Chronik on, regtest only; still prints
+JSON-RPC h32 reversed and has the CHECKSIG empty/invalid-signature cases backwards, fixes
+pending, so `LOTUS_V2_RPC_REVERSES_HASHES` stays true). The codec sources (`signing.cpp`,
+`transaction.cpp`, `output.cpp`, `address.cpp`, `commitment.cpp`) and `v2_legacy_bridge.json`
+are unchanged between 38cfb7d273 and ea95b1631f. The regtest suites
+(`packages/wallet/lotus-v2/wallet.regtest.jest.test.ts`, `chain-objects.regtest.jest.test.ts`,
+`relay.regtest.jest.test.ts` with `CASHWEBD_BIN`) run with `LOTUSD_BIN` set to it and
+`FRANK_REQUIRE_NODES=1`. Rerun them when the RPC hash-order fix lands (then set the switch to
+false) or the fee rule (1 atom/byte) changes.
 
 ## Regtest only (owner ruling, 2026-11-19)
 

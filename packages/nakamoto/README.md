@@ -30,8 +30,11 @@ defined: Lotus v2 mainnet and testnet have no launch parameters yet, and the
 address codec reports their well-formed strings as `network-not-defined`. The
 spec is the Lotus repository's `docs/lotus-v2/` (P01, P02, `addresses.md`);
 the test vectors in `test/fixtures/lotus-v2/` come from lotusd and the Lotus
-reference tool. VM execution, accounting, fees and block/state commitments are
-not implemented; a mint signature message is an explicit unsupported error.
+reference tool. Legacy coins (P01 "Spending a legacy coin") are parsed and
+their P2PKH and P2SH bridge signing messages computed; P2PKH bridge spends are
+built and verified, P2SH script evaluation is an explicit unsupported error.
+VM execution, accounting, fees and block/state commitments are not
+implemented; a mint signature message is an explicit unsupported error.
 
 It does not read or write CashWeb CBOR. `@frank/codec` and `frank-cbor`
 marshal a frame and pass the digest bytes into a nakamoto sign or hash call.

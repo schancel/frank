@@ -74,12 +74,31 @@ export {
   lotusV2SignatureOperand,
   lotusV2TemplatePaymentSize,
   signLotusV2Transaction,
+  verifyLotusV2LegacyP2pkh,
   verifyLotusV2Signature,
 } from './lotus-v2/sign.js'
+export {
+  LOTUS_V2_MAX_LEGACY_SCRIPT_BYTES,
+  LOTUS_V2_MAX_MONEY,
+  decodeLotusV2CoinOutput,
+  encodeLotusV2CoinOutput,
+  isLotusV2LegacyCoin,
+  lotusV2LegacyBridgeLeaf,
+  lotusV2LegacyBridgeWitness,
+  lotusV2LegacyP2pkhKey,
+  lotusV2LegacyTemplate,
+} from './lotus-v2/legacy.js'
+export type {
+  LotusV2Coin,
+  LotusV2LegacyCoin,
+  LotusV2LegacyTemplate,
+} from './lotus-v2/legacy.js'
 export type {
   LotusV2ResolvedCoins,
   LotusV2SignatureTarget,
   LotusV2SignedTransaction,
   LotusV2SigningMode,
+  LotusV2LegacyP2pkhSpend,
+  LotusV2Spend,
   LotusV2TemplateSpend,
 } from './lotus-v2/sign.js'
